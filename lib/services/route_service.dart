@@ -7,27 +7,35 @@ class RouteService {
   final List<LatLng> _routePoints = [];
   double _totalDistance = 0;
 
+  double _lastSegmentDistance = 0;
+
   List<LatLng> get routePoints => List.unmodifiable(_routePoints);
   double get totalDistance => _totalDistance;
+  double get lastSegmentDistance => _lastSegmentDistance;
 
   void reset() {
     _routePoints.clear();
     _totalDistance = 0;
+    _lastSegmentDistance = 0;
   }
 
   void addPosition(Position position) {
     final point = LatLng(position.latitude, position.longitude);
 
-    if (_routePoints.isNotEmpty) {
-      final last = _routePoints.last;
+    _lastSegmentDistance = 0;
 
-      _totalDistance += Geolocator.distanceBetween(
-        last.latitude,
-        last.longitude,
-        point.latitude,
-        point.longitude,
-      );
-    }
+if (_routePoints.isNotEmpty) {
+  final last = _routePoints.last;
+
+  _lastSegmentDistance = Geolocator.distanceBetween(
+    last.latitude,
+    last.longitude,
+    point.latitude,
+    point.longitude,
+  );
+
+  _totalDistance += _lastSegmentDistance;
+}
 
     _routePoints.add(point);
   }

@@ -1,3 +1,4 @@
+import '../services/telemetry/telemetry_recorder.dart';
 import '../services/route_service.dart';
 import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
@@ -18,6 +19,8 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   final SpeedService speedService = SpeedService();
   final RouteService routeService = RouteService();
+  final TelemetryRecorder telemetryRecorder =
+    TelemetryRecorder();
 
   GoogleMapController? mapController;
 
@@ -72,6 +75,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       speedService.reset();
       routeService.reset();
+      telemetryRecorder.clear();
 
       isDriving = true;
 
@@ -92,6 +96,12 @@ class _MapScreenState extends State<MapScreen> {
             routeService.addPosition(position);
 
             speedService.update(position);
+
+            telemetryRecorder.add(
+            position: position,
+            distance: routeService.lastSegmentDistance,
+            acceleration: 0,
+           );
 
             currentSpeed = speedService.currentSpeed;
             maxSpeed = speedService.maxSpeed;
@@ -136,6 +146,10 @@ class _MapScreenState extends State<MapScreen> {
       mapImagePath: "",
       route: route,
     );
+
+    debugPrint(
+      "Telemetry Samples: ${telemetryRecorder.samples.length}",
+  );
   }
 
   static const CameraPosition initialPosition = CameraPosition(

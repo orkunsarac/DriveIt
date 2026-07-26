@@ -1,3 +1,4 @@
+import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
 import '../models/route_point.dart';
 import '../widgets/drive_summary_dialog.dart';
@@ -14,6 +15,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
+  final SpeedService speedService = SpeedService();
+  
   GoogleMapController? mapController;
 
   StreamSubscription<Position>? positionStream;
@@ -76,6 +79,8 @@ Future<void> startDriving() async {
   await ForegroundService.start();
 
   setState(() {
+    speedService.reset();
+
     isDriving = true;
     routePoints.clear();
     totalDistance = 0;
@@ -98,13 +103,10 @@ Future<void> startDriving() async {
         LatLng(position.latitude, position.longitude),
       );
 
-      double speedKmH = position.speed * 3.6;
+      speedService.update(position);
 
-      currentSpeed = speedKmH.clamp(0, 999);
-
-      if (speedKmH > maxSpeed) {
-        maxSpeed = speedKmH;
-}
+currentSpeed = speedService.currentSpeed;
+maxSpeed = speedService.maxSpeed;
 
       if (routePoints.length > 1) {
   totalDistance += Geolocator.distanceBetween(

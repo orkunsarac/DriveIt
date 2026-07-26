@@ -25,18 +25,12 @@ class _MapScreenState extends State<MapScreen> {
 
   bool isDriving = false;
 
-  List<LatLng> routePoints = [];
-
-  double totalDistance = 0;
-
   DateTime? driveStartTime;
   Duration driveDuration = Duration.zero;
 
   double maxSpeed = 0;
   double averageSpeed = 0;
   double currentSpeed = 0;
-
-  Set<Polyline> polylines = {};
 
   Position? currentPosition;
   Future<void> getCurrentLocation() async {
@@ -80,9 +74,6 @@ class _MapScreenState extends State<MapScreen> {
       routeService.reset();
 
       isDriving = true;
-      routePoints.clear();
-      totalDistance = 0;
-      polylines.clear();
 
       averageSpeed = 0;
       maxSpeed = 0;
@@ -104,10 +95,7 @@ class _MapScreenState extends State<MapScreen> {
 
             currentSpeed = speedService.currentSpeed;
             maxSpeed = speedService.maxSpeed;
-
-            routePoints = routeService.routePoints;
-            totalDistance = routeService.totalDistance;
-            polylines = routeService.buildPolylines();
+          
           });
 
           mapController?.animateCamera(
@@ -130,7 +118,9 @@ class _MapScreenState extends State<MapScreen> {
     driveDuration = DateTime.now().difference(driveStartTime!);
 
     if (driveDuration.inSeconds > 0) {
-      averageSpeed = (totalDistance / 1000) / (driveDuration.inSeconds / 3600);
+      averageSpeed =
+    (routeService.distance / 1000) /
+    (driveDuration.inSeconds / 3600);
     }
 
     if (!mounted) return;
@@ -139,7 +129,7 @@ class _MapScreenState extends State<MapScreen> {
 
     await DriveSummaryDialog.show(
       context,
-      totalDistance: totalDistance,
+      totalDistance: routeService.distance,
       driveDuration: driveDuration,
       averageSpeed: averageSpeed,
       maxSpeed: maxSpeed,
@@ -173,7 +163,7 @@ class _MapScreenState extends State<MapScreen> {
             myLocationEnabled: true,
             myLocationButtonEnabled: true,
             zoomControlsEnabled: false,
-            polylines: polylines,
+            polylines: routeService.polylines,
             onMapCreated: (controller) {
               mapController = controller;
             },

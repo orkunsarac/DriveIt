@@ -53,4 +53,7 @@ class RouteService {
         )
         .toList();
   }
+    Set<Polyline> get polylines => buildPolylines();
+
+    double get distance => _totalDistance;
 }

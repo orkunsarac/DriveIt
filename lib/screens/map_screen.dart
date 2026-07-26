@@ -1,3 +1,4 @@
+import '../services/route_service.dart';
 import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
 import '../models/route_point.dart';
@@ -16,7 +17,8 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   final SpeedService speedService = SpeedService();
-  
+  final RouteService routeService = RouteService();
+
   GoogleMapController? mapController;
 
   StreamSubscription<Position>? positionStream;
@@ -80,6 +82,7 @@ Future<void> startDriving() async {
 
   setState(() {
     speedService.reset();
+    routeService.reset();
 
     isDriving = true;
     routePoints.clear();
@@ -99,32 +102,16 @@ Future<void> startDriving() async {
     ),
   ).listen((Position position) {
     setState(() {
-      routePoints.add(
-        LatLng(position.latitude, position.longitude),
-      );
+      routeService.addPosition(position);
 
-      speedService.update(position);
+speedService.update(position);
 
 currentSpeed = speedService.currentSpeed;
 maxSpeed = speedService.maxSpeed;
 
-      if (routePoints.length > 1) {
-  totalDistance += Geolocator.distanceBetween(
-    routePoints[routePoints.length - 2].latitude,
-    routePoints[routePoints.length - 2].longitude,
-    routePoints.last.latitude,
-    routePoints.last.longitude,
-  );
-}
-
-      polylines = {
-        Polyline(
-          polylineId: const PolylineId("drive_route"),
-          points: routePoints,
-          color: Colors.blue,
-          width: 6,
-        ),
-      };
+routePoints = routeService.routePoints;
+totalDistance = routeService.totalDistance;
+polylines = routeService.buildPolylines();
     });
 
     mapController?.animateCamera(

@@ -1,3 +1,4 @@
+import '../models/route_point.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -40,5 +41,16 @@ class RouteService {
         width: 6,
       ),
     };
+  }
+
+  List<RoutePoint> getRouteForSave() {
+    return _routePoints
+        .map(
+          (p) => RoutePoint(
+            latitude: p.latitude,
+            longitude: p.longitude,
+          ),
+        )
+        .toList();
   }
 }

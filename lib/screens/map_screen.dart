@@ -23,230 +23,208 @@ class _MapScreenState extends State<MapScreen> {
 
   StreamSubscription<Position>? positionStream;
 
-bool isDriving = false;
+  bool isDriving = false;
 
-List<LatLng> routePoints = [];
+  List<LatLng> routePoints = [];
 
-double totalDistance = 0;
+  double totalDistance = 0;
 
-DateTime? driveStartTime;
-Duration driveDuration = Duration.zero;
+  DateTime? driveStartTime;
+  Duration driveDuration = Duration.zero;
 
-double maxSpeed = 0;
-double averageSpeed = 0;
-double currentSpeed = 0;
+  double maxSpeed = 0;
+  double averageSpeed = 0;
+  double currentSpeed = 0;
 
-Set<Polyline> polylines = {};
+  Set<Polyline> polylines = {};
 
-Position? currentPosition;
-Future<void> getCurrentLocation() async {
-  bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+  Position? currentPosition;
+  Future<void> getCurrentLocation() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
-  if (!serviceEnabled) {
-    return;
-  }
+    if (!serviceEnabled) {
+      return;
+    }
 
-  LocationPermission permission = await Geolocator.checkPermission();
+    LocationPermission permission = await Geolocator.checkPermission();
 
-  if (permission == LocationPermission.denied) {
-    permission = await Geolocator.requestPermission();
-  }
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
 
-  if (permission == LocationPermission.deniedForever) {
-    return;
-  }
+    if (permission == LocationPermission.deniedForever) {
+      return;
+    }
 
-  currentPosition = await Geolocator.getCurrentPosition();
-
-  mapController?.animateCamera(
-    CameraUpdate.newLatLngZoom(
-      LatLng(
-        currentPosition!.latitude,
-        currentPosition!.longitude,
-      ),
-      17,
-    ),
-  );
-}
-
-Future<void> startDriving() async {
-  if (isDriving) return;
-
-  ScaffoldMessenger.of(context).showSnackBar(
-  const SnackBar(
-    content: Text("ForegroundService.start() çağrıldı"),
-  ),
-);
-
-  await ForegroundService.start();
-
-  setState(() {
-    speedService.reset();
-    routeService.reset();
-
-    isDriving = true;
-    routePoints.clear();
-    totalDistance = 0;
-    polylines.clear();
-
-    averageSpeed = 0;
-    maxSpeed = 0;
-
-    driveStartTime = DateTime.now();
-  });
-
-  positionStream = Geolocator.getPositionStream(
-    locationSettings: const LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 5,
-    ),
-  ).listen((Position position) {
-    setState(() {
-      routeService.addPosition(position);
-
-speedService.update(position);
-
-currentSpeed = speedService.currentSpeed;
-maxSpeed = speedService.maxSpeed;
-
-routePoints = routeService.routePoints;
-totalDistance = routeService.totalDistance;
-polylines = routeService.buildPolylines();
-    });
+    currentPosition = await Geolocator.getCurrentPosition();
 
     mapController?.animateCamera(
-      CameraUpdate.newLatLng(
-        LatLng(position.latitude, position.longitude),
+      CameraUpdate.newLatLngZoom(
+        LatLng(currentPosition!.latitude, currentPosition!.longitude),
+        17,
       ),
     );
-  });
-}
+  }
 
-Future<void> stopDriving() async {
-  await ForegroundService.stop();
+  Future<void> startDriving() async {
+    if (isDriving) return;
 
-  await positionStream?.cancel();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("ForegroundService.start() çağrıldı")),
+    );
 
-  setState(() {
-    isDriving = false;
-  });
+    await ForegroundService.start();
 
-  driveDuration = DateTime.now().difference(driveStartTime!);
+    setState(() {
+      speedService.reset();
+      routeService.reset();
 
-  if (driveDuration.inSeconds > 0) {
-  averageSpeed =
-      (totalDistance / 1000) / (driveDuration.inSeconds / 3600);
-}
+      isDriving = true;
+      routePoints.clear();
+      totalDistance = 0;
+      polylines.clear();
 
-  if (!mounted) return;
+      averageSpeed = 0;
+      maxSpeed = 0;
 
-final route = routePoints
-    .map(
-      (p) => RoutePoint(
-        latitude: p.latitude,
-        longitude: p.longitude,
-      ),
-    )
-    .toList();
+      driveStartTime = DateTime.now();
+    });
 
-  await DriveSummaryDialog.show(
-    context,
-    totalDistance: totalDistance,
-    driveDuration: driveDuration,
-    averageSpeed: averageSpeed,
-    maxSpeed: maxSpeed,
-    mapImagePath: "",
-    route: route,
-);
-}
+    positionStream =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 5,
+          ),
+        ).listen((Position position) {
+          setState(() {
+            routeService.addPosition(position);
+
+            speedService.update(position);
+
+            currentSpeed = speedService.currentSpeed;
+            maxSpeed = speedService.maxSpeed;
+
+            routePoints = routeService.routePoints;
+            totalDistance = routeService.totalDistance;
+            polylines = routeService.buildPolylines();
+          });
+
+          mapController?.animateCamera(
+            CameraUpdate.newLatLng(
+              LatLng(position.latitude, position.longitude),
+            ),
+          );
+        });
+  }
+
+  Future<void> stopDriving() async {
+    await ForegroundService.stop();
+
+    await positionStream?.cancel();
+
+    setState(() {
+      isDriving = false;
+    });
+
+    driveDuration = DateTime.now().difference(driveStartTime!);
+
+    if (driveDuration.inSeconds > 0) {
+      averageSpeed = (totalDistance / 1000) / (driveDuration.inSeconds / 3600);
+    }
+
+    if (!mounted) return;
+
+    final route = routeService.getRouteForSave();
+
+    await DriveSummaryDialog.show(
+      context,
+      totalDistance: totalDistance,
+      driveDuration: driveDuration,
+      averageSpeed: averageSpeed,
+      maxSpeed: maxSpeed,
+      mapImagePath: "",
+      route: route,
+    );
+  }
 
   static const CameraPosition initialPosition = CameraPosition(
     target: LatLng(41.0082, 28.9784),
     zoom: 14,
   );
 
-@override
-void initState() {
-  super.initState();
+  @override
+  void initState() {
+    super.initState();
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    getCurrentLocation();
-  });
-}
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      getCurrentLocation();
+    });
+  }
 
   @override
-Widget build(BuildContext context) {
-  return Scaffold(
-    appBar: AppBar(
-      title: const Text("DriveIt Harita"),
-    ),
-    body: Stack(
-  children: [
-    GoogleMap(
-      initialCameraPosition: initialPosition,
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
-      zoomControlsEnabled: false,
-      polylines: polylines,
-      onMapCreated: (controller) {
-        mapController = controller;
-      },
-    ),
-
-    Positioned(
-  left: 16,
-  bottom: 16,
-  child: AnimatedOpacity(
-    opacity: isDriving ? 1 : 0,
-    duration: const Duration(milliseconds: 300),
-    child: Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 14,
-        vertical: 10,
-      ),
-      decoration: BoxDecoration(
-        color: Colors.black87,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("DriveIt Harita")),
+      body: Stack(
         children: [
-          const Icon(
-            Icons.speed,
-            color: Colors.white,
-            size: 20,
+          GoogleMap(
+            initialCameraPosition: initialPosition,
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
+            zoomControlsEnabled: false,
+            polylines: polylines,
+            onMapCreated: (controller) {
+              mapController = controller;
+            },
           ),
-          const SizedBox(width: 8),
-          Text(
-            "${currentSpeed.toStringAsFixed(0)} km/h",
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+
+          Positioned(
+            left: 16,
+            bottom: 16,
+            child: AnimatedOpacity(
+              opacity: isDriving ? 1 : 0,
+              duration: const Duration(milliseconds: 300),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.speed, color: Colors.white, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      "${currentSpeed.toStringAsFixed(0)} km/h",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ],
       ),
-    ),
-  ),
-),
-  ],
-),
-    floatingActionButton: FloatingActionButton.extended(
-      onPressed: () {
-  if (isDriving) {
-    stopDriving();
-  } else {
-    startDriving();
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          if (isDriving) {
+            stopDriving();
+          } else {
+            startDriving();
+          }
+        },
+        icon: Icon(isDriving ? Icons.stop : Icons.play_arrow),
+        label: Text(isDriving ? "Sürüşü Bitir" : "Sürüşü Başlat"),
+      ),
+    );
   }
-},
-icon: Icon(
-  isDriving ? Icons.stop : Icons.play_arrow,
-),
-label: Text(
-  isDriving ? "Sürüşü Bitir" : "Sürüşü Başlat",
-),
-    ),
-  );
-}
-} // 
+} //

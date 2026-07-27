@@ -29,6 +29,18 @@ class DriveSession extends HiveObject {
   @HiveField(7)
   List<RoutePoint> route;
 
+  @HiveField(8)
+double flowScore;
+
+@HiveField(9)
+double cruiseSpeed;
+
+@HiveField(10)
+double stability;
+
+@HiveField(11)
+int oscillation;
+
   DriveSession({
     required this.id,
     required this.date,
@@ -38,5 +50,9 @@ class DriveSession extends HiveObject {
     required this.maxSpeed,
     required this.mapImagePath,
     required this.route,
+    required this.flowScore,
+    required this.cruiseSpeed,
+    required this.stability,
+    required this.oscillation,
   });
 }

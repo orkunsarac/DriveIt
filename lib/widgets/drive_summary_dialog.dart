@@ -1,3 +1,4 @@
+import '../models/analysis/flow_report.dart';
 import '../models/route_point.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
@@ -6,6 +7,7 @@ import 'package:flutter/material.dart';
 class DriveSummaryDialog {
   static Future<void> show(
     BuildContext context, {
+    required FlowReport flowReport,
     required double totalDistance,
     required Duration driveDuration,
     required double averageSpeed,
@@ -108,6 +110,59 @@ class DriveSummaryDialog {
                   ),
                 ),
               ),
+
+              const SizedBox(height: 16),
+
+Card(
+  child: Padding(
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          "Flow Analizi",
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+
+        const Divider(),
+
+        ListTile(
+          leading: const Icon(Icons.auto_graph),
+          title: const Text("Flow Score"),
+          trailing: Text(flowReport.score.toStringAsFixed(1)),
+        ),
+
+        ListTile(
+          leading: const Icon(Icons.speed),
+          title: const Text("Cruise Speed"),
+          trailing: Text(
+            "${flowReport.cruiseSpeed.toStringAsFixed(1)} km/h",
+          ),
+        ),
+
+        ListTile(
+          leading: const Icon(Icons.show_chart),
+          title: const Text("Stability"),
+          trailing: Text(
+            "${flowReport.speedStability.toStringAsFixed(1)} %",
+          ),
+        ),
+
+        ListTile(
+          leading: const Icon(Icons.waves),
+          title: const Text("Oscillation"),
+          trailing: Text(
+            flowReport.oscillationCount.toString(),
+          ),
+        ),
+      ],
+    ),
+  ),
+),
+
             ],
           ),
         ),
@@ -128,6 +183,10 @@ ElevatedButton.icon(
     maxSpeed: maxSpeed,
     mapImagePath: mapImagePath,
     route: route,
+    flowScore: flowReport.score,
+    cruiseSpeed: flowReport.cruiseSpeed,
+    stability: flowReport.speedStability,
+    oscillation: flowReport.oscillationCount,
   );
 
   await DriveStorageService.saveDrive(drive);

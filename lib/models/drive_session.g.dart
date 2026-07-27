@@ -25,13 +25,17 @@ class DriveSessionAdapter extends TypeAdapter<DriveSession> {
       maxSpeed: fields[5] as double,
       mapImagePath: fields[6] as String,
       route: (fields[7] as List).cast<RoutePoint>(),
+      flowScore: fields[8] as double,
+      cruiseSpeed: fields[9] as double,
+      stability: fields[10] as double,
+      oscillation: fields[11] as int,
     );
   }
 
   @override
   void write(BinaryWriter writer, DriveSession obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -47,7 +51,15 @@ class DriveSessionAdapter extends TypeAdapter<DriveSession> {
       ..writeByte(6)
       ..write(obj.mapImagePath)
       ..writeByte(7)
-      ..write(obj.route);
+      ..write(obj.route)
+      ..writeByte(8)
+      ..write(obj.flowScore)
+      ..writeByte(9)
+      ..write(obj.cruiseSpeed)
+      ..writeByte(10)
+      ..write(obj.stability)
+      ..writeByte(11)
+      ..write(obj.oscillation);
   }
 
   @override

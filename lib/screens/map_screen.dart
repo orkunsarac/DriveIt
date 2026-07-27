@@ -1,3 +1,5 @@
+import '../services/analysis/telemetry_session.dart';
+import '../services/analysis/flow_analyzer.dart';
 import '../services/telemetry/telemetry_recorder.dart';
 import '../services/route_service.dart';
 import '../services/speed_service.dart';
@@ -8,6 +10,7 @@ import 'dart:async';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -36,6 +39,10 @@ class _MapScreenState extends State<MapScreen> {
   double currentSpeed = 0;
 
   Position? currentPosition;
+
+  Future<void> requestPermissions() async {
+  await Permission.notification.request();
+}
   Future<void> getCurrentLocation() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
@@ -137,8 +144,26 @@ class _MapScreenState extends State<MapScreen> {
 
     final route = routeService.getRouteForSave();
 
+    final session = TelemetrySession(
+  samples: telemetryRecorder.samples,
+);
+
+final report =
+    FlowAnalyzer().analyze(session);
+
+debugPrint("========== FLOW ==========");
+debugPrint(
+    "Score : ${report.score.toStringAsFixed(1)}");
+debugPrint(
+    "Cruise : ${report.cruiseSpeed.toStringAsFixed(1)} km/h");
+debugPrint(
+    "Stability : ${report.speedStability.toStringAsFixed(1)}");
+debugPrint(
+    "Oscillation : ${report.oscillationCount}");
+
     await DriveSummaryDialog.show(
       context,
+      flowReport: report,
       totalDistance: routeService.distance,
       driveDuration: driveDuration,
       averageSpeed: averageSpeed,
@@ -161,10 +186,11 @@ class _MapScreenState extends State<MapScreen> {
   void initState() {
     super.initState();
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      getCurrentLocation();
-    });
-  }
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    await requestPermissions();
+    await getCurrentLocation();
+  });
+}
 
   @override
   Widget build(BuildContext context) {

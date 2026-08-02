@@ -4,7 +4,6 @@ import '../services/telemetry/telemetry_recorder.dart';
 import '../services/route_service.dart';
 import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
-import '../models/route_point.dart';
 import '../widgets/drive_summary_dialog.dart';
 import 'dart:async';
 import 'package:geolocator/geolocator.dart';

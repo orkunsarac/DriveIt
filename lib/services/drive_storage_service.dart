@@ -3,8 +3,7 @@ import 'package:hive/hive.dart';
 import '../models/drive_session.dart';
 
 class DriveStorageService {
-  static final Box<DriveSession> _box =
-      Hive.box<DriveSession>('drives');
+  static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
 
   /// Yeni sürüş kaydet
   static Future<void> saveDrive(DriveSession drive) async {
@@ -13,6 +12,7 @@ class DriveStorageService {
 
   /// Tüm sürüşler
   static List<DriveSession> getAllDrives() {
+    if (!Hive.isBoxOpen('drives')) return [];
     return _box.values.toList().reversed.toList();
   }
 
@@ -23,6 +23,7 @@ class DriveStorageService {
 
   /// Tek sürüş getir
   static DriveSession? getDrive(String id) {
+    if (!Hive.isBoxOpen('drives')) return null;
     return _box.get(id);
   }
 }

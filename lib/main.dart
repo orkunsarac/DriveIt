@@ -22,6 +22,8 @@ void main() async {
   Hive.registerAdapter(RoutePointAdapter());
 
   await Hive.openBox<DriveSession>('drives');
+  await Hive.openBox<dynamic>('career_totals');
+  await Hive.openBox<dynamic>('symbolic_routes');
 
   await initializeDateFormatting('tr_TR');
 

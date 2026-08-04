@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../models/route_point.dart';
 
@@ -27,12 +28,24 @@ class _NeonRoutePainter extends CustomPainter {
         .reduce((a, b) => a > b ? a : b);
     final dx = (maxLng - minLng).abs() < .00001 ? 1 : maxLng - minLng;
     final dy = (maxLat - minLat).abs() < .00001 ? 1 : maxLat - minLat;
+    // Fit the complete route inside the preview while preserving its real
+    // aspect ratio. Stretching x and y independently makes the route look
+    // compressed when the card is shorter than the source geometry.
+    const padding = 6.0;
+    final scale = math.min(
+      (size.width - padding * 2) / dx,
+      (size.height - padding * 2) / dy,
+    );
+    final routeWidth = dx * scale;
+    final routeHeight = dy * scale;
+    final offsetX = (size.width - routeWidth) / 2;
+    final offsetY = (size.height - routeHeight) / 2;
     final points = <Offset>[];
     for (var i = 0; i < route.length; i++) {
       final p = route[i];
       final point = Offset(
-        12 + (p.longitude - minLng) / dx * (size.width - 24),
-        size.height - 12 - (p.latitude - minLat) / dy * (size.height - 24),
+        offsetX + (p.longitude - minLng) * scale,
+        offsetY + routeHeight - (p.latitude - minLat) * scale,
       );
       points.add(point);
     }
@@ -47,13 +60,13 @@ class _NeonRoutePainter extends CustomPainter {
     path.lineTo(points.last.dx, points.last.dy);
     final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 9
+      ..strokeWidth = 5
       ..strokeCap = StrokeCap.round
-      ..color = const Color(0x88218dff)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 9);
+      ..color = const Color(0x55218dff)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
     final line = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 4
+      ..strokeWidth = 2
       ..strokeCap = StrokeCap.round
       ..shader = const LinearGradient(
         colors: [Color(0xff42d8ff), Color(0xff7b8cff), Color(0xffbd5cff)],
@@ -64,10 +77,10 @@ class _NeonRoutePainter extends CustomPainter {
     // Fixed corners caused the pins to drift away from the rendered route.
     final first = points.first;
     final last = points.last;
-    canvas.drawCircle(first, 6, Paint()..color = const Color(0xff2f9bff));
-    canvas.drawCircle(last, 6, Paint()..color = const Color(0xffef405d));
-    canvas.drawCircle(first, 2.5, Paint()..color = const Color(0xffd9f3ff));
-    canvas.drawCircle(last, 2.5, Paint()..color = const Color(0xffffd9df));
+    canvas.drawCircle(first, 3, Paint()..color = const Color(0xff2f9bff));
+    canvas.drawCircle(last, 3, Paint()..color = const Color(0xffef405d));
+    canvas.drawCircle(first, 1.25, Paint()..color = const Color(0xffd9f3ff));
+    canvas.drawCircle(last, 1.25, Paint()..color = const Color(0xffffd9df));
   }
 
   @override

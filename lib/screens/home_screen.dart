@@ -71,7 +71,7 @@ class HomeScreen extends StatelessWidget {
                   const SizedBox(height: 12),
                   _today(distance, seconds, today.length),
                   const SizedBox(height: 12),
-                  _last(last),
+                  _last(context, last),
                 ],
               ),
             ),
@@ -236,7 +236,7 @@ class HomeScreen extends StatelessWidget {
               ),
               const SizedBox(height: 7),
               SizedBox(
-                height: 58,
+                height: 68,
                 child: Builder(
                   builder: (_) {
                     final route = DriveStorageService.getSymbolicRoute(drives);
@@ -256,19 +256,18 @@ class HomeScreen extends StatelessWidget {
                 ),
               ),
               Align(
-                alignment: Alignment.bottomLeft,
+                alignment: Alignment.bottomCenter,
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 7),
+                  padding: const EdgeInsets.only(top: 3),
                   child: FittedBox(
                     fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
+                    alignment: Alignment.center,
                     child: Text(
                       'Toplam Sürüş ${drives.length}',
                       maxLines: 1,
                       style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
+                        color: Colors.white70,
+                        fontSize: 9,
                       ),
                     ),
                   ),
@@ -279,25 +278,10 @@ class HomeScreen extends StatelessWidget {
         ),
       );
 
-  Widget _driveButton(BuildContext context) => GestureDetector(
+  Widget _driveButton(BuildContext context) => _AnimatedDriveButton(
     onTap: () => Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const DriveCenterScreen()),
-    ),
-    child: Container(
-      width: 115,
-      height: 115,
-      padding: const EdgeInsets.all(9),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: const Color(0xff06162d),
-        border: Border.all(color: blue, width: 3),
-        boxShadow: const [BoxShadow(color: Color(0xaa248fff), blurRadius: 20)],
-      ),
-      child: Image.asset(
-        'assets/branding/driveit_logo.png',
-        fit: BoxFit.contain,
-      ),
     ),
   );
 
@@ -360,7 +344,7 @@ class HomeScreen extends StatelessWidget {
     Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Row(
+        Row(
           children: [
             Icon(Icons.calendar_month, color: blue, size: 24),
             SizedBox(width: 10),
@@ -378,75 +362,163 @@ class HomeScreen extends StatelessWidget {
         ),
         const Divider(color: Colors.white24, height: 28),
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _metric('-', 'Sürüş Skoru', Colors.blue),
-            _metric(km.toStringAsFixed(1), 'Mesafe km', Colors.green),
-            _metric('${seconds ~/ 60} dk', 'Süre', Colors.purple),
-            _metric('$count', 'Sürüş Sayısı', Colors.orange),
+            Expanded(
+              child: _summaryMetric(
+                Icons.speed,
+                '-',
+                'Sürüş Skoru',
+                'Yok',
+                blue,
+              ),
+            ),
+            _summaryDivider(),
+            Expanded(
+              child: _summaryMetric(
+                Icons.alt_route,
+                km.toStringAsFixed(1),
+                'Mesafe km',
+                'Bugün',
+                Colors.green,
+              ),
+            ),
+            _summaryDivider(),
+            Expanded(
+              child: _summaryMetric(
+                Icons.timer_outlined,
+                '${seconds ~/ 60} dk',
+                'Süre',
+                'Toplam',
+                Colors.purple,
+              ),
+            ),
+            _summaryDivider(),
+            Expanded(
+              child: _summaryMetric(
+                Icons.directions_car,
+                '$count',
+                'Sürüş Sayısı',
+                'Bugün',
+                Colors.orange,
+              ),
+            ),
           ],
         ),
       ],
     ),
   );
 
-  Widget _last(DriveSession? drive) => _glass(
-    const Color(0xff315071),
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Row(
-          children: [
-            Icon(Icons.access_time, color: blue),
-            SizedBox(width: 10),
-            Text(
-              'Son Sürüş',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            Spacer(),
-            Icon(Icons.chevron_right, color: Colors.white70),
-          ],
-        ),
-        const SizedBox(height: 12),
-        if (drive == null)
-          const Text(
-            'Henüz kayıtlı sürüş yok',
-            style: TextStyle(color: Colors.white70),
-          )
-        else
+  Widget _last(BuildContext context, DriveSession? drive) => GestureDetector(
+    onTap: drive == null
+        ? null
+        : () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const HistoryScreen()),
+          ),
+    child: _glass(
+      const Color(0xff315071),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Row(
             children: [
-              SizedBox(
-                width: 125,
-                height: 78,
-                child: NeonRoutePreview(route: drive.route),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    _metric(
-                      '${(drive.distance / 1000).toStringAsFixed(1)}',
-                      'Toplam Mesafe',
-                      blue,
-                    ),
-                    _metric(
-                      '${(drive.durationSeconds / 60).round()}',
-                      'Toplam Süre',
-                      Colors.purple,
-                    ),
-                    _metric('—', 'Sürüş Puanı', Colors.orange),
-                  ],
+              Icon(Icons.access_time, color: blue),
+              SizedBox(width: 10),
+              Text(
+                'Son Sürüş',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
+              Spacer(),
+              if (drive != null)
+                Text(
+                  '${drive.date.day}.${drive.date.month} ${drive.date.hour.toString().padLeft(2, '0')}:${drive.date.minute.toString().padLeft(2, '0')}',
+                  style: const TextStyle(color: Colors.white60, fontSize: 11),
+                ),
+              const SizedBox(width: 6),
+              const Icon(Icons.chevron_right, color: Colors.white70),
             ],
           ),
-      ],
+          const SizedBox(height: 12),
+          if (drive == null)
+            const Text(
+              'Henüz kayıtlı sürüş yok',
+              style: TextStyle(color: Colors.white70),
+            )
+          else
+            Row(
+              children: [
+                SizedBox(
+                  width: 125,
+                  height: 78,
+                  child: NeonRoutePreview(route: drive.route),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          _lastMetric(
+                            Icons.alt_route,
+                            '${(drive.distance / 1000).toStringAsFixed(1)}',
+                            'Toplam Mesafe',
+                            blue,
+                          ),
+                          _lastMetric(
+                            Icons.timer_outlined,
+                            '${(drive.durationSeconds / 60).round()}',
+                            'Toplam Süre',
+                            Colors.purple,
+                          ),
+                          _lastMetric(
+                            Icons.speed,
+                            '—',
+                            'Sürüş Puanı',
+                            Colors.orange,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 32,
+                        child: OutlinedButton.icon(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const HistoryScreen(),
+                            ),
+                          ),
+                          icon: const Icon(Icons.arrow_forward, size: 15),
+                          label: const Text(
+                            'Sürüşü Görüntüle',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: blue,
+                            side: const BorderSide(color: blue),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
     ),
   );
 
@@ -485,30 +557,83 @@ class HomeScreen extends StatelessWidget {
       ),
     ],
   );
-  Widget _metric(String value, String label, Color color) => Column(
+  Widget _summaryDivider() =>
+      Container(width: 1, height: 78, color: Colors.white12);
+
+  Widget _summaryMetric(
+    IconData icon,
+    String value,
+    String label,
+    String badge,
+    Color color,
+  ) => Column(
+    mainAxisSize: MainAxisSize.min,
     children: [
-      Icon(Icons.circle, color: color, size: 10),
-      const SizedBox(height: 7),
-      Text(
-        value,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 17,
-          fontWeight: FontWeight.w800,
+      Icon(icon, color: color, size: 21),
+      const SizedBox(height: 6),
+      FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Text(
+          value,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 17,
+            fontWeight: FontWeight.w800,
+          ),
         ),
       ),
       FittedBox(
         fit: BoxFit.scaleDown,
         child: Text(
           label,
-          maxLines: 1,
           style: const TextStyle(color: Colors.white70, fontSize: 10),
+        ),
+      ),
+      const SizedBox(height: 5),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+        decoration: BoxDecoration(
+          border: Border.all(color: color),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          badge,
+          style: TextStyle(
+            color: color,
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     ],
   );
+
+  Widget _lastMetric(IconData icon, String value, String label, Color color) =>
+      Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 19),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 9),
+            ),
+          ),
+        ],
+      );
   Widget _glass(Color border, Widget child) => Container(
     clipBehavior: Clip.hardEdge,
     padding: const EdgeInsets.all(7),
@@ -545,4 +670,98 @@ class HomeScreen extends StatelessWidget {
       BottomNavigationBarItem(icon: Icon(Icons.directions_car), label: 'Garaj'),
     ],
   );
+}
+
+class _AnimatedDriveButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _AnimatedDriveButton({required this.onTap});
+
+  @override
+  State<_AnimatedDriveButton> createState() => _AnimatedDriveButtonState();
+}
+
+class _AnimatedDriveButtonState extends State<_AnimatedDriveButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 7),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: widget.onTap,
+    child: Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 115,
+          height: 115,
+          padding: const EdgeInsets.all(9),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: const Color(0xff06162d),
+            border: Border.all(color: HomeScreen.blue, width: 3),
+            boxShadow: const [
+              BoxShadow(color: Color(0xaa248fff), blurRadius: 20),
+            ],
+          ),
+          child: Image.asset(
+            'assets/branding/driveit_logo.png',
+            fit: BoxFit.contain,
+          ),
+        ),
+        AnimatedBuilder(
+          animation: _controller,
+          builder: (_, child) => Transform.rotate(
+            angle: _controller.value * 6.283185,
+            child: child,
+          ),
+          child: CustomPaint(
+            size: const Size(125, 125),
+            painter: _DriveOrbitPainter(),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _DriveOrbitPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5
+      ..shader = const SweepGradient(
+        colors: [
+          Colors.transparent,
+          Color(0xff248fff),
+          Color(0xff8ad8ff),
+          Colors.transparent,
+        ],
+        stops: [0, .3, .48, .7],
+      ).createShader(rect)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    canvas.drawCircle(
+      size.center(Offset.zero),
+      size.shortestSide / 2 - 3,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _DriveOrbitPainter oldDelegate) => false;
 }

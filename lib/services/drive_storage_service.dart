@@ -7,6 +7,7 @@ class DriveStorageService {
   static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
   static Box<dynamic> get _careerBox => Hive.box<dynamic>('career_totals');
   static Box<dynamic> get _symbolicBox => Hive.box<dynamic>('symbolic_routes');
+  static Box<dynamic> get _namesBox => Hive.box<dynamic>('drive_names');
 
   /// Yeni sürüş kaydet
   static Future<void> saveDrive(DriveSession drive) async {
@@ -105,11 +106,35 @@ class DriveStorageService {
   /// Sürüş sil
   static Future<void> deleteDrive(String id) async {
     await _box.delete(id);
+    if (Hive.isBoxOpen('drive_names')) {
+      await _namesBox.delete(id);
+    }
   }
 
   /// Tek sürüş getir
   static DriveSession? getDrive(String id) {
     if (!Hive.isBoxOpen('drives')) return null;
     return _box.get(id);
+  }
+
+  /// Returns the user-defined title for a drive, or an empty string when the
+  /// drive has not been named yet.
+  static String getDriveName(String id) {
+    if (!Hive.isBoxOpen('drive_names')) return '';
+    final value = _namesBox.get(id);
+    final name = value is String ? value.trim() : '';
+    return name;
+  }
+
+  /// Persists only the display name. DriveSession itself is intentionally not
+  /// changed so old Hive data remains fully compatible.
+  static Future<void> saveDriveName(String id, String name) async {
+    if (!Hive.isBoxOpen('drive_names')) return;
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      await _namesBox.delete(id);
+    } else {
+      await _namesBox.put(id, trimmed);
+    }
   }
 }

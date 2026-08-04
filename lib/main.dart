@@ -24,6 +24,9 @@ void main() async {
   await Hive.openBox<DriveSession>('drives');
   await Hive.openBox<dynamic>('career_totals');
   await Hive.openBox<dynamic>('symbolic_routes');
+  // Drive names live in their own box so the existing DriveSession adapter
+  // and all previously stored field indexes remain untouched.
+  await Hive.openBox<dynamic>('drive_names');
 
   await initializeDateFormatting('tr_TR');
 

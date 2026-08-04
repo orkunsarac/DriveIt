@@ -6,6 +6,7 @@ import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
 import '../widgets/neon_route_preview.dart';
 import 'drive_center_screen.dart';
+import 'drive_detail_screen.dart';
 import 'history_screen.dart';
 
 class HomeScreen extends StatelessWidget {
@@ -13,6 +14,14 @@ class HomeScreen extends StatelessWidget {
 
   static const blue = Color(0xff248fff);
   static const textFont = 'Noto Sans';
+
+  String _formatDateTime(DateTime date) {
+    final day = date.day.toString().padLeft(2, '0');
+    final month = date.month.toString().padLeft(2, '0');
+    final hour = date.hour.toString().padLeft(2, '0');
+    final minute = date.minute.toString().padLeft(2, '0');
+    return '$day.$month.${date.year} $hour:$minute';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -425,7 +434,7 @@ class HomeScreen extends StatelessWidget {
         ? null
         : () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const HistoryScreen()),
+            MaterialPageRoute(builder: (_) => DriveDetailScreen(drive: drive)),
           ),
     child: _glass(
       const Color(0xff315071),
@@ -447,7 +456,7 @@ class HomeScreen extends StatelessWidget {
               Spacer(),
               if (drive != null)
                 Text(
-                  '${drive.date.day}.${drive.date.month} ${drive.date.hour.toString().padLeft(2, '0')}:${drive.date.minute.toString().padLeft(2, '0')}',
+                  _formatDateTime(drive.date),
                   style: const TextStyle(color: Colors.white60, fontSize: 11),
                 ),
               const SizedBox(width: 6),
@@ -503,7 +512,7 @@ class HomeScreen extends StatelessWidget {
                           onPressed: () => Navigator.push(
                             context,
                             MaterialPageRoute(
-                              builder: (_) => const HistoryScreen(),
+                              builder: (_) => DriveDetailScreen(drive: drive),
                             ),
                           ),
                           icon: const Icon(Icons.arrow_forward, size: 15),

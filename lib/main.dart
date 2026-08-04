@@ -3,6 +3,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'models/route_point.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'models/drive_session.dart';
@@ -11,6 +12,9 @@ import 'screens/map_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations(const [
+    DeviceOrientation.portraitUp,
+  ]);
 
   await Hive.initFlutter();
 
@@ -24,16 +28,22 @@ void main() async {
   await ForegroundService.init();
   final activeDrive = await ForegroundService.isDriveActive();
   final stopRequested = await ForegroundService.consumeStopRequest();
-  runApp(DriveItApp(
-    resumeDrive: activeDrive || stopRequested,
-    initialScreen: const HomeScreen(),
-  ));
+  runApp(
+    DriveItApp(
+      resumeDrive: activeDrive || stopRequested,
+      initialScreen: const HomeScreen(),
+    ),
+  );
 }
 
 class DriveItApp extends StatefulWidget {
   final Widget initialScreen;
   final bool resumeDrive;
-  const DriveItApp({super.key, this.initialScreen = const HomeScreen(), this.resumeDrive = false});
+  const DriveItApp({
+    super.key,
+    this.initialScreen = const HomeScreen(),
+    this.resumeDrive = false,
+  });
 
   @override
   State<DriveItApp> createState() => _DriveItAppState();
@@ -79,16 +89,26 @@ class _DriveItAppState extends State<DriveItApp> {
       theme: ThemeData(
         brightness: Brightness.dark,
         fontFamily: 'Noto Sans',
-        textTheme: ThemeData.dark().textTheme.apply(
-          fontFamily: 'Noto Sans',
-          bodyColor: Colors.white,
-          displayColor: Colors.white,
-        ).copyWith(
-          bodyMedium: const TextStyle(fontSize: 14, letterSpacing: -0.15),
-          bodySmall: const TextStyle(fontSize: 12, letterSpacing: -0.1),
-          titleMedium: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: -0.2),
-          titleLarge: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, letterSpacing: -0.25),
-        ),
+        textTheme: ThemeData.dark().textTheme
+            .apply(
+              fontFamily: 'Noto Sans',
+              bodyColor: Colors.white,
+              displayColor: Colors.white,
+            )
+            .copyWith(
+              bodyMedium: const TextStyle(fontSize: 14, letterSpacing: -0.15),
+              bodySmall: const TextStyle(fontSize: 12, letterSpacing: -0.1),
+              titleMedium: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.2,
+              ),
+              titleLarge: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.25,
+              ),
+            ),
       ),
       home: widget.initialScreen,
     );

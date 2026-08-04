@@ -980,7 +980,9 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xff72a6ff),
+              backgroundColor: isDriving
+                  ? const Color(0xffe53955)
+                  : const Color(0xff72a6ff),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(22),
               ),

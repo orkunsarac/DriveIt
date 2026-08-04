@@ -37,6 +37,8 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<Position>? positionStream;
 
   bool isDriving = false;
+  bool isCountingDown = false;
+  int countdownValue = 0;
 
   DateTime? driveStartTime;
   Duration driveDuration = Duration.zero;
@@ -185,6 +187,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<bool> _handleBack() async {
+    if (isCountingDown) return false;
     if (!isDriving) return true;
     if (!mounted) return false;
     final action = await showDialog<String>(
@@ -407,6 +410,25 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> startDriving() async {
+    if (isDriving || isCountingDown) return;
+    setState(() {
+      isCountingDown = true;
+      countdownValue = 3;
+    });
+    for (var value = 3; value >= 1; value--) {
+      if (!mounted) return;
+      setState(() => countdownValue = value);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+    }
+    if (!mounted) return;
+    setState(() {
+      isCountingDown = false;
+      countdownValue = 0;
+    });
+    await _startDrivingSession();
+  }
+
+  Future<void> _startDrivingSession() async {
     if (isDriving) return;
 
     await ForegroundService.start();
@@ -702,6 +724,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   @override
+  void dispose() {
+    elapsedTimer?.cancel();
+    backgroundSyncTimer?.cancel();
+    positionStream?.cancel();
+    mapController?.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return WillPopScope(
       onWillPop: _handleBack,
@@ -838,6 +869,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
             Positioned(left: 16, right: 16, bottom: 16, child: _drivePanel()),
+            if (isCountingDown) _countdownOverlay(),
           ],
         ),
         floatingActionButton: null /* FloatingActionButton.extended(
@@ -865,6 +897,38 @@ class _MapScreenState extends State<MapScreen> {
         width: 58,
         height: 58,
         child: Icon(icon, color: Colors.white, size: 31),
+      ),
+    ),
+  );
+
+  Widget _countdownOverlay() => Positioned.fill(
+    child: IgnorePointer(
+      child: Container(
+        color: const Color(0x99030b1b),
+        alignment: Alignment.center,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 420),
+          transitionBuilder: (child, animation) => ScaleTransition(
+            scale: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutBack,
+            ),
+            child: FadeTransition(opacity: animation, child: child),
+          ),
+          child: Text(
+            '$countdownValue',
+            key: ValueKey(countdownValue),
+            style: const TextStyle(
+              color: Color(0xff72b7ff),
+              fontSize: 132,
+              fontWeight: FontWeight.w900,
+              shadows: [
+                Shadow(color: Color(0xff1688ff), blurRadius: 28),
+                Shadow(color: Color(0xff54d9ff), blurRadius: 8),
+              ],
+            ),
+          ),
+        ),
       ),
     ),
   );

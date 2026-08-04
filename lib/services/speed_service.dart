@@ -10,6 +10,7 @@ class SpeedService {
 
   double get currentSpeed => _currentSpeed;
   double get maxSpeed => _maxSpeed;
+  bool get isMoving => _moving;
 
   void reset() {
     _currentSpeed = 0;

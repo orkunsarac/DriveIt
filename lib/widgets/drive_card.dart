@@ -130,6 +130,27 @@ class DriveCard extends StatelessWidget {
                       ),
                     ],
                   ),
+
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _InfoTile(
+                          icon: Icons.pause_circle_outline,
+                          label: 'Duruş Sayısı',
+                          value: '${drive.stopCount}',
+                        ),
+                      ),
+                      Expanded(
+                        child: _InfoTile(
+                          icon: Icons.hourglass_bottom,
+                          label: 'Bekleme Süresi',
+                          value: '${drive.stoppedSeconds} sn',
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),

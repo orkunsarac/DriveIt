@@ -29,13 +29,18 @@ class DriveSessionAdapter extends TypeAdapter<DriveSession> {
       cruiseSpeed: fields[9] as double,
       stability: fields[10] as double,
       oscillation: fields[11] as int,
+      // Older development builds used these slots for boolean flags.
+      // Treat those values as empty stop statistics instead of crashing Hive
+      // while opening the existing box.
+      stopCount: fields[12] is int ? fields[12] as int : 0,
+      stoppedSeconds: fields[13] is int ? fields[13] as int : 0,
     );
   }
 
   @override
   void write(BinaryWriter writer, DriveSession obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -59,7 +64,11 @@ class DriveSessionAdapter extends TypeAdapter<DriveSession> {
       ..writeByte(10)
       ..write(obj.stability)
       ..writeByte(11)
-      ..write(obj.oscillation);
+      ..write(obj.oscillation)
+      ..writeByte(12)
+      ..write(obj.stopCount)
+      ..writeByte(13)
+      ..write(obj.stoppedSeconds);
   }
 
   @override

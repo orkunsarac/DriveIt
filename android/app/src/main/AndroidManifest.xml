@@ -13,7 +13,8 @@
     <application
         android:label="DriveIt"
         android:name="${applicationName}"
-        android:icon="@drawable/driveit_launcher">
+        android:icon="@drawable/driveit_launcher"
+        android:stopWithTask="false">
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"

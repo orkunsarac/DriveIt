@@ -3,6 +3,7 @@ import '../models/route_point.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
 import 'package:flutter/material.dart';
+import 'neon_route_preview.dart';
 
 class DriveSummaryDialog {
   static Future<void> show(
@@ -14,10 +15,14 @@ class DriveSummaryDialog {
     required double maxSpeed,
     required String mapImagePath,
     required List<RoutePoint> route,
+    int stopCount = 0,
+    int stoppedSeconds = 0,
   }) {
     return showDialog(
       context: context,
       builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xff0a1830),
+        surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
         ),
@@ -33,11 +38,7 @@ class DriveSummaryDialog {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.directions_car,
-                size: 60,
-                color: Colors.blue,
-              ),
+              Container(height: 150, width: double.infinity, padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xff071326), borderRadius: BorderRadius.circular(18), border: Border.all(color: const Color(0xff248fff))), child: NeonRoutePreview(route: route)),
 
               const SizedBox(height: 20),
 
@@ -187,6 +188,8 @@ ElevatedButton.icon(
     cruiseSpeed: flowReport.cruiseSpeed,
     stability: flowReport.speedStability,
     oscillation: flowReport.oscillationCount,
+    stopCount: stopCount,
+    stoppedSeconds: stoppedSeconds,
   );
 
   await DriveStorageService.saveDrive(drive);

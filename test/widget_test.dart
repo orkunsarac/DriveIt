@@ -5,6 +5,6 @@ void main() {
   testWidgets('DriveIt home renders', (tester) async {
     await tester.pumpWidget(const DriveItApp());
     expect(find.text('Merhaba, Orkun'), findsOneWidget);
-    expect(find.text('DUNYA'), findsOneWidget);
+    expect(find.text('DÜNYA'), findsOneWidget);
   });
 }

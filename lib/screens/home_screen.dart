@@ -8,6 +8,7 @@ import 'drive_center_screen.dart';
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
   static const blue = Color(0xff248fff);
+  static const textFont = 'Noto Sans';
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +32,7 @@ class HomeScreen extends StatelessWidget {
               _heroCards(context, drives, last),
               const SizedBox(height: 10),
               _world(),
-              const SizedBox(height: 5),
+              const SizedBox(height: 12),
               _today(distance, seconds, today.length),
               const SizedBox(height: 18),
               _last(last),
@@ -61,28 +62,27 @@ class HomeScreen extends StatelessWidget {
   Widget _header() => const Row(children: [
     CircleAvatar(radius: 22, backgroundColor: Color(0xff56d8de), child: Text('OS', style: TextStyle(color: Colors.black, fontSize: 17, fontWeight: FontWeight.w800))),
     SizedBox(width: 12),
-    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Merhaba, Orkun', style: TextStyle(color: Colors.white, fontSize: 19, fontWeight: FontWeight.w800)), Text('Bugun daha iyi sur.', style: TextStyle(color: Colors.white70, fontSize: 13))])),
+    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Merhaba, Orkun', style: TextStyle(fontFamily: textFont, color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600, letterSpacing: -0.25)), Text('Bugün daha iyi sür.', style: TextStyle(fontFamily: textFont, color: Colors.white70, fontSize: 12))])),
     Icon(Icons.notifications_none, color: Colors.white, size: 25),
     SizedBox(width: 8),
     Icon(Icons.menu, color: Colors.white, size: 27),
   ]);
 
   Widget _career(List<DriveSession> drives) {
-    final km = drives.fold<double>(0, (s, d) => s + d.distance) / 1000;
-    final hours = drives.fold<int>(0, (s, d) => s + d.durationSeconds) / 3600;
+    final careerScore = drives.fold<double>(0, (s, d) => s + d.flowScore).round();
     return _glass(blue, Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Row(children: [Icon(Icons.auto_graph, color: blue, size: 18), SizedBox(width: 5), Expanded(child: Text('Kariyerim', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w800)))]),
-      const SizedBox(height: 4), _value(Icons.alt_route, '${km.toStringAsFixed(1)} km', 'Toplam Mesafe'), const Divider(color: Colors.white24, height: 10), _value(Icons.schedule, '${hours.toStringAsFixed(0)} sa', 'Toplam Sure'),
+      const Row(children: [Icon(Icons.auto_graph, color: blue, size: 18), SizedBox(width: 5), Expanded(child: Text('Kariyerim', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: textFont, color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: -0.15)))]),
+      const SizedBox(height: 4), _value(Icons.star, '$careerScore', 'Kariyer Puanı'), const Divider(color: Colors.white24, height: 10), _value(Icons.shield, 'Gümüş Lig', 'Lig Seviyesi'),
     ]));
   }
 
   Widget _drives(BuildContext context, List<DriveSession> drives, DriveSession? last) => GestureDetector(
     onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HistoryScreen())),
     child: _glass(const Color(0xff9d5cff), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Row(children: [Icon(Icons.alt_route, color: Color(0xffbd82ff), size: 20), SizedBox(width: 6), Expanded(child: Text('Suruslerim', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800)))]),
+      const Row(children: [Icon(Icons.sports_esports, color: Color(0xffbd82ff), size: 18), SizedBox(width: 5), Expanded(child: Text('Sürüşlerim', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: textFont, color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600, letterSpacing: -0.15)))]),
       const SizedBox(height: 8),
-      SizedBox(height: 48, child: last == null ? const Center(child: Icon(Icons.route, color: Colors.white38, size: 30)) : NeonRoutePreview(route: last.route)),
-      Align(alignment: Alignment.centerRight, child: FittedBox(fit: BoxFit.scaleDown, child: Text('Toplam Surus  ${drives.length}', style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w700)))),
+      SizedBox(height: 45, child: last == null ? const Center(child: Icon(Icons.route, color: Colors.white38, size: 28)) : Padding(padding: const EdgeInsets.symmetric(horizontal: 3), child: NeonRoutePreview(route: last.route))),
+      _value(Icons.alt_route, '${drives.length}', 'Toplam Sürüş'),
     ])),
   );
 
@@ -92,21 +92,21 @@ class HomeScreen extends StatelessWidget {
   );
 
   Widget _world() => _glass(const Color(0xff315071), const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    Row(children: [Icon(Icons.public, color: blue, size: 26), SizedBox(width: 8), Text('DUNYA', style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.w900)), Spacer(), Icon(Icons.chevron_right, color: Colors.white, size: 29)]),
-    SizedBox(height: 10), Text('Gezegende iz birakmaya hazir ol!', style: TextStyle(color: Colors.white70, fontSize: 14)),
-    SizedBox(height: 16), Row(children: [Icon(Icons.alt_route, color: blue, size: 34), SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('YEREL DUNYA', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800)), Text('Kendi neon rotalarin', style: TextStyle(color: Colors.white70, fontSize: 12))])]),
+    Row(children: [Icon(Icons.public, color: blue, size: 26), SizedBox(width: 8), Text('DÜNYA', style: TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.w900)), Spacer(), Icon(Icons.chevron_right, color: Colors.white, size: 29)]),
+    SizedBox(height: 10), Text('Gezegende iz bırakmaya hazır ol!', style: TextStyle(color: Colors.white70, fontSize: 14)),
+    SizedBox(height: 16), Row(children: [Icon(Icons.bar_chart, color: Color(0xff9d5cff), size: 34), SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('YAKINDA', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w800)), Text('Dünya Sıralaması', style: TextStyle(color: Colors.white70, fontSize: 12))])]),
   ]));
 
   Widget _today(double km, int seconds, int count) => _glass(const Color(0xff315071), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    const Row(children: [Icon(Icons.calendar_month, color: blue, size: 26), SizedBox(width: 10), Text('Bugunku Ozet', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)), Spacer(), Text('Detay  >', style: TextStyle(color: Colors.white70))]),
+    const Row(children: [Icon(Icons.calendar_month, color: blue, size: 26), SizedBox(width: 10), Text('Bugünkü Özet', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)), Spacer(), Text('Detay  >', style: TextStyle(color: Colors.white70))]),
     const Divider(color: Colors.white24, height: 28),
-    Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_metric('-', 'Surus Skoru', Colors.blue), _metric(km.toStringAsFixed(1), 'Mesafe km', Colors.green), _metric('${seconds ~/ 60} dk', 'Sure', Colors.purple), _metric('$count', 'Surus Sayisi', Colors.orange)]),
+    Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_metric('-', 'Sürüş Skoru', Colors.blue), _metric(km.toStringAsFixed(1), 'Mesafe km', Colors.green), _metric('${seconds ~/ 60} dk', 'Süre', Colors.purple), _metric('$count', 'Sürüş Sayısı', Colors.orange)]),
   ]));
 
   Widget _last(DriveSession? drive) => _glass(const Color(0xff315071), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    const Row(children: [Icon(Icons.access_time, color: blue), SizedBox(width: 10), Text('Son Surus', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)), Spacer(), Icon(Icons.chevron_right, color: Colors.white70)]),
+    const Row(children: [Icon(Icons.access_time, color: blue), SizedBox(width: 10), Text('Son Sürüş', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)), Spacer(), Icon(Icons.chevron_right, color: Colors.white70)]),
     const SizedBox(height: 15),
-    if (drive == null) const Text('Henuz kayitli surus yok', style: TextStyle(color: Colors.white70)) else Row(children: [SizedBox(width: 125, height: 78, child: NeonRoutePreview(route: drive.route)), const SizedBox(width: 15), _metric('${(drive.distance / 1000).toStringAsFixed(1)}', 'km', blue), _metric('${(drive.durationSeconds / 60).round()}', 'dk', Colors.purple), _metric(drive.flowScore.toStringAsFixed(0), 'puan', Colors.orange)]),
+    if (drive == null) const Text('Henüz kayıtlı sürüş yok', style: TextStyle(color: Colors.white70)) else Row(children: [SizedBox(width: 125, height: 78, child: NeonRoutePreview(route: drive.route)), const SizedBox(width: 15), _metric('${(drive.distance / 1000).toStringAsFixed(1)}', 'km', blue), _metric('${(drive.durationSeconds / 60).round()}', 'dk', Colors.purple), _metric(drive.flowScore.toStringAsFixed(0), 'puan', Colors.orange)]),
   ]));
 
   Widget _value(IconData icon, String value, String label) => Row(children: [Icon(icon, color: blue, size: 20), const SizedBox(width: 7), Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800)), Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 9))]))]);

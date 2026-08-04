@@ -20,24 +20,44 @@ class RouteService {
   }
 
   void addPosition(Position position) {
-    final point = LatLng(position.latitude, position.longitude);
+    addCoordinate(
+      position.latitude,
+      position.longitude,
+      accuracy: position.accuracy,
+    );
+  }
 
+  bool addCoordinate(
+    double latitude,
+    double longitude, {
+    double? accuracy,
+  }) {
+    final point = LatLng(latitude, longitude);
     _lastSegmentDistance = 0;
+    if (accuracy != null && (!accuracy.isFinite || accuracy > 30)) return false;
+    if (_routePoints.isEmpty) {
+      _routePoints.add(point);
+      return true;
+    }
 
-if (_routePoints.isNotEmpty) {
-  final last = _routePoints.last;
+    final last = _routePoints.last;
+    _lastSegmentDistance = Geolocator.distanceBetween(
+      last.latitude,
+      last.longitude,
+      latitude,
+      longitude,
+    );
 
-  _lastSegmentDistance = Geolocator.distanceBetween(
-    last.latitude,
-    last.longitude,
-    point.latitude,
-    point.longitude,
-  );
+    // Suppress stationary GPS drift and impossible jumps. Google Maps joins
+    // consecutive accepted samples; no artificial interpolation is needed.
+    if (_lastSegmentDistance < 3 || _lastSegmentDistance > 120) {
+      _lastSegmentDistance = 0;
+      return false;
+    }
 
-  _totalDistance += _lastSegmentDistance;
-}
-
+    _totalDistance += _lastSegmentDistance;
     _routePoints.add(point);
+    return true;
   }
 
   Set<Polyline> buildPolylines() {
@@ -47,6 +67,9 @@ if (_routePoints.isNotEmpty) {
         points: _routePoints,
         color: const Color(0xFF2196F3),
         width: 6,
+        jointType: JointType.round,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
       ),
     };
   }

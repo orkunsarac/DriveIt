@@ -38,8 +38,14 @@ double cruiseSpeed;
 @HiveField(10)
 double stability;
 
-@HiveField(11)
-int oscillation;
+  @HiveField(11)
+  int oscillation;
+
+  @HiveField(12)
+  int stopCount;
+
+  @HiveField(13)
+  int stoppedSeconds;
 
   DriveSession({
     required this.id,
@@ -54,5 +60,7 @@ int oscillation;
     required this.cruiseSpeed,
     required this.stability,
     required this.oscillation,
+    this.stopCount = 0,
+    this.stoppedSeconds = 0,
   });
 }

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/drive_session.dart';
@@ -37,10 +39,20 @@ class HomeScreen extends StatelessWidget {
               left: 0,
               right: 0,
               height: 535,
-              child: Image.asset(
-                'assets/branding/driveit_hero.png',
-                fit: BoxFit.cover,
-                alignment: Alignment.topCenter,
+              child: ClipRect(
+                child: Transform.translate(
+                  offset: const Offset(0, -18),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 553,
+                    child: Image.asset(
+                      'assets/branding/driveit_hero.png',
+                      fit: BoxFit.cover,
+                      alignment: Alignment.topCenter,
+                      filterQuality: FilterQuality.high,
+                    ),
+                  ),
+                ),
               ),
             ),
             Positioned.fill(
@@ -689,7 +701,7 @@ class _AnimatedDriveButtonState extends State<_AnimatedDriveButton>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 7),
+      duration: const Duration(milliseconds: 2200),
     )..repeat();
   }
 
@@ -708,29 +720,35 @@ class _AnimatedDriveButtonState extends State<_AnimatedDriveButton>
         Container(
           width: 115,
           height: 115,
-          padding: const EdgeInsets.all(9),
+          padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: const Color(0xff06162d),
-            border: Border.all(color: HomeScreen.blue, width: 3),
+            // Match the PNG's deep-navy canvas so the image blends into the
+            // circular button without a visible rectangular band.
+            color: const Color(0xff03122d),
+            border: Border.all(color: const Color(0xff0a2b55), width: 3),
             boxShadow: const [
               BoxShadow(color: Color(0xaa248fff), blurRadius: 20),
             ],
           ),
-          child: Image.asset(
-            'assets/branding/driveit_logo.png',
-            fit: BoxFit.contain,
+          child: ClipOval(
+            child: SizedBox(
+              width: 111,
+              height: 82,
+              child: Image.asset(
+                'assets/branding/driveit_logo_clean.png',
+                fit: BoxFit.contain,
+                alignment: Alignment.center,
+                filterQuality: FilterQuality.high,
+              ),
+            ),
           ),
         ),
         AnimatedBuilder(
           animation: _controller,
-          builder: (_, child) => Transform.rotate(
-            angle: _controller.value * 6.283185,
-            child: child,
-          ),
-          child: CustomPaint(
+          builder: (_, _) => CustomPaint(
             size: const Size(125, 125),
-            painter: _DriveOrbitPainter(),
+            painter: _DriveOrbitPainter(_controller.value),
           ),
         ),
       ],
@@ -739,29 +757,38 @@ class _AnimatedDriveButtonState extends State<_AnimatedDriveButton>
 }
 
 class _DriveOrbitPainter extends CustomPainter {
+  final double progress;
+
+  const _DriveOrbitPainter(this.progress);
+
   @override
   void paint(Canvas canvas, Size size) {
-    final rect = Offset.zero & size;
-    final paint = Paint()
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide / 2 - 3;
+    final wave = (math.sin(progress * math.pi * 2 - math.pi / 2) + 1) / 2;
+    final pulse = Curves.easeInOut.transform(wave);
+    final glowAlpha = (45 + (190 * pulse)).round();
+    final ringColor = Color.lerp(
+      const Color(0xff0a2345),
+      const Color(0xff6ed8ff),
+      pulse,
+    )!;
+
+    final glow = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
-      ..shader = const SweepGradient(
-        colors: [
-          Colors.transparent,
-          Color(0xff248fff),
-          Color(0xff8ad8ff),
-          Colors.transparent,
-        ],
-        stops: [0, .3, .48, .7],
-      ).createShader(rect)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-    canvas.drawCircle(
-      size.center(Offset.zero),
-      size.shortestSide / 2 - 3,
-      paint,
-    );
+      ..strokeWidth = 7 + (pulse * 6)
+      ..color = Color.fromARGB(glowAlpha, 36, 151, 255)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8 + (pulse * 9));
+    canvas.drawCircle(center, radius, glow);
+
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5 + (pulse * 2)
+      ..color = ringColor;
+    canvas.drawCircle(center, radius, ring);
   }
 
   @override
-  bool shouldRepaint(covariant _DriveOrbitPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _DriveOrbitPainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }

@@ -13,7 +13,8 @@
     <application
         android:label="DriveIt"
         android:name="${applicationName}"
-        android:icon="@drawable/driveit_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:stopWithTask="false">
 
         <meta-data

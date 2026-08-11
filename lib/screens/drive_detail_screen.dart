@@ -353,6 +353,13 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             color: const Color(0xff4bb7ff),
                           ),
                           _DetailStat(
+                            icon: Icons.directions_car_filled_rounded,
+                            title: 'Ortalama seyir hızı',
+                            value:
+                                '${widget.drive.drivingAverageSpeed.toStringAsFixed(1)} km/h',
+                            color: const Color(0xff4be0ca),
+                          ),
+                          _DetailStat(
                             icon: Icons.route_rounded,
                             title: 'Toplam mesafe',
                             value:
@@ -389,6 +396,87 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             title: 'Toplam duruş',
                             value: _stoppedDuration(),
                             color: const Color(0xffcf76ff),
+                          ),
+                          _DetailStat(
+                            icon: Icons.speed_rounded,
+                            title: 'Sert fren',
+                            value: '${widget.drive.hardBrakeCount}',
+                            color: const Color(0xffff5f77),
+                          ),
+                          _DetailStat(
+                            icon: Icons.rocket_launch_rounded,
+                            title: 'Ani hızlanma',
+                            value: '${widget.drive.hardAccelerationCount}',
+                            color: const Color(0xff4be0ca),
+                          ),
+                          _DetailStat(
+                            icon: Icons.turn_right_rounded,
+                            title: 'Viraj sayısı',
+                            value: '${widget.drive.cornerCount}',
+                            color: const Color(0xff6faeff),
+                          ),
+                          _DetailStat(
+                            icon: Icons.warning_amber_rounded,
+                            title: 'Keskin dönüş',
+                            value: '${widget.drive.sharpTurnCount}',
+                            color: const Color(0xffff9c3e),
+                          ),
+                          _DetailStat(
+                            icon: Icons.trending_up_rounded,
+                            title: 'Maksimum ivmelenme',
+                            value: widget.drive.maxAccelerationG > 0
+                                ? '${widget.drive.maxAccelerationG.toStringAsFixed(2)} G'
+                                : 'Veri yetersiz',
+                            color: const Color(0xff47d7ff),
+                          ),
+                          _DetailStat(
+                            icon: Icons.trending_down_rounded,
+                            title: 'En sert frenleme',
+                            value: widget.drive.maxBrakingG > 0
+                                ? '${widget.drive.maxBrakingG.toStringAsFixed(2)} G'
+                                : 'Veri yetersiz',
+                            color: const Color(0xffff668e),
+                          ),
+                          _DetailStat(
+                            icon: Icons.sports_motorsports_rounded,
+                            title: 'En yüksek viraj hızı',
+                            value: widget.drive.maxCorneringSpeed > 0
+                                ? '${widget.drive.maxCorneringSpeed.toStringAsFixed(1)} km/sa'
+                                : 'Veri yetersiz',
+                            color: const Color(0xffa66eff),
+                          ),
+                          _DetailStat(
+                            icon: Icons.landscape_rounded,
+                            title: 'Maksimum rakım',
+                            value: widget.drive.maxAltitude != 0
+                                ? '${widget.drive.maxAltitude.toStringAsFixed(0)} m'
+                                : 'Veri yetersiz',
+                            color: const Color(0xff73cf77),
+                          ),
+                          _DetailStat(
+                            icon: Icons.terrain_rounded,
+                            title: 'Rakım kazanımı',
+                            value: widget.drive.maxAltitude != 0
+                                ? '${widget.drive.altitudeGain.toStringAsFixed(0)} m'
+                                : 'Veri yetersiz',
+                            color: const Color(0xff4be0ca),
+                          ),
+                          _DetailStat(
+                            icon: Icons.timer_rounded,
+                            title: 'En hızlı 0–100',
+                            value: widget.drive.bestZeroToHundredSeconds == null
+                                ? 'Ölçülemedi'
+                                : '${widget.drive.bestZeroToHundredSeconds!.toStringAsFixed(1)} sn',
+                            color: const Color(0xff4e9fff),
+                          ),
+                          _DetailStat(
+                            icon: Icons.timer_rounded,
+                            title: 'En hızlı 60–100',
+                            value:
+                                widget.drive.bestSixtyToHundredSeconds == null
+                                ? 'Ölçülemedi'
+                                : '${widget.drive.bestSixtyToHundredSeconds!.toStringAsFixed(1)} sn',
+                            color: const Color(0xffb66dff),
                           ),
                         ];
                         return Wrap(

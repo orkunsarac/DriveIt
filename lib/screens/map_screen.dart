@@ -1,11 +1,10 @@
-import '../services/analysis/telemetry_session.dart';
-import '../services/analysis/flow_analyzer.dart';
-import '../services/telemetry/telemetry_recorder.dart';
 import '../services/route_service.dart';
 import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
 import '../models/route_point.dart';
+import '../models/drive_telemetry_sample.dart';
 import '../widgets/drive_summary_dialog.dart';
+import '../services/drive_telemetry_analyzer.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -30,7 +29,6 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   final SpeedService speedService = SpeedService();
   final RouteService routeService = RouteService();
-  final TelemetryRecorder telemetryRecorder = TelemetryRecorder();
 
   GoogleMapController? mapController;
 
@@ -52,6 +50,7 @@ class _MapScreenState extends State<MapScreen> {
   Timer? elapsedTimer;
   Timer? backgroundSyncTimer;
   int _backgroundRouteIndex = 0;
+  final List<DriveTelemetrySample> _telemetrySamples = [];
 
   Position? currentPosition;
   Set<Marker> locationMarkers = {};
@@ -66,6 +65,38 @@ class _MapScreenState extends State<MapScreen> {
   double _markerRotation = 0;
 
   void _syncRouteOverlay() => visiblePolylines = routeService.polylines;
+
+  void _recordTelemetry(Position position) {
+    _telemetrySamples.add(
+      DriveTelemetrySample(
+        latitude: position.latitude,
+        longitude: position.longitude,
+        speedMps: position.speed,
+        accuracyMeters: position.accuracy,
+        heading: position.heading,
+        altitudeMeters: position.altitude,
+        timestamp: position.timestamp,
+      ),
+    );
+  }
+
+  void _recordBackgroundTelemetry(Map<String, dynamic> point) {
+    final latitude = point['lat'];
+    final longitude = point['lng'];
+    final timestamp = point['time'];
+    if (latitude is! num || longitude is! num || timestamp is! num) return;
+    _telemetrySamples.add(
+      DriveTelemetrySample(
+        latitude: latitude.toDouble(),
+        longitude: longitude.toDouble(),
+        speedMps: (point['speed'] as num?)?.toDouble() ?? 0,
+        accuracyMeters: (point['accuracy'] as num?)?.toDouble() ?? 999,
+        heading: (point['heading'] as num?)?.toDouble() ?? -1,
+        altitudeMeters: (point['altitude'] as num?)?.toDouble() ?? 0,
+        timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp.toInt()),
+      ),
+    );
+  }
 
   bool get _hasStartMarker =>
       locationMarkers.any((marker) => marker.markerId.value == 'driveit_start');
@@ -438,6 +469,7 @@ class _MapScreenState extends State<MapScreen> {
       routeService.reset();
       visiblePolylines = {};
       _backgroundRouteIndex = 0;
+      _telemetrySamples.clear();
       locationMarkers = locationMarkers
           .where(
             (marker) =>
@@ -445,7 +477,6 @@ class _MapScreenState extends State<MapScreen> {
                 marker.markerId.value != 'driveit_finish',
           )
           .toSet();
-      telemetryRecorder.clear();
 
       isDriving = true;
 
@@ -473,6 +504,7 @@ class _MapScreenState extends State<MapScreen> {
         final newPoints = saved.skip(_backgroundRouteIndex).toList();
         _backgroundRouteIndex = saved.length;
         for (final point in newPoints) {
+          _recordBackgroundTelemetry(point);
           final latitude = point['lat'];
           final longitude = point['lng'];
           final accuracy = point['accuracy'];
@@ -507,6 +539,7 @@ class _MapScreenState extends State<MapScreen> {
             intervalDuration: Duration(milliseconds: 500),
           ),
         ).listen((Position position) {
+          _recordTelemetry(position);
           setState(() {
             _driveOrigin ??= LatLng(position.latitude, position.longitude);
             speedService.update(position);
@@ -516,12 +549,6 @@ class _MapScreenState extends State<MapScreen> {
               heading: position.heading,
             );
             _maybeSetStartMarker(position.latitude, position.longitude);
-
-            telemetryRecorder.add(
-              position: position,
-              distance: routeService.lastSegmentDistance,
-              acceleration: 0,
-            );
 
             currentSpeed = speedService.currentSpeed;
             maxSpeed = speedService.maxSpeed;
@@ -551,6 +578,7 @@ class _MapScreenState extends State<MapScreen> {
       _backgroundRouteIndex,
     );
     for (final point in remainingBackgroundPoints) {
+      _recordBackgroundTelemetry(point);
       final latitude = point['lat'];
       final longitude = point['lng'];
       final accuracy = point['accuracy'];
@@ -588,19 +616,10 @@ class _MapScreenState extends State<MapScreen> {
       setState(() => _setFinishMarker(route));
     }
 
-    final session = TelemetrySession(samples: telemetryRecorder.samples);
-
-    final report = FlowAnalyzer().analyze(session);
-
-    debugPrint("========== FLOW ==========");
-    debugPrint("Score : ${report.score.toStringAsFixed(1)}");
-    debugPrint("Cruise : ${report.cruiseSpeed.toStringAsFixed(1)} km/h");
-    debugPrint("Stability : ${report.speedStability.toStringAsFixed(1)}");
-    debugPrint("Oscillation : ${report.oscillationCount}");
+    final metrics = const DriveTelemetryAnalyzer().analyze(_telemetrySamples);
 
     await DriveSummaryDialog.show(
       context,
-      flowReport: report,
       totalDistance: routeService.distance,
       driveDuration: driveDuration,
       averageSpeed: averageSpeed,
@@ -609,9 +628,8 @@ class _MapScreenState extends State<MapScreen> {
       route: route,
       stopCount: stopCount,
       stoppedSeconds: stoppedSeconds,
+      metrics: metrics,
     );
-
-    debugPrint("Telemetry Samples: ${telemetryRecorder.samples.length}");
   }
 
   static const CameraPosition initialPosition = CameraPosition(
@@ -648,6 +666,7 @@ class _MapScreenState extends State<MapScreen> {
         });
         final savedRoute = await ForegroundService.readBackgroundRoute();
         for (final point in savedRoute) {
+          _recordBackgroundTelemetry(point);
           final latitude = point['lat'];
           final longitude = point['lng'];
           final accuracy = point['accuracy'];
@@ -678,6 +697,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ).listen((position) {
               if (!mounted) return;
+              _recordTelemetry(position);
               setState(() {
                 _driveOrigin ??= LatLng(position.latitude, position.longitude);
                 speedService.update(position);
@@ -701,6 +721,7 @@ class _MapScreenState extends State<MapScreen> {
           _backgroundRouteIndex = saved.length;
           setState(() {
             for (final point in newPoints) {
+              _recordBackgroundTelemetry(point);
               final latitude = point['lat'];
               final longitude = point['lng'];
               final accuracy = point['accuracy'];

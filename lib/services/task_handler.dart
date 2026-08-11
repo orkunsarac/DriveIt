@@ -21,30 +21,32 @@ class DriveTaskHandler extends TaskHandler {
     _isStopped = true;
     _currentStopRegistered = false;
     _stationarySince = timestamp;
-    _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
-        intervalDuration: Duration(milliseconds: 500),
-      ),
-    ).listen((position) {
-      _updateStopState(position);
-      if (_shouldRecord(position)) {
-        _route.add({
-          'lat': position.latitude,
-          'lng': position.longitude,
-          'accuracy': position.accuracy,
-          'speed': position.speed,
-          'heading': position.heading,
-          'time': position.timestamp.millisecondsSinceEpoch,
+    _positionSubscription =
+        Geolocator.getPositionStream(
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0,
+            intervalDuration: Duration(milliseconds: 500),
+          ),
+        ).listen((position) {
+          _updateStopState(position);
+          if (_shouldRecord(position)) {
+            _route.add({
+              'lat': position.latitude,
+              'lng': position.longitude,
+              'accuracy': position.accuracy,
+              'speed': position.speed,
+              'heading': position.heading,
+              'altitude': position.altitude,
+              'time': position.timestamp.millisecondsSinceEpoch,
+            });
+            _lastRecordedPosition = position;
+            FlutterForegroundTask.saveData(
+              key: 'driveit_background_route',
+              value: jsonEncode(_route),
+            );
+          }
         });
-        _lastRecordedPosition = position;
-        FlutterForegroundTask.saveData(
-          key: 'driveit_background_route',
-          value: jsonEncode(_route),
-        );
-      }
-    });
   }
 
   bool _shouldRecord(Position position) {
@@ -83,7 +85,8 @@ class DriveTaskHandler extends TaskHandler {
         _stationarySince = null;
       } else {
         _stationarySince ??= now;
-        if (!_currentStopRegistered && now.difference(_stationarySince!).inSeconds >= 3) {
+        if (!_currentStopRegistered &&
+            now.difference(_stationarySince!).inSeconds >= 3) {
           _currentStopRegistered = true;
           _stopCount++;
         }
@@ -98,11 +101,18 @@ class DriveTaskHandler extends TaskHandler {
     } else {
       _stationarySince = null;
     }
-    final activeStoppedSeconds = _isStopped && _currentStopRegistered && _stationarySince != null
+    final activeStoppedSeconds =
+        _isStopped && _currentStopRegistered && _stationarySince != null
         ? now.difference(_stationarySince!).inSeconds
         : 0;
-    FlutterForegroundTask.saveData(key: 'driveit_stop_count', value: _stopCount);
-    FlutterForegroundTask.saveData(key: 'driveit_stopped_seconds', value: _stoppedSeconds + activeStoppedSeconds);
+    FlutterForegroundTask.saveData(
+      key: 'driveit_stop_count',
+      value: _stopCount,
+    );
+    FlutterForegroundTask.saveData(
+      key: 'driveit_stopped_seconds',
+      value: _stoppedSeconds + activeStoppedSeconds,
+    );
   }
 
   @override

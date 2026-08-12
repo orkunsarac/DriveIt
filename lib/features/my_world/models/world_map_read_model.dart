@@ -46,6 +46,7 @@ class MyWorldMapData {
     required this.traces,
     required this.totalActiveDistanceMeters,
     required this.processedDriveCount,
+    required this.processedDriveSessionIds,
     required this.skippedBrokenTraceCount,
     required this.viewport,
   });
@@ -54,6 +55,7 @@ class MyWorldMapData {
   final List<ResolvedWorldTrace> traces;
   final double totalActiveDistanceMeters;
   final int processedDriveCount;
+  final List<String> processedDriveSessionIds;
   final int skippedBrokenTraceCount;
   final WorldMapViewport? viewport;
 

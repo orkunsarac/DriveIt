@@ -61,11 +61,7 @@ void main() {
         MatchedRoadPoint(latitude: 41.2, longitude: 29.2),
         MatchedRoadPoint(latitude: 41.2, longitude: 29.21),
       ]);
-      final road = _road(
-        'road',
-        'drive',
-        sections: [first, second],
-      );
+      final road = _road('road', 'drive', sections: [first, second]);
       final traces = [
         _trace(road: road, id: 'a', start: 0, end: first.distanceMeters),
         _trace(
@@ -151,20 +147,26 @@ void main() {
       expect(data.hasOnlyBrokenReferences, isTrue);
     });
 
-    test('distance and unique processed-drive statistics are correct', () async {
-      final road = _road('road', 'drive');
-      final half = road.validDistanceMeters / 2;
-      final data = await _service(
-        roads: [road],
-        traces: [
-          _trace(road: road, id: 'one', start: 0, end: half),
-          _trace(road: road, id: 'two', start: half, end: half * 2),
-        ],
-        processed: const ['drive', 'drive', 'other-drive'],
-      ).load();
-      expect(data.totalActiveDistanceMeters, closeTo(road.validDistanceMeters, .1));
-      expect(data.processedDriveCount, 2);
-    });
+    test(
+      'distance and unique processed-drive statistics are correct',
+      () async {
+        final road = _road('road', 'drive');
+        final half = road.validDistanceMeters / 2;
+        final data = await _service(
+          roads: [road],
+          traces: [
+            _trace(road: road, id: 'one', start: 0, end: half),
+            _trace(road: road, id: 'two', start: half, end: half * 2),
+          ],
+          processed: const ['drive', 'drive', 'other-drive'],
+        ).load();
+        expect(
+          data.totalActiveDistanceMeters,
+          closeTo(road.validDistanceMeters, .1),
+        );
+        expect(data.processedDriveCount, 2);
+      },
+    );
 
     test('same source keeps a variant and adjacent sources differ', () {
       final road = _road('road', 'drive-a');
@@ -178,12 +180,7 @@ void main() {
           start: length / 3,
           end: length * 2 / 3,
         ),
-        _trace(
-          road: road,
-          id: 'a2',
-          start: length * 2 / 3,
-          end: length,
-        ),
+        _trace(road: road, id: 'a2', start: length * 2 / 3, end: length),
       ];
       const assigner = WorldTraceVisualVariants();
       final first = assigner.assign(traces);
@@ -238,12 +235,12 @@ void main() {
             traces: [],
             totalActiveDistanceMeters: 0,
             processedDriveCount: 0,
+            processedDriveSessionIds: [],
             skippedBrokenTraceCount: 0,
             viewport: null,
           ),
-          myWorldBuilder: (_) => const Scaffold(
-            key: Key('my_world_destination'),
-          ),
+          myWorldBuilder: (_) =>
+              const Scaffold(key: Key('my_world_destination')),
         ),
       ),
     );
@@ -278,7 +275,8 @@ ValidatedRoad _road(
   List<MatchedRoadSection>? sections,
   String directionKey = 'eastbound',
 }) {
-  final roadSections = sections ??
+  final roadSections =
+      sections ??
       [
         _section('$id:geometry', const [
           MatchedRoadPoint(latitude: 41, longitude: 29),
@@ -345,18 +343,18 @@ ActiveWorldTrace _trace({
     startOffsetMeters: start,
     endOffsetMeters: end,
     directionKey: road.directionKey,
-    minLatitude: points.map((point) => point.latitude).reduce(
-      (a, b) => a < b ? a : b,
-    ),
-    maxLatitude: points.map((point) => point.latitude).reduce(
-      (a, b) => a > b ? a : b,
-    ),
-    minLongitude: points.map((point) => point.longitude).reduce(
-      (a, b) => a < b ? a : b,
-    ),
-    maxLongitude: points.map((point) => point.longitude).reduce(
-      (a, b) => a > b ? a : b,
-    ),
+    minLatitude: points
+        .map((point) => point.latitude)
+        .reduce((a, b) => a < b ? a : b),
+    maxLatitude: points
+        .map((point) => point.latitude)
+        .reduce((a, b) => a > b ? a : b),
+    minLongitude: points
+        .map((point) => point.longitude)
+        .reduce((a, b) => a < b ? a : b),
+    maxLongitude: points
+        .map((point) => point.longitude)
+        .reduce((a, b) => a > b ? a : b),
     createdAt: DateTime.utc(2026, 8, 12),
     updatedAt: DateTime.utc(2026, 8, 12),
     processingVersion: 2,

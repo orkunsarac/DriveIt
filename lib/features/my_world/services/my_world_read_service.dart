@@ -13,8 +13,7 @@ class MyWorldReadService {
     required MyWorldIndexRepository indexRepository,
     WorldTraceGeometryResolver geometryResolver =
         const WorldTraceGeometryResolver(),
-    WorldTraceVisualVariants visualVariants =
-        const WorldTraceVisualVariants(),
+    WorldTraceVisualVariants visualVariants = const WorldTraceVisualVariants(),
   }) => MyWorldReadService._(
     repository,
     indexRepository,
@@ -55,17 +54,11 @@ class MyWorldReadService {
         continue;
       }
       resolved.add(
-        ResolvedWorldTrace(
-          trace: trace,
-          geometry: geometry,
-          visualVariant: 0,
-        ),
+        ResolvedWorldTrace(trace: trace, geometry: geometry, visualVariant: 0),
       );
     }
 
-    final variants = _visualVariants.assign(
-      resolved.map((item) => item.trace),
-    );
+    final variants = _visualVariants.assign(resolved.map((item) => item.trace));
     final styled = resolved
         .map(
           (item) => item.withVisualVariant(
@@ -81,6 +74,9 @@ class MyWorldReadService {
         (sum, trace) => sum + trace.distanceMeters,
       ),
       processedDriveCount: snapshot.processedDriveSessionIds.toSet().length,
+      processedDriveSessionIds: List.unmodifiable(
+        snapshot.processedDriveSessionIds.toSet().toList()..sort(),
+      ),
       skippedBrokenTraceCount: brokenReferences,
       viewport: _dominantViewport(styled),
     );
@@ -109,10 +105,8 @@ class MyWorldReadService {
       return a.key.$2 <= b.key.$2 ? a : b;
     }).key;
     final cluster = traces.where((item) {
-      final latitude =
-          (item.trace.minLatitude + item.trace.maxLatitude) / 2;
-      final longitude =
-          (item.trace.minLongitude + item.trace.maxLongitude) / 2;
+      final latitude = (item.trace.minLatitude + item.trace.maxLatitude) / 2;
+      final longitude = (item.trace.minLongitude + item.trace.maxLongitude) / 2;
       final cell = (
         (latitude / cellSizeDegrees).floor(),
         (longitude / cellSizeDegrees).floor(),

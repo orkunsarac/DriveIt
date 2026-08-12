@@ -8,6 +8,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 
 import 'models/drive_session.dart';
 import 'features/my_world/persistence/my_world_hive.dart';
+import 'features/my_world/services/my_world_settings_service.dart';
 import 'services/drive_score_storage_service.dart';
 import 'services/drive_telemetry_storage_service.dart';
 import 'screens/home_screen.dart';
@@ -36,6 +37,7 @@ void main() async {
   await DriveTelemetryHive.openBox(Hive);
   await DriveScoreHive.openBox(Hive);
   await MyWorldHive.openBoxes(Hive);
+  await HiveMyWorldSettingsStore.openBox(Hive);
 
   await initializeDateFormatting('tr_TR');
 

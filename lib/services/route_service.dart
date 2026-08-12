@@ -1,4 +1,5 @@
 import '../models/route_point.dart';
+import '../models/canonical_telemetry_point.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -27,11 +28,7 @@ class RouteService {
     );
   }
 
-  bool addCoordinate(
-    double latitude,
-    double longitude, {
-    double? accuracy,
-  }) {
+  bool addCoordinate(double latitude, double longitude, {double? accuracy}) {
     final point = LatLng(latitude, longitude);
     _lastSegmentDistance = 0;
     if (accuracy != null && (!accuracy.isFinite || accuracy > 30)) return false;
@@ -60,6 +57,23 @@ class RouteService {
     return true;
   }
 
+  /// Adds an already validated point without applying a second distance
+  /// policy. Stationary telemetry remains available to analysis but is not
+  /// duplicated in the visual/persisted route geometry.
+  bool addCanonicalPoint(CanonicalTelemetryPoint point) {
+    final coordinate = LatLng(point.latitude, point.longitude);
+    _lastSegmentDistance = 0;
+    if (_routePoints.isEmpty) {
+      _routePoints.add(coordinate);
+      return true;
+    }
+    if (point.distanceFromPreviousMeters <= 0) return false;
+    _lastSegmentDistance = point.distanceFromPreviousMeters;
+    _totalDistance += point.distanceFromPreviousMeters;
+    _routePoints.add(coordinate);
+    return true;
+  }
+
   Set<Polyline> buildPolylines() {
     return {
       Polyline(
@@ -76,15 +90,11 @@ class RouteService {
 
   List<RoutePoint> getRouteForSave() {
     return _routePoints
-        .map(
-          (p) => RoutePoint(
-            latitude: p.latitude,
-            longitude: p.longitude,
-          ),
-        )
+        .map((p) => RoutePoint(latitude: p.latitude, longitude: p.longitude))
         .toList();
   }
-    Set<Polyline> get polylines => buildPolylines();
 
-    double get distance => _totalDistance;
+  Set<Polyline> get polylines => buildPolylines();
+
+  double get distance => _totalDistance;
 }

@@ -4,12 +4,15 @@ import 'dart:convert';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
 
+import 'canonical_telemetry_pipeline.dart';
+
 class DriveTaskHandler extends TaskHandler {
   int seconds = 0;
   StreamSubscription<Position>? _positionSubscription;
   final List<Map<String, dynamic>> _route = [];
+  final CanonicalTelemetryPipeline _telemetryPipeline =
+      CanonicalTelemetryPipeline();
   Position? _motionAnchor;
-  Position? _lastRecordedPosition;
   DateTime? _stationarySince;
   bool _isStopped = true;
   bool _currentStopRegistered = false;
@@ -18,6 +21,7 @@ class DriveTaskHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    _telemetryPipeline.reset();
     _isStopped = true;
     _currentStopRegistered = false;
     _stationarySince = timestamp;
@@ -30,37 +34,25 @@ class DriveTaskHandler extends TaskHandler {
           ),
         ).listen((position) {
           _updateStopState(position);
-          if (_shouldRecord(position)) {
-            _route.add({
-              'lat': position.latitude,
-              'lng': position.longitude,
-              'accuracy': position.accuracy,
-              'speed': position.speed,
-              'heading': position.heading,
-              'altitude': position.altitude,
-              'time': position.timestamp.millisecondsSinceEpoch,
-            });
-            _lastRecordedPosition = position;
+          final canonical = _telemetryPipeline.add(
+            RawTelemetryInput(
+              latitude: position.latitude,
+              longitude: position.longitude,
+              timestamp: position.timestamp,
+              speedMps: position.speed,
+              headingDegrees: position.heading,
+              altitudeMeters: position.altitude,
+              accuracyMeters: position.accuracy,
+            ),
+          );
+          if (canonical != null) {
+            _route.add(canonical.toMap());
             FlutterForegroundTask.saveData(
               key: 'driveit_background_route',
               value: jsonEncode(_route),
             );
           }
         });
-  }
-
-  bool _shouldRecord(Position position) {
-    if (!position.accuracy.isFinite || position.accuracy > 30) return false;
-    final last = _lastRecordedPosition;
-    if (last == null) return true;
-    if (_isStopped) return false;
-    final distance = Geolocator.distanceBetween(
-      last.latitude,
-      last.longitude,
-      position.latitude,
-      position.longitude,
-    );
-    return distance >= 5 && distance <= 120;
   }
 
   void _updateStopState(Position position) {

@@ -7,6 +7,9 @@ import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'models/drive_session.dart';
+import 'features/my_world/persistence/my_world_hive.dart';
+import 'services/drive_score_storage_service.dart';
+import 'services/drive_telemetry_storage_service.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
 
@@ -20,6 +23,9 @@ void main() async {
 
   Hive.registerAdapter(DriveSessionAdapter());
   Hive.registerAdapter(RoutePointAdapter());
+  DriveTelemetryHive.registerAdapters(Hive);
+  DriveScoreHive.registerAdapters(Hive);
+  MyWorldHive.registerAdapters(Hive);
 
   await Hive.openBox<DriveSession>('drives');
   await Hive.openBox<dynamic>('career_totals');
@@ -27,6 +33,9 @@ void main() async {
   // Drive names live in their own box so the existing DriveSession adapter
   // and all previously stored field indexes remain untouched.
   await Hive.openBox<dynamic>('drive_names');
+  await DriveTelemetryHive.openBox(Hive);
+  await DriveScoreHive.openBox(Hive);
+  await MyWorldHive.openBoxes(Hive);
 
   await initializeDateFormatting('tr_TR');
 

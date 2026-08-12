@@ -1,10 +1,11 @@
 import '../services/route_service.dart';
-import '../services/speed_service.dart';
 import '../services/foreground_service.dart';
 import '../models/route_point.dart';
 import '../models/drive_telemetry_sample.dart';
+import '../models/canonical_telemetry_point.dart';
 import '../widgets/drive_summary_dialog.dart';
 import '../services/drive_telemetry_analyzer.dart';
+import '../theme/drive_map_visuals.dart';
 import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -27,7 +28,6 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  final SpeedService speedService = SpeedService();
   final RouteService routeService = RouteService();
 
   GoogleMapController? mapController;
@@ -51,6 +51,7 @@ class _MapScreenState extends State<MapScreen> {
   Timer? backgroundSyncTimer;
   int _backgroundRouteIndex = 0;
   final List<DriveTelemetrySample> _telemetrySamples = [];
+  final List<CanonicalTelemetryPoint> _canonicalTelemetry = [];
 
   Position? currentPosition;
   Set<Marker> locationMarkers = {};
@@ -63,39 +64,41 @@ class _MapScreenState extends State<MapScreen> {
   LatLng? _lastMarkerPosition;
   LatLng? _driveOrigin;
   double _markerRotation = 0;
+  bool _isCanonicalMoving = false;
 
   void _syncRouteOverlay() => visiblePolylines = routeService.polylines;
 
-  void _recordTelemetry(Position position) {
+  CanonicalTelemetryPoint? _recordBackgroundTelemetry(
+    Map<String, dynamic> value,
+  ) {
+    final point = CanonicalTelemetryPoint.fromMap(value);
+    if (point == null) return null;
+    if (_canonicalTelemetry.isNotEmpty &&
+        !_canonicalTelemetry.last.timestamp.isBefore(point.timestamp)) {
+      return null;
+    }
+    _canonicalTelemetry.add(point);
     _telemetrySamples.add(
       DriveTelemetrySample(
-        latitude: position.latitude,
-        longitude: position.longitude,
-        speedMps: position.speed,
-        accuracyMeters: position.accuracy,
-        heading: position.heading,
-        altitudeMeters: position.altitude,
-        timestamp: position.timestamp,
+        latitude: point.latitude,
+        longitude: point.longitude,
+        speedMps: point.speedMps,
+        accuracyMeters: point.accuracyMeters,
+        heading: point.headingDegrees,
+        altitudeMeters: point.altitudeMeters,
+        timestamp: point.timestamp,
       ),
     );
+    return point;
   }
 
-  void _recordBackgroundTelemetry(Map<String, dynamic> point) {
-    final latitude = point['lat'];
-    final longitude = point['lng'];
-    final timestamp = point['time'];
-    if (latitude is! num || longitude is! num || timestamp is! num) return;
-    _telemetrySamples.add(
-      DriveTelemetrySample(
-        latitude: latitude.toDouble(),
-        longitude: longitude.toDouble(),
-        speedMps: (point['speed'] as num?)?.toDouble() ?? 0,
-        accuracyMeters: (point['accuracy'] as num?)?.toDouble() ?? 999,
-        heading: (point['heading'] as num?)?.toDouble() ?? -1,
-        altitudeMeters: (point['altitude'] as num?)?.toDouble() ?? 0,
-        timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp.toInt()),
-      ),
-    );
+  void _consumeCanonicalPoint(CanonicalTelemetryPoint point) {
+    routeService.addCanonicalPoint(point);
+    currentSpeed = point.speedMps * 3.6;
+    _isCanonicalMoving =
+        point.speedMps >= 1.5 || point.distanceFromPreviousMeters > 0;
+    if (currentSpeed > maxSpeed) maxSpeed = currentSpeed;
+    _syncRouteOverlay();
   }
 
   bool get _hasStartMarker =>
@@ -120,7 +123,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _maybeSetStartMarker(double latitude, double longitude) {
-    if (_hasStartMarker || !speedService.isMoving || _driveOrigin == null) {
+    if (_hasStartMarker || !_isCanonicalMoving || _driveOrigin == null) {
       return;
     }
     final distanceFromOrigin = Geolocator.distanceBetween(
@@ -247,43 +250,8 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _createArrowIcon([double scale = 1]) async {
-    final recorder = ui.PictureRecorder();
-    final canvas = ui.Canvas(recorder);
-    const pixelRatio = 4.0;
-    final size = 36.0 * scale;
-    final glow = ui.Paint()
-      ..color = const ui.Color(0x99ff1744)
-      ..maskFilter = const ui.MaskFilter.blur(ui.BlurStyle.normal, 8);
-    canvas.scale(pixelRatio);
-    final path = ui.Path()
-      ..moveTo(size / 2, 4)
-      ..lineTo(size - 9, size - 11)
-      ..lineTo(size / 2, size - 19)
-      ..lineTo(9, size - 11)
-      ..close();
-    canvas.drawPath(path, glow);
-    final fill = ui.Paint()
-      ..shader = ui.Gradient.linear(
-        const ui.Offset(0, 0),
-        ui.Offset(size, size),
-        [const ui.Color(0xffff4d6d), const ui.Color(0xffd50032)],
-      );
-    canvas.drawPath(path, fill);
-    final edge = ui.Paint()
-      ..style = ui.PaintingStyle.stroke
-      ..strokeWidth = 2
-      ..color = const ui.Color(0xffffc1cc);
-    canvas.drawPath(path, edge);
-    final image = await recorder.endRecording().toImage(
-      (size * pixelRatio).toInt(),
-      (size * pixelRatio).toInt(),
-    );
-    final data = await image.toByteData(format: ui.ImageByteFormat.png);
-    if (data != null && mounted) {
-      final icon = BitmapDescriptor.bytes(
-        Uint8List.view(data.buffer),
-        imagePixelRatio: pixelRatio,
-      );
+    final icon = await DriveMapVisuals.createNavigationArrow(scale: scale);
+    if (mounted) {
       setState(() {
         _arrowIcon = icon;
         if (_lastMarkerPosition != null) {
@@ -294,8 +262,8 @@ class _MapScreenState extends State<MapScreen> {
             Marker(
               markerId: const MarkerId('driveit_current_location'),
               position: _lastMarkerPosition!,
-              icon: speedService.isMoving ? icon : (_stationaryIcon ?? icon),
-              anchor: speedService.isMoving
+              icon: _isCanonicalMoving ? icon : (_stationaryIcon ?? icon),
+              anchor: _isCanonicalMoving
                   ? const Offset(.5, .72)
                   : const Offset(.5, .5),
               flat: true,
@@ -313,7 +281,7 @@ class _MapScreenState extends State<MapScreen> {
     double? heading,
   }) {
     final next = LatLng(latitude, longitude);
-    final moving = speedService.isMoving;
+    final moving = _isCanonicalMoving;
     if (moving &&
         heading != null &&
         heading.isFinite &&
@@ -465,11 +433,11 @@ class _MapScreenState extends State<MapScreen> {
     await ForegroundService.start();
 
     setState(() {
-      speedService.reset();
       routeService.reset();
       visiblePolylines = {};
       _backgroundRouteIndex = 0;
       _telemetrySamples.clear();
+      _canonicalTelemetry.clear();
       locationMarkers = locationMarkers
           .where(
             (marker) =>
@@ -488,6 +456,7 @@ class _MapScreenState extends State<MapScreen> {
       elapsedSeconds = 0;
       stopCount = 0;
       stoppedSeconds = 0;
+      _isCanonicalMoving = false;
     });
     elapsedTimer?.cancel();
     elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -503,19 +472,9 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         final newPoints = saved.skip(_backgroundRouteIndex).toList();
         _backgroundRouteIndex = saved.length;
-        for (final point in newPoints) {
-          _recordBackgroundTelemetry(point);
-          final latitude = point['lat'];
-          final longitude = point['lng'];
-          final accuracy = point['accuracy'];
-          if (latitude is num && longitude is num) {
-            routeService.addCoordinate(
-              latitude.toDouble(),
-              longitude.toDouble(),
-              accuracy: accuracy is num ? accuracy.toDouble() : null,
-            );
-            _syncRouteOverlay();
-          }
+        for (final value in newPoints) {
+          final point = _recordBackgroundTelemetry(value);
+          if (point != null) _consumeCanonicalPoint(point);
         }
         final last = saved.last;
         final latitude = last['lat'];
@@ -539,19 +498,14 @@ class _MapScreenState extends State<MapScreen> {
             intervalDuration: Duration(milliseconds: 500),
           ),
         ).listen((Position position) {
-          _recordTelemetry(position);
           setState(() {
             _driveOrigin ??= LatLng(position.latitude, position.longitude);
-            speedService.update(position);
             _updateLocationMarker(
               position.latitude,
               position.longitude,
               heading: position.heading,
             );
             _maybeSetStartMarker(position.latitude, position.longitude);
-
-            currentSpeed = speedService.currentSpeed;
-            maxSpeed = speedService.maxSpeed;
           });
 
           mapController?.animateCamera(
@@ -577,18 +531,9 @@ class _MapScreenState extends State<MapScreen> {
     final remainingBackgroundPoints = backgroundRoute.skip(
       _backgroundRouteIndex,
     );
-    for (final point in remainingBackgroundPoints) {
-      _recordBackgroundTelemetry(point);
-      final latitude = point['lat'];
-      final longitude = point['lng'];
-      final accuracy = point['accuracy'];
-      if (latitude is num && longitude is num) {
-        routeService.addCoordinate(
-          latitude.toDouble(),
-          longitude.toDouble(),
-          accuracy: accuracy is num ? accuracy.toDouble() : null,
-        );
-      }
+    for (final value in remainingBackgroundPoints) {
+      final point = _recordBackgroundTelemetry(value);
+      if (point != null) _consumeCanonicalPoint(point);
     }
     _backgroundRouteIndex = backgroundRoute.length;
     _syncRouteOverlay();
@@ -629,6 +574,7 @@ class _MapScreenState extends State<MapScreen> {
       stopCount: stopCount,
       stoppedSeconds: stoppedSeconds,
       metrics: metrics,
+      telemetry: _canonicalTelemetry,
     );
   }
 
@@ -665,19 +611,9 @@ class _MapScreenState extends State<MapScreen> {
           );
         });
         final savedRoute = await ForegroundService.readBackgroundRoute();
-        for (final point in savedRoute) {
-          _recordBackgroundTelemetry(point);
-          final latitude = point['lat'];
-          final longitude = point['lng'];
-          final accuracy = point['accuracy'];
-          if (latitude is num && longitude is num) {
-            routeService.addCoordinate(
-              latitude.toDouble(),
-              longitude.toDouble(),
-              accuracy: accuracy is num ? accuracy.toDouble() : null,
-            );
-            _syncRouteOverlay();
-          }
+        for (final value in savedRoute) {
+          final point = _recordBackgroundTelemetry(value);
+          if (point != null) _consumeCanonicalPoint(point);
         }
         _backgroundRouteIndex = savedRoute.length;
         if (savedRoute.isNotEmpty &&
@@ -697,18 +633,14 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ).listen((position) {
               if (!mounted) return;
-              _recordTelemetry(position);
               setState(() {
                 _driveOrigin ??= LatLng(position.latitude, position.longitude);
-                speedService.update(position);
                 _updateLocationMarker(
                   position.latitude,
                   position.longitude,
                   heading: position.heading,
                 );
                 _maybeSetStartMarker(position.latitude, position.longitude);
-                currentSpeed = speedService.currentSpeed;
-                maxSpeed = speedService.maxSpeed;
               });
             });
         backgroundSyncTimer = Timer.periodic(const Duration(seconds: 1), (
@@ -720,20 +652,10 @@ class _MapScreenState extends State<MapScreen> {
           final newPoints = saved.skip(_backgroundRouteIndex).toList();
           _backgroundRouteIndex = saved.length;
           setState(() {
-            for (final point in newPoints) {
-              _recordBackgroundTelemetry(point);
-              final latitude = point['lat'];
-              final longitude = point['lng'];
-              final accuracy = point['accuracy'];
-              if (latitude is num && longitude is num) {
-                routeService.addCoordinate(
-                  latitude.toDouble(),
-                  longitude.toDouble(),
-                  accuracy: accuracy is num ? accuracy.toDouble() : null,
-                );
-              }
+            for (final value in newPoints) {
+              final point = _recordBackgroundTelemetry(value);
+              if (point != null) _consumeCanonicalPoint(point);
             }
-            _syncRouteOverlay();
           });
         });
         if (widget.finishOnOpen) {
@@ -775,6 +697,7 @@ class _MapScreenState extends State<MapScreen> {
                 }
               },
               polylines: visiblePolylines,
+              style: DriveMapVisuals.darkMapStyle,
               onMapCreated: (controller) {
                 mapController = controller;
                 final position = currentPosition;
@@ -786,9 +709,6 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   );
                 }
-                controller.setMapStyle(
-                  '''[{"elementType":"geometry","stylers":[{"color":"#0b172b"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#91a4c2"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#0b172b"}]},{"featureType":"road","elementType":"geometry","stylers":[{"color":"#1d3150"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#061124"}]},{"featureType":"poi","stylers":[{"visibility":"off"}]}]''',
-                );
               },
             ),
 

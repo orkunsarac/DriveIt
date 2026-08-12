@@ -5,8 +5,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../features/drive_replay/drive_replay_screen.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
+import '../theme/drive_map_visuals.dart';
+import '../widgets/drive_score_summary_section.dart';
 
 class DriveDetailScreen extends StatefulWidget {
   final DriveSession drive;
@@ -19,17 +22,6 @@ class DriveDetailScreen extends StatefulWidget {
 
 class _DriveDetailScreenState extends State<DriveDetailScreen> {
   static const _background = Color(0xff020c1d);
-  static const _blue = Color(0xff3b93ff);
-  static const _darkMapStyle = '''[
-    {"elementType":"geometry","stylers":[{"color":"#0b172b"}]},
-    {"elementType":"labels.text.fill","stylers":[{"color":"#91a4c2"}]},
-    {"elementType":"labels.text.stroke","stylers":[{"color":"#0b172b"}]},
-    {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1d3150"}]},
-    {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#12233d"}]},
-    {"featureType":"water","elementType":"geometry","stylers":[{"color":"#061124"}]},
-    {"featureType":"poi","stylers":[{"visibility":"off"}]},
-    {"featureType":"transit","stylers":[{"visibility":"off"}]}
-  ]''';
 
   GoogleMapController? _mapController;
   late final Set<Polyline> _polylines;
@@ -62,8 +54,8 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
         Polyline(
           polylineId: const PolylineId('drive'),
           points: points,
-          width: 6,
-          color: _blue,
+          width: DriveMapVisuals.activeRouteWidth,
+          color: DriveMapVisuals.activeRouteColor,
           jointType: JointType.round,
           startCap: Cap.roundCap,
           endCap: Cap.roundCap,
@@ -283,43 +275,88 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                       ),
                       borderRadius: BorderRadius.circular(22),
                     ),
-                    child: GoogleMap(
-                      initialCameraPosition: CameraPosition(
-                        target: widget.drive.route.isNotEmpty
-                            ? LatLng(
-                                widget.drive.route.first.latitude,
-                                widget.drive.route.first.longitude,
-                              )
-                            : const LatLng(39.925533, 32.866287),
-                        zoom: 14,
-                      ),
-                      myLocationButtonEnabled: false,
-                      zoomControlsEnabled: false,
-                      zoomGesturesEnabled: true,
-                      scrollGesturesEnabled: true,
-                      rotateGesturesEnabled: true,
-                      tiltGesturesEnabled: true,
-                      // The detail page is a scroll view. Eagerly claim
-                      // gestures inside the map so vertical drags are not
-                      // routed to the page's parent scroll view.
-                      gestureRecognizers:
-                          <Factory<OneSequenceGestureRecognizer>>{
-                            Factory<OneSequenceGestureRecognizer>(
-                              () => EagerGestureRecognizer(),
-                            ),
+                    child: Stack(
+                      children: [
+                        GoogleMap(
+                          initialCameraPosition: CameraPosition(
+                            target: widget.drive.route.isNotEmpty
+                                ? LatLng(
+                                    widget.drive.route.first.latitude,
+                                    widget.drive.route.first.longitude,
+                                  )
+                                : const LatLng(39.925533, 32.866287),
+                            zoom: 14,
+                          ),
+                          myLocationButtonEnabled: false,
+                          zoomControlsEnabled: false,
+                          zoomGesturesEnabled: true,
+                          scrollGesturesEnabled: true,
+                          rotateGesturesEnabled: true,
+                          tiltGesturesEnabled: true,
+                          // The detail page is a scroll view. Eagerly claim
+                          // gestures inside the map so vertical drags are not
+                          // routed to the page's parent scroll view.
+                          gestureRecognizers:
+                              <Factory<OneSequenceGestureRecognizer>>{
+                                Factory<OneSequenceGestureRecognizer>(
+                                  () => EagerGestureRecognizer(),
+                                ),
+                              },
+                          compassEnabled: true,
+                          mapToolbarEnabled: false,
+                          style: DriveMapVisuals.darkMapStyle,
+                          polylines: _polylines,
+                          markers: _markers,
+                          onMapCreated: (controller) {
+                            _mapController = controller;
+                            Future.delayed(
+                              const Duration(milliseconds: 350),
+                              _fitRoute,
+                            );
                           },
-                      compassEnabled: true,
-                      mapToolbarEnabled: false,
-                      style: _darkMapStyle,
-                      polylines: _polylines,
-                      markers: _markers,
-                      onMapCreated: (controller) {
-                        _mapController = controller;
-                        Future.delayed(
-                          const Duration(milliseconds: 350),
-                          _fitRoute,
-                        );
-                      },
+                        ),
+                        Positioned(
+                          right: 12,
+                          bottom: 12,
+                          child: Material(
+                            color: const Color(0xee0a1d36),
+                            borderRadius: BorderRadius.circular(16),
+                            child: InkWell(
+                              onTap: widget.drive.route.length < 2
+                                  ? null
+                                  : () => Navigator.of(context).push(
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => DriveReplayScreen(
+                                          drive: widget.drive,
+                                        ),
+                                      ),
+                                    ),
+                              borderRadius: BorderRadius.circular(16),
+                              child: Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(
+                                    color: const Color(0xff2f8dff),
+                                  ),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                      color: Color(0x553b93ff),
+                                      blurRadius: 14,
+                                    ),
+                                  ],
+                                ),
+                                child: const Icon(
+                                  Icons.play_arrow_rounded,
+                                  color: Color(0xff76b4ff),
+                                  size: 28,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -333,6 +370,8 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                   children: [
                     _NameEditor(controller: _nameController, onSave: _saveName),
                     const SizedBox(height: 16),
+                    DriveScoreSummarySection(driveId: widget.drive.id),
+                    const SizedBox(height: 20),
                     const Text(
                       'Sürüş özeti',
                       style: TextStyle(

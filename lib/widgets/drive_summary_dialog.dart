@@ -1,6 +1,7 @@
 import '../models/route_point.dart';
 import '../models/drive_session.dart';
 import '../models/drive_metrics.dart';
+import '../models/canonical_telemetry_point.dart';
 import '../services/drive_storage_service.dart';
 import 'package:flutter/material.dart';
 import 'neon_route_preview.dart';
@@ -17,6 +18,7 @@ class DriveSummaryDialog {
     int stopCount = 0,
     int stoppedSeconds = 0,
     required DriveMetrics metrics,
+    required List<CanonicalTelemetryPoint> telemetry,
   }) {
     return showDialog(
       context: context,
@@ -155,7 +157,7 @@ class DriveSummaryDialog {
                 bestSixtyToHundredSeconds: metrics.bestSixtyToHundredSeconds,
               );
 
-              await DriveStorageService.saveDrive(drive);
+              await DriveStorageService.saveDrive(drive, telemetry: telemetry);
 
               if (context.mounted) {
                 Navigator.pop(context);

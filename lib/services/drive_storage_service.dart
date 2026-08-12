@@ -2,6 +2,12 @@ import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
 import '../models/route_point.dart';
+import '../models/canonical_telemetry_point.dart';
+import '../features/my_world/services/my_world_runtime.dart';
+import '../features/my_world/persistence/my_world_hive.dart';
+import '../features/drive_score/services/drive_score_persistence_coordinator.dart';
+import 'drive_score_storage_service.dart';
+import 'drive_telemetry_storage_service.dart';
 
 class DriveStorageService {
   static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
@@ -10,26 +16,58 @@ class DriveStorageService {
   static Box<dynamic> get _namesBox => Hive.box<dynamic>('drive_names');
 
   /// Yeni sürüş kaydet
-  static Future<void> saveDrive(DriveSession drive) async {
-    await _ensureCareerTotals();
-    final counted = List<String>.from(
-      _careerBox.get('countedIds', defaultValue: <String>[]),
-    );
-    if (!counted.contains(drive.id)) {
-      await _careerBox.put(
-        'totalDistance',
-        (_careerBox.get('totalDistance', defaultValue: 0.0) as num).toDouble() +
-            drive.distance,
+  static Future<void> saveDrive(
+    DriveSession drive, {
+    List<CanonicalTelemetryPoint>? telemetry,
+  }) async {
+    var telemetryWritten = false;
+    try {
+      if (telemetry != null && telemetry.isNotEmpty) {
+        await DriveTelemetryStorageService.save(
+          driveSessionId: drive.id,
+          points: telemetry,
+        );
+        telemetryWritten = true;
+      }
+      await _ensureCareerTotals();
+      final counted = List<String>.from(
+        _careerBox.get('countedIds', defaultValue: <String>[]),
       );
-      await _careerBox.put(
-        'totalDuration',
-        (_careerBox.get('totalDuration', defaultValue: 0) as num).toInt() +
-            drive.durationSeconds,
-      );
-      counted.add(drive.id);
-      await _careerBox.put('countedIds', counted);
+      if (!counted.contains(drive.id)) {
+        await _careerBox.put(
+          'totalDistance',
+          (_careerBox.get('totalDistance', defaultValue: 0.0) as num)
+                  .toDouble() +
+              drive.distance,
+        );
+        await _careerBox.put(
+          'totalDuration',
+          (_careerBox.get('totalDuration', defaultValue: 0) as num).toInt() +
+              drive.durationSeconds,
+        );
+        counted.add(drive.id);
+        await _careerBox.put('countedIds', counted);
+      }
+      await _box.put(drive.id, drive);
+    } catch (_) {
+      if (telemetryWritten) {
+        await DriveTelemetryStorageService.delete(drive.id);
+      }
+      rethrow;
     }
-    await _box.put(drive.id, drive);
+    try {
+      await const DriveScorePersistenceCoordinator()
+          .calculateAndPersistForDrive(drive.id);
+    } catch (_) {
+      // Score v1 is a secondary, recoverable analysis. The persisted drive and
+      // canonical telemetry must survive an analysis or score-box failure.
+    }
+    try {
+      await MyWorldRuntime.enqueueSavedDrive(drive);
+    } catch (_) {
+      // World validation is secondary. A local queue failure must never turn a
+      // successfully persisted drive into a failed save.
+    }
   }
 
   static Future<void> _ensureCareerTotals() async {
@@ -105,9 +143,43 @@ class DriveStorageService {
 
   /// Sürüş sil
   static Future<void> deleteDrive(String id) async {
+    if (Hive.isBoxOpen(MyWorldHive.validatedRoadsBoxName) &&
+        Hive.isBoxOpen(MyWorldHive.indexSnapshotsBoxName)) {
+      await MyWorldRuntime.worldLifecycleService().deleteDriveSafely(
+        driveId: id,
+        deleteSource: () => _deleteDriveStorageOnly(id),
+      );
+      return;
+    }
+    await _deleteDriveStorageOnly(id);
+  }
+
+  static Future<void> _deleteDriveStorageOnly(String id) async {
     await _box.delete(id);
+    Object? cleanupError;
+    StackTrace? cleanupStackTrace;
+    try {
+      await DriveTelemetryStorageService.delete(id);
+    } catch (error, stackTrace) {
+      cleanupError = error;
+      cleanupStackTrace = stackTrace;
+    }
+    try {
+      await DriveScoreStorageService.deleteForDrive(id);
+    } catch (error, stackTrace) {
+      cleanupError ??= error;
+      cleanupStackTrace ??= stackTrace;
+    }
     if (Hive.isBoxOpen('drive_names')) {
-      await _namesBox.delete(id);
+      try {
+        await _namesBox.delete(id);
+      } catch (error, stackTrace) {
+        cleanupError ??= error;
+        cleanupStackTrace ??= stackTrace;
+      }
+    }
+    if (cleanupError != null) {
+      Error.throwWithStackTrace(cleanupError, cleanupStackTrace!);
     }
   }
 

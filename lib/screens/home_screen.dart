@@ -8,6 +8,7 @@ import '../widgets/neon_route_preview.dart';
 import 'drive_center_screen.dart';
 import 'drive_detail_screen.dart';
 import 'history_screen.dart';
+import 'world_mode_selection_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -88,7 +89,7 @@ class HomeScreen extends StatelessWidget {
                   SizedBox(height: MediaQuery.sizeOf(context).height * .20),
                   _heroCards(context, drives),
                   const SizedBox(height: 10),
-                  _world(),
+                  _world(context),
                   const SizedBox(height: 12),
                   _today(distance, seconds, today.length),
                   const SizedBox(height: 12),
@@ -306,57 +307,65 @@ class HomeScreen extends StatelessWidget {
     ),
   );
 
-  Widget _world() => _glass(
-    const Color(0xff315071),
-    const Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(Icons.public, color: blue, size: 26),
-            SizedBox(width: 8),
-            Text(
-              'DÜNYA',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 21,
-                fontWeight: FontWeight.w900,
+  Widget _world(BuildContext context) => GestureDetector(
+    key: const Key('home_world_card'),
+    onTap: () => Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const WorldModeSelectionScreen(),
+      ),
+    ),
+    child: _glass(
+      const Color(0xff315071),
+      const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.public, color: blue, size: 26),
+              SizedBox(width: 8),
+              Text(
+                'DÜNYA',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 21,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
-            ),
-            Spacer(),
-            Icon(Icons.chevron_right, color: Colors.white, size: 29),
-          ],
-        ),
-        SizedBox(height: 10),
-        Text(
-          'Gezegende iz bırakmaya hazır ol!',
-          style: TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        SizedBox(height: 16),
-        Row(
-          children: [
-            Icon(Icons.alt_route, color: Color(0xff9d5cff), size: 34),
-            SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'YAKINDA',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
+              Spacer(),
+              Icon(Icons.chevron_right, color: Colors.white, size: 29),
+            ],
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Gezegende iz bırakmaya hazır ol!',
+            style: TextStyle(color: Colors.white70, fontSize: 14),
+          ),
+          SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(Icons.alt_route, color: Color(0xff9d5cff), size: 34),
+              SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'YAKINDA',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
                   ),
-                ),
-                Text(
-                  'Dünya Sıralaması',
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ],
+                  Text(
+                    'Dünya Sıralaması',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
     ),
   );
 

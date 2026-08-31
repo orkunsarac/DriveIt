@@ -3,11 +3,11 @@ class MyWorldRules {
 
   /// A drive must contain at least this much provider-validated road before it
   /// can become eligible for future World processing.
-  static const double minimumValidDistanceMeters = 3000;
+  static const double minimumValidDistanceMeters = 5000;
 
   /// A geometrically detected common road becomes eligible for a future
   /// performance comparison only at or above this length.
-  static const double minimumCommonWorldDistanceMeters = 1000;
+  static const double minimumCommonWorldDistanceMeters = 3000;
 
   /// Temporary matching resolution used only while comparing validated road
   /// geometry. It is never persisted as a World segment.
@@ -41,7 +41,19 @@ class MyWorldRules {
 
   /// A challenger region must cover at least this much actual common road
   /// before it can become a future World-record candidate.
-  static const double minimumLocalWinningRegionMeters = 500;
+  static const double minimumLocalWinningRegionMeters = 2000;
+
+  /// Existing-owner remainders below this length are not visible active World
+  /// traces. Their source history remains available for deterministic rebuild.
+  static const double minimumVisibleRemainderMeters = 1000;
+
+  /// Every independent trace in the committed active World snapshot must
+  /// satisfy this invariant, regardless of how it was created.
+  static const double minimumActiveTraceMeters = 1000;
+
+  /// World ownership semantics version. It invalidates snapshots created with
+  /// the previous distance rules without changing Hive schemas.
+  static const int worldRulesVersion = 4;
 
   /// Matches the recorder's existing stationary-noise threshold.
   static const double minimumUsefulPointDistanceMeters = 3;

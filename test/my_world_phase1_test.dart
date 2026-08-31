@@ -37,8 +37,8 @@ void main() {
       }
     });
 
-    test('minimum valid World distance is exactly 3 km', () {
-      expect(MyWorldRules.minimumValidDistanceMeters, 3000);
+    test('minimum valid World distance is exactly 5 km', () {
+      expect(MyWorldRules.minimumValidDistanceMeters, 5000);
     });
 
     test(

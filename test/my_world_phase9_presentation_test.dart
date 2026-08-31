@@ -8,6 +8,7 @@ import 'package:driveit_project/features/my_world/services/world_trace_detail_se
 import 'package:driveit_project/models/drive_score_record.dart';
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/screens/my_world_map_screen.dart';
+import 'package:driveit_project/screens/profile_settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -59,29 +60,41 @@ void main() {
       );
     });
 
-    testWidgets('settings sheet writes and reloads persisted skip value', (
+    testWidgets('profile settings writes and reloads existing skip value', (
       tester,
     ) async {
       final store = MemoryMyWorldSettingsStore();
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(body: MyWorldSettingsSheet(store: store)),
+          home: ProfileSettingsScreen(
+            worldSettings: store,
+            profileLoader: () async =>
+                throw StateError('Profile unavailable in this World-only test'),
+          ),
         ),
       );
       SwitchListTile tile() => tester.widget<SwitchListTile>(
-        find.byKey(const Key('skip_world_intro_switch')),
+        find.byKey(const Key('world_intro_enabled_switch')),
       );
-      expect(tile().value, isFalse);
-      await tester.tap(find.byKey(const Key('skip_world_intro_switch')));
+      expect(tile().value, isTrue);
+      await tester.ensureVisible(
+        find.byKey(const Key('world_intro_enabled_switch')),
+      );
+      await tester.tap(find.byKey(const Key('world_intro_enabled_switch')));
       await tester.pump();
       expect(store.skipIntroAnimation, isTrue);
 
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(body: MyWorldSettingsSheet(store: store)),
+          home: ProfileSettingsScreen(
+            key: const ValueKey('reopened'),
+            worldSettings: store,
+            profileLoader: () async =>
+                throw StateError('Profile unavailable in this World-only test'),
+          ),
         ),
       );
-      expect(tile().value, isTrue);
+      expect(tile().value, isFalse);
     });
   });
 

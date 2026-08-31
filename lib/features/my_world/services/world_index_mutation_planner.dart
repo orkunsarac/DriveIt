@@ -106,7 +106,9 @@ class WorldIndexMutationPlanner {
           .where((interval) => interval.distance > _epsilon)
           .map((interval) => _traceForChallenger(interval, challengerRoad, now)),
     ];
-    final normalized = _mergeAdjacent([...retained, ...created], now);
+    final normalized = _sanitizeActiveTraces(
+      _mergeAdjacent([...retained, ...created], now),
+    );
     _assertNoDuplicateOwnership(normalized);
 
     final processed = <String>{
@@ -119,7 +121,7 @@ class WorldIndexMutationPlanner {
       traces: List.unmodifiable(normalized),
       processedDriveSessionIds: List.unmodifiable(processed),
       driveScoreAlgorithmVersion: algorithmVersion.value,
-      validatedRoadProcessingVersion: challengerRoad.processingVersion,
+      validatedRoadProcessingVersion: MyWorldRules.worldRulesVersion,
       createdAt: now.toUtc(),
     );
     return WorldIndexMutationPlan(
@@ -127,12 +129,21 @@ class WorldIndexMutationPlanner {
       sourceDriveSessionId: challengerRoad.driveSessionId,
       baseGeneration: current.generation,
       tracesToRemove: List.unmodifiable(removed),
-      tracesToCreate: List.unmodifiable(created),
+      tracesToCreate: List.unmodifiable(
+        created.where(_isActiveTraceLengthValid).toList(growable: false),
+      ),
       resultingSnapshot: snapshot,
     );
   }
 
   static const double _epsilon = .01;
+
+  bool _isActiveTraceLengthValid(ActiveWorldTrace trace) =>
+      trace.distanceMeters >= MyWorldRules.minimumActiveTraceMeters;
+
+  List<ActiveWorldTrace> _sanitizeActiveTraces(
+    Iterable<ActiveWorldTrace> traces,
+  ) => traces.where(_isActiveTraceLengthValid).toList(growable: false);
 
   List<_TraceInterval> _splitExisting(
     ActiveWorldTrace trace,
@@ -147,12 +158,22 @@ class WorldIndexMutationPlanner {
     var cursor = trace.startOffsetMeters;
     for (final winner in sorted) {
       if (winner.start > cursor + _epsilon) {
-        output.add(_TraceInterval.fromTrace(trace, cursor, winner.start));
+        final remainder = _TraceInterval.fromTrace(trace, cursor, winner.start);
+        if (remainder.distance >= MyWorldRules.minimumVisibleRemainderMeters) {
+          output.add(remainder);
+        }
       }
       cursor = math.max(cursor, winner.end);
     }
     if (cursor < trace.endOffsetMeters - _epsilon) {
-      output.add(_TraceInterval.fromTrace(trace, cursor, trace.endOffsetMeters));
+      final remainder = _TraceInterval.fromTrace(
+        trace,
+        cursor,
+        trace.endOffsetMeters,
+      );
+      if (remainder.distance >= MyWorldRules.minimumVisibleRemainderMeters) {
+        output.add(remainder);
+      }
     }
     return output;
   }

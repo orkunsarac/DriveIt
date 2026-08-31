@@ -16,9 +16,9 @@ class MyWorldLifecycleService {
     required MyWorldSourceRepository repository,
     required MyWorldIndexRepository indexRepository,
     required MyWorldRebuildService rebuildService,
-  })  : _repository = repository,
-        _indexRepository = indexRepository,
-        _rebuildService = rebuildService;
+  }) : _repository = repository,
+       _indexRepository = indexRepository,
+       _rebuildService = rebuildService;
 
   final MyWorldSourceRepository _repository;
   final MyWorldIndexRepository _indexRepository;
@@ -29,7 +29,10 @@ class MyWorldLifecycleService {
     return WorldDriveLifecycleInfo(
       hasActiveTrace: traces.isNotEmpty,
       activeTraceCount: traces.length,
-      activeDistanceMeters: traces.fold(0, (sum, trace) => sum + trace.distanceMeters),
+      activeDistanceMeters: traces.fold(
+        0,
+        (sum, trace) => sum + trace.distanceMeters,
+      ),
     );
   }
 
@@ -38,9 +41,18 @@ class MyWorldLifecycleService {
     required DeleteDriveSource deleteSource,
     DriveScoreAlgorithmVersion targetVersion = DriveScoreAlgorithmVersion.v1,
   }) async {
-    final info = await getDriveLifecycleInfo(driveId);
+    // Read the active traces once. The previous flow queried the same Hive
+    // snapshot twice before starting the (already necessary) recovery rebuild.
+    final active = await _indexRepository.getActiveTracesForDrive(driveId);
+    final info = WorldDriveLifecycleInfo(
+      hasActiveTrace: active.isNotEmpty,
+      activeTraceCount: active.length,
+      activeDistanceMeters: active.fold(
+        0,
+        (sum, trace) => sum + trace.distanceMeters,
+      ),
+    );
     if (info.hasActiveTrace) {
-      final active = await _indexRepository.getActiveTracesForDrive(driveId);
       final rebuilt = await _rebuildService.rebuild(
         targetVersion: targetVersion,
         reason: 'driveDeletionRestore',

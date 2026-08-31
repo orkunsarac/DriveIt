@@ -9,13 +9,13 @@ void main() {
 
   test('same road in the same direction returns an eligible full overlap', () {
     final matches = overlap.findCommonRoads(
-      _road('first', _line(0, 1200)),
-      _road('second', _line(0, 1200)),
+      _road('first', _line(0, 3200)),
+      _road('second', _line(0, 3200)),
     );
 
     expect(matches, hasLength(1));
     expect(matches.single.directionCompatible, isTrue);
-    expect(matches.single.commonDistanceMeters, closeTo(1200, 35));
+    expect(matches.single.commonDistanceMeters, closeTo(3200, 35));
     expect(matches.single.comparisonEligible, isTrue);
   });
 
@@ -52,14 +52,14 @@ void main() {
     expect(matches.single.comparisonEligible, isFalse);
   });
 
-  test('999 and 1000 metre boundaries use the central eligibility rule', () {
+  test('2999 and 3000 metre boundaries use the central eligibility rule', () {
     final below = overlap.findCommonRoads(
-      _road('first', _line(0, 999)),
-      _road('second', _line(0, 999)),
+      _road('first', _line(0, 2999)),
+      _road('second', _line(0, 2999)),
     );
     final at = overlap.findCommonRoads(
-      _road('first', _line(0, 1002)),
-      _road('second', _line(0, 1002)),
+      _road('first', _line(0, 3200)),
+      _road('second', _line(0, 3200)),
     );
 
     expect(below.single.comparisonEligible, isFalse);

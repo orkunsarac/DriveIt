@@ -1,20 +1,66 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
+import '../services/profile_storage_service.dart';
+import '../services/drive_score_storage_service.dart';
 import '../widgets/neon_route_preview.dart';
 import 'drive_center_screen.dart';
 import 'drive_detail_screen.dart';
 import 'history_screen.dart';
+import 'career_screen.dart';
 import 'world_mode_selection_screen.dart';
+import 'profile_settings_screen.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
   static const blue = Color(0xff248fff);
   static const textFont = 'Noto Sans';
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  static const blue = HomeScreen.blue;
+  static const textFont = HomeScreen.textFont;
+  String? _profileName = 'Orkun';
+  Uint8List? _profilePhoto;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    // Widget tests and desktop previews may not initialise Hive. The app
+    // opens this optional box during startup, so simply retain the fallback
+    // avatar/name until it is available.
+    if (!Hive.isBoxOpen(ProfileStorageService.boxName)) return;
+    try {
+      final profile = await ProfileStorageService.open();
+      if (!mounted) return;
+      setState(() {
+        _profileName = profile.name ?? _profileName;
+        _profilePhoto = profile.photo;
+      });
+    } catch (_) {
+      // Profile is optional; retain the existing fallback header.
+    }
+  }
+
+  Future<void> _openProfileSettings(BuildContext context) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(builder: (_) => const ProfileSettingsScreen()),
+    );
+    await _loadProfile();
+  }
 
   String _formatDateTime(DateTime date) {
     final day = date.day.toString().padLeft(2, '0');
@@ -28,6 +74,9 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final drives = DriveStorageService.getAllDrives();
     final last = drives.isEmpty ? null : drives.first;
+    final lastScore = last == null
+        ? null
+        : DriveScoreStorageService.get(driveId: last.id);
     final now = DateTime.now();
     final today = drives
         .where(
@@ -81,26 +130,36 @@ class HomeScreen extends StatelessWidget {
                 ),
               ),
             ),
-            SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(19, 12, 19, 26),
-              child: Column(
-                children: [
-                  _header(),
-                  SizedBox(height: MediaQuery.sizeOf(context).height * .20),
-                  _heroCards(context, drives),
-                  const SizedBox(height: 10),
-                  _world(context),
-                  const SizedBox(height: 12),
-                  _today(distance, seconds, today.length),
-                  const SizedBox(height: 12),
-                  _last(context, last),
-                ],
-              ),
+            LayoutBuilder(
+              builder: (context, viewport) {
+                // A55 and similarly sized phones fit the compact stack in one
+                // viewport. Keep a scroll fallback for accessibility/font
+                // scaling and genuinely smaller windows.
+                final fitsViewport = viewport.maxHeight >= 700;
+                return SingleChildScrollView(
+                  physics: fitsViewport
+                      ? const NeverScrollableScrollPhysics()
+                      : null,
+                  padding: const EdgeInsets.fromLTRB(19, 12, 19, 26),
+                  child: Column(
+                    children: [
+                      _header(context),
+                      SizedBox(height: viewport.maxHeight * .20),
+                      _heroCards(context, drives),
+                      const SizedBox(height: 10),
+                      _world(context),
+                      const SizedBox(height: 10),
+                      _last(context, last, lastScore?.totalScore),
+                      const SizedBox(height: 10),
+                      _today(distance, seconds, today.length),
+                    ],
+                  ),
+                );
+              },
             ),
           ],
         ),
       ),
-      bottomNavigationBar: _bottom(context),
     );
   }
 
@@ -120,7 +179,7 @@ class HomeScreen extends StatelessWidget {
                   top: 0,
                   bottom: 0,
                   width: cardWidth,
-                  child: _career(),
+                  child: _career(context),
                 ),
                 Positioned(
                   right: 0,
@@ -140,17 +199,38 @@ class HomeScreen extends StatelessWidget {
         ),
       );
 
-  Widget _header() => const Row(
+  Widget _header(BuildContext context) => Row(
     children: [
-      CircleAvatar(
-        radius: 22,
-        backgroundColor: Color(0xff56d8de),
-        child: Text(
-          'OS',
-          style: TextStyle(
-            color: Colors.black,
-            fontSize: 17,
-            fontWeight: FontWeight.w800,
+      Semantics(
+        label: 'Profil ve Ayarlar',
+        button: true,
+        child: GestureDetector(
+          onTap: () => _openProfileSettings(context),
+          child: Container(
+            width: 44,
+            height: 44,
+            padding: const EdgeInsets.all(1),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xff248fff), width: 1),
+            ),
+            child: CircleAvatar(
+              radius: 20.5,
+              backgroundColor: const Color(0xff56d8de),
+              backgroundImage: _profilePhoto == null
+                  ? null
+                  : MemoryImage(_profilePhoto!),
+              child: _profilePhoto == null
+                  ? const Text(
+                      'OS',
+                      style: TextStyle(
+                        color: Colors.black,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    )
+                  : null,
+            ),
           ),
         ),
       ),
@@ -160,7 +240,7 @@ class HomeScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Merhaba, Orkun',
+              'Merhaba${_profileName == null ? '' : ', $_profileName'}',
               style: TextStyle(
                 fontFamily: textFont,
                 color: Colors.white,
@@ -182,16 +262,31 @@ class HomeScreen extends StatelessWidget {
       ),
       Icon(Icons.notifications_none, color: Colors.white, size: 25),
       SizedBox(width: 8),
-      Icon(Icons.menu, color: Colors.white, size: 27),
+      Semantics(
+        label: 'Profil ve Ayarlar',
+        button: true,
+        child: GestureDetector(
+          key: const Key('home_profile_settings'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _openProfileSettings(context),
+          child: const Icon(Icons.menu, color: Colors.white, size: 27),
+        ),
+      ),
     ],
   );
 
-  Widget _career() {
+  Widget _career(BuildContext context) {
     final km = DriveStorageService.getCareerDistance() / 1000;
     final seconds = DriveStorageService.getCareerDurationSeconds();
-    return _glass(
-      blue,
-      Column(
+    return InkWell(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const CareerScreen()),
+      ),
+      borderRadius: BorderRadius.circular(22),
+      child: _glass(
+        blue,
+        Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Row(
@@ -222,6 +317,7 @@ class HomeScreen extends StatelessWidget {
           const Divider(color: Colors.white24, height: 10),
           _value(Icons.timer_outlined, _formatDuration(seconds), 'Toplam Süre'),
         ],
+        ),
       ),
     );
   }
@@ -314,59 +410,7 @@ class HomeScreen extends StatelessWidget {
         builder: (_) => const WorldModeSelectionScreen(),
       ),
     ),
-    child: _glass(
-      const Color(0xff315071),
-      const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.public, color: blue, size: 26),
-              SizedBox(width: 8),
-              Text(
-                'DÜNYA',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 21,
-                  fontWeight: FontWeight.w900,
-                ),
-              ),
-              Spacer(),
-              Icon(Icons.chevron_right, color: Colors.white, size: 29),
-            ],
-          ),
-          SizedBox(height: 10),
-          Text(
-            'Gezegende iz bırakmaya hazır ol!',
-            style: TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          SizedBox(height: 16),
-          Row(
-            children: [
-              Icon(Icons.alt_route, color: Color(0xff9d5cff), size: 34),
-              SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'YAKINDA',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  Text(
-                    'Dünya Sıralaması',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      ),
-    ),
+    child: const _HomeWorldCard(),
   );
 
   Widget _today(double km, int seconds, int count) => _glass(
@@ -376,13 +420,13 @@ class HomeScreen extends StatelessWidget {
       children: [
         Row(
           children: [
-            Icon(Icons.calendar_month, color: blue, size: 24),
-            SizedBox(width: 10),
+            Icon(Icons.calendar_month, color: blue, size: 22),
+            SizedBox(width: 8),
             Text(
               'Bugünkü Özet',
               style: TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -390,7 +434,7 @@ class HomeScreen extends StatelessWidget {
             Text('Detay  ›', style: TextStyle(color: Colors.white70)),
           ],
         ),
-        const Divider(color: Colors.white24, height: 28),
+        const Divider(color: Colors.white24, height: 20),
         Row(
           children: [
             Expanded(
@@ -398,7 +442,6 @@ class HomeScreen extends StatelessWidget {
                 Icons.speed,
                 '-',
                 'Sürüş Skoru',
-                'Yok',
                 blue,
               ),
             ),
@@ -408,7 +451,6 @@ class HomeScreen extends StatelessWidget {
                 Icons.alt_route,
                 km.toStringAsFixed(1),
                 'Mesafe km',
-                'Bugün',
                 Colors.green,
               ),
             ),
@@ -418,7 +460,6 @@ class HomeScreen extends StatelessWidget {
                 Icons.timer_outlined,
                 '${seconds ~/ 60} dk',
                 'Süre',
-                'Toplam',
                 Colors.purple,
               ),
             ),
@@ -428,7 +469,6 @@ class HomeScreen extends StatelessWidget {
                 Icons.directions_car,
                 '$count',
                 'Sürüş Sayısı',
-                'Bugün',
                 Colors.orange,
               ),
             ),
@@ -438,7 +478,7 @@ class HomeScreen extends StatelessWidget {
     ),
   );
 
-  Widget _last(BuildContext context, DriveSession? drive) => GestureDetector(
+  Widget _last(BuildContext context, DriveSession? drive, double? score) => GestureDetector(
     onTap: drive == null
         ? null
         : () => Navigator.push(
@@ -452,13 +492,13 @@ class HomeScreen extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(Icons.access_time, color: blue),
-              SizedBox(width: 10),
+              Icon(Icons.access_time, color: blue, size: 22),
+              SizedBox(width: 8),
               Text(
                 'Son Sürüş',
                 style: TextStyle(
                   color: Colors.white,
-                  fontSize: 20,
+                  fontSize: 17,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -472,7 +512,7 @@ class HomeScreen extends StatelessWidget {
               const Icon(Icons.chevron_right, color: Colors.white70),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 6),
           if (drive == null)
             const Text(
               'Henüz kayıtlı sürüş yok',
@@ -483,10 +523,10 @@ class HomeScreen extends StatelessWidget {
               children: [
                 SizedBox(
                   width: 125,
-                  height: 78,
+                  height: 68,
                   child: NeonRoutePreview(route: drive.route),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     children: [
@@ -507,16 +547,16 @@ class HomeScreen extends StatelessWidget {
                           ),
                           _lastMetric(
                             Icons.speed,
-                            '—',
+                            score == null ? '—' : score.round().toString(),
                             'Sürüş Puanı',
                             Colors.orange,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 5),
                       SizedBox(
                         width: double.infinity,
-                        height: 32,
+                        height: 28,
                         child: OutlinedButton.icon(
                           onPressed: () => Navigator.push(
                             context,
@@ -588,26 +628,20 @@ class HomeScreen extends StatelessWidget {
     ],
   );
   Widget _summaryDivider() =>
-      Container(width: 1, height: 78, color: Colors.white12);
+      Container(width: 1, height: 58, color: Colors.white12);
 
-  Widget _summaryMetric(
-    IconData icon,
-    String value,
-    String label,
-    String badge,
-    Color color,
-  ) => Column(
+  Widget _summaryMetric(IconData icon, String value, String label, Color color) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      Icon(icon, color: color, size: 21),
-      const SizedBox(height: 6),
+      Icon(icon, color: color, size: 20),
+      const SizedBox(height: 3),
       FittedBox(
         fit: BoxFit.scaleDown,
         child: Text(
           value,
           style: const TextStyle(
             color: Colors.white,
-            fontSize: 17,
+            fontSize: 16,
             fontWeight: FontWeight.w800,
           ),
         ),
@@ -616,23 +650,7 @@ class HomeScreen extends StatelessWidget {
         fit: BoxFit.scaleDown,
         child: Text(
           label,
-          style: const TextStyle(color: Colors.white70, fontSize: 10),
-        ),
-      ),
-      const SizedBox(height: 5),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-        decoration: BoxDecoration(
-          border: Border.all(color: color),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          badge,
-          style: TextStyle(
-            color: color,
-            fontSize: 9,
-            fontWeight: FontWeight.w600,
-          ),
+          style: const TextStyle(color: Colors.white70, fontSize: 9),
         ),
       ),
     ],
@@ -674,31 +692,86 @@ class HomeScreen extends StatelessWidget {
     ),
     child: child,
   );
-  Widget _bottom(BuildContext context) => BottomNavigationBar(
-    type: BottomNavigationBarType.fixed,
-    backgroundColor: const Color(0xff061024),
-    selectedItemColor: blue,
-    unselectedItemColor: Colors.white54,
-    currentIndex: 0,
-    onTap: (i) {
-      if (i > 0)
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const HistoryScreen()),
-        );
-    },
-    items: const [
-      BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Ana Sayfa'),
-      BottomNavigationBarItem(
-        icon: Icon(Icons.bar_chart),
-        label: 'İstatistikler',
+}
+
+class _HomeWorldCard extends StatelessWidget {
+  const _HomeWorldCard();
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 142,
+    clipBehavior: Clip.hardEdge,
+    decoration: BoxDecoration(
+      color: const Color(0xff07162b),
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: const Color(0xff315071), width: .9),
+      boxShadow: const [
+        BoxShadow(
+          color: Color(0x33248fff),
+          blurRadius: 18,
+          offset: Offset(0, 5),
+        ),
+      ],
+    ),
+    // Keep the original outline above the artwork on all four edges.
+    foregroundDecoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: const Color(0xff315071), width: .9),
+    ),
+    child: LayoutBuilder(
+      builder: (context, constraints) => Stack(
+        children: [
+          Positioned.fill(
+            child: Image.asset(
+              'assets/images/world_card_digital_horizon.webp',
+              fit: BoxFit.cover,
+              alignment: Alignment.centerRight,
+              filterQuality: FilterQuality.high,
+            ),
+          ),
+          // Protect the existing text when narrower screens crop the image.
+          const Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [
+                    Color(0xdd07162b),
+                    Color(0xaa07162b),
+                    Color(0x0007162b),
+                  ],
+                  stops: [0, .4, .58],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 18,
+            top: 17,
+            width: constraints.maxWidth * .49 - 18,
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Dünya',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 23,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Gezegende iz bırakmaya hazır ol!',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
-      BottomNavigationBarItem(
-        icon: Icon(Icons.emoji_events),
-        label: 'Liderlik',
-      ),
-      BottomNavigationBarItem(icon: Icon(Icons.directions_car), label: 'Garaj'),
-    ],
+    ),
   );
 }
 
@@ -750,14 +823,20 @@ class _AnimatedDriveButtonState extends State<_AnimatedDriveButton>
             ],
           ),
           child: ClipOval(
+            // Preserve the complete square logo without clipping its lettering.
+            clipBehavior: Clip.none,
             child: SizedBox(
               width: 111,
               height: 82,
-              child: Image.asset(
-                'assets/branding/driveit_logo_clean.png',
-                fit: BoxFit.contain,
+              child: Transform.scale(
+                scale: 0.82,
                 alignment: Alignment.center,
-                filterQuality: FilterQuality.high,
+                child: Image.asset(
+                  'assets/branding/driveit_logo_current.png',
+                  fit: BoxFit.contain,
+                  alignment: Alignment.center,
+                  filterQuality: FilterQuality.high,
+                ),
               ),
             ),
           ),

@@ -5,9 +5,9 @@
             <solid android:color="#010F25" />
         </shape>
     </item>
-    <item android:gravity="center">
+    <item android:gravity="center" android:width="216dp" android:height="216dp">
         <bitmap
-            android:gravity="center"
-            android:src="@drawable/driveit_launcher_square" />
+            android:gravity="fill"
+            android:src="@drawable/driveit_logo_current" />
     </item>
 </layer-list>

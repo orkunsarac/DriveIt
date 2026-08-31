@@ -67,7 +67,7 @@ void main() {
 DriveSession _drive(String id) => DriveSession(
   id: id,
   date: DateTime.utc(2026, 1, 1),
-  distance: 3000,
+  distance: 5000,
   durationSeconds: 100,
   averageSpeed: 100,
   maxSpeed: 100,
@@ -85,10 +85,10 @@ ValidatedRoad _road(String driveId) {
     driveSessionId: driveId,
     geometry: geometry,
     sections: const [MatchedRoadSection(
-      id: 'section', geometry: geometry, distanceMeters: 3000,
+      id: 'section', geometry: geometry, distanceMeters: 5000,
       confidence: 1, sourceTraceIndex: 0, sourceChunkIndex: 0,
     )],
-    validDistanceMeters: 3000,
+    validDistanceMeters: 5000,
     status: RoadValidationStatus.validated,
     validatedAt: DateTime.utc(2026, 1, 1),
     providerId: 'test', confidence: 1, processingVersion: 2,

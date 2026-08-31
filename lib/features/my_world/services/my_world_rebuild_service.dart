@@ -2,6 +2,8 @@
 // names stable while the service fields remain private.
 // ignore_for_file: prefer_initializing_formals
 
+import 'package:flutter/foundation.dart';
+
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
 import '../../../models/canonical_telemetry_point.dart';
 import '../../../models/drive_session.dart';
@@ -18,6 +20,7 @@ import 'world_record_processing_service.dart';
 typedef WorldDriveHistoryLoader = Future<List<DriveSession>> Function();
 typedef WorldCanonicalTelemetryLoader = Future<List<CanonicalTelemetryPoint>>
     Function(String driveSessionId);
+typedef WorldDriveEligibility = bool Function(String driveSessionId);
 
 /// Explicit, source-history rebuild. It stages the complete result in memory
 /// and activates one copy-on-write snapshot only after all invariants pass.
@@ -29,6 +32,7 @@ class MyWorldRebuildService {
     required WorldCanonicalTelemetryLoader telemetryLoader,
     WorldIndexMutationPlanner mutationPlanner = const WorldIndexMutationPlanner(),
     WorldRecordProcessingService? processingService,
+    WorldDriveEligibility? driveEligibility,
     DateTime Function()? clock,
   })  : _repository = repository,
         _indexRepository = indexRepository,
@@ -36,6 +40,7 @@ class MyWorldRebuildService {
         _telemetryLoader = telemetryLoader,
         _mutationPlanner = mutationPlanner,
         _processingService = processingService,
+        _driveEligibility = driveEligibility ?? ((_) => true),
         _clock = clock ?? DateTime.now;
 
   final MyWorldSourceRepository _repository;
@@ -44,6 +49,7 @@ class MyWorldRebuildService {
   final WorldCanonicalTelemetryLoader _telemetryLoader;
   final WorldIndexMutationPlanner _mutationPlanner;
   final WorldRecordProcessingService? _processingService;
+  final WorldDriveEligibility _driveEligibility;
   final DateTime Function() _clock;
 
   Future<WorldRebuildResult> rebuild({
@@ -52,6 +58,15 @@ class MyWorldRebuildService {
     Set<String> excludedDriveIds = const {},
     List<WorldRebuildBounds>? restrictToBounds,
   }) async {
+    if (kDebugMode) {
+      debugPrint('[WORLD_RULES] minimumValidatedDrive=${MyWorldRules.minimumValidDistanceMeters.toInt()} '
+          'minimumComparableOverlap=${MyWorldRules.minimumCommonWorldDistanceMeters.toInt()} '
+          'minimumWinningRegion=${MyWorldRules.minimumLocalWinningRegionMeters.toInt()} '
+          'minimumActiveTrace=${MyWorldRules.minimumActiveTraceMeters.toInt()} '
+          'minimumRemainder=${MyWorldRules.minimumVisibleRemainderMeters.toInt()} '
+          'gapMerge=${MyWorldRules.localScoreWinnerGapToleranceMeters.toInt()} '
+          'version=${MyWorldRules.worldRulesVersion}');
+    }
     if (targetVersion != DriveScoreAlgorithmVersion.v1) {
       throw UnsupportedDriveScoreAlgorithmVersion(targetVersion.value);
     }
@@ -63,7 +78,7 @@ class MyWorldRebuildService {
       indexCorrupt = true;
       base = WorldIndexSnapshot.empty(
         driveScoreAlgorithmVersion: targetVersion.value,
-        validatedRoadProcessingVersion: MyWorldRules.validatedRoadProcessingVersion,
+        validatedRoadProcessingVersion: MyWorldRules.worldRulesVersion,
       );
     }
     final drives = await _driveLoader();
@@ -72,6 +87,7 @@ class MyWorldRebuildService {
     final eligible = roads.where((road) {
       final drive = driveById[road.driveSessionId];
       return drive != null &&
+          _driveEligibility(road.driveSessionId) &&
           !excludedDriveIds.contains(road.driveSessionId) &&
           _roadInScope(road, restrictToBounds) &&
           (road.status == RoadValidationStatus.validated ||
@@ -86,7 +102,7 @@ class MyWorldRebuildService {
 
     var staged = WorldIndexSnapshot.empty(
       driveScoreAlgorithmVersion: targetVersion.value,
-      validatedRoadProcessingVersion: MyWorldRules.validatedRoadProcessingVersion,
+      validatedRoadProcessingVersion: MyWorldRules.worldRulesVersion,
     );
     if (restrictToBounds != null) {
       final retained = base.traces.where((trace) {
@@ -107,6 +123,14 @@ class MyWorldRebuildService {
     }
     var processed = 0;
     var skipped = drives.length - eligible.map((road) => road.driveSessionId).toSet().length;
+    final eligibleDriveIds = eligible.map((road) => road.driveSessionId).toSet();
+    final skippedUnder5Km = drives.where((drive) {
+      if (eligibleDriveIds.contains(drive.id)) return false;
+      final driveRoads = roads.where((road) => road.driveSessionId == drive.id);
+      return driveRoads.isNotEmpty && driveRoads.every(
+        (road) => road.validDistanceMeters < MyWorldRules.minimumValidDistanceMeters,
+      );
+    }).length;
     var missing = 0;
     try {
       final processor = _processingService ?? WorldRecordProcessingService(
@@ -153,6 +177,26 @@ class MyWorldRebuildService {
       } else {
         await _indexRepository.commit(plan);
       }
+      if (kDebugMode) {
+        debugPrint('[WORLD_REBUILD] driveCount=${drives.length} '
+          'eligibleDriveCount=${eligible.map((road) => road.driveSessionId).toSet().length} '
+          'skippedUnder5km=$skippedUnder5Km '
+          'activeTraceCount=${resultSnapshot.traces.length} '
+          'uniqueSourceDriveCount=${resultSnapshot.traces.map((t) => t.sourceDriveSessionId).toSet().length} '
+          'displayedWorldDriveCount=${resultSnapshot.traces.length} '
+          'activeDistanceMeters=${resultSnapshot.traces.fold<double>(0, (s, t) => s + t.distanceMeters).toStringAsFixed(1)} '
+          'generation=${resultSnapshot.generation}');
+        debugPrint('[WORLD_COUNT] activeTraceCount=${resultSnapshot.traces.length} '
+            'uniqueSourceDriveCount=${resultSnapshot.traces.map((t) => t.sourceDriveSessionId).toSet().length} '
+            'displayedWorldDriveCount=${resultSnapshot.traces.length}');
+        for (final trace in resultSnapshot.traces.where(
+          (trace) => trace.distanceMeters < MyWorldRules.minimumActiveTraceMeters,
+        )) {
+          debugPrint('[WORLD_SHORT_TRACE] traceId=${trace.id} '
+              'sourceDriveId=${trace.sourceDriveSessionId} '
+              'lengthMeters=${trace.distanceMeters} visible=false');
+        }
+      }
       return WorldRebuildResult(
         success: true,
         totalDrivesScanned: drives.length,
@@ -198,11 +242,17 @@ class MyWorldRebuildService {
   }) async {
     try {
       final snapshot = await _indexRepository.getActiveSnapshot();
+      final scoreVersionChanged =
+          snapshot.driveScoreAlgorithmVersion != targetVersion.value;
+      final worldRulesChanged =
+          snapshot.validatedRoadProcessingVersion != MyWorldRules.worldRulesVersion;
       return WorldRebuildNeed(
-        needsRebuild: snapshot.driveScoreAlgorithmVersion != targetVersion.value,
-        reason: snapshot.driveScoreAlgorithmVersion == targetVersion.value
-            ? null
-            : 'scoreAlgorithmChanged',
+        needsRebuild: scoreVersionChanged || worldRulesChanged,
+        reason: scoreVersionChanged
+            ? 'scoreAlgorithmChanged'
+            : worldRulesChanged
+                ? 'worldRulesChanged'
+                : null,
       );
     } catch (_) {
       return const WorldRebuildNeed(

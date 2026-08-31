@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'services/foreground_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'models/route_point.dart';
@@ -11,6 +13,8 @@ import 'features/my_world/persistence/my_world_hive.dart';
 import 'features/my_world/services/my_world_settings_service.dart';
 import 'services/drive_score_storage_service.dart';
 import 'services/drive_telemetry_storage_service.dart';
+import 'services/profile_storage_service.dart';
+import 'features/my_world/services/my_world_runtime.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
 
@@ -34,10 +38,16 @@ void main() async {
   // Drive names live in their own box so the existing DriveSession adapter
   // and all previously stored field indexes remain untouched.
   await Hive.openBox<dynamic>('drive_names');
+  await Hive.openBox<dynamic>(ProfileStorageService.boxName);
   await DriveTelemetryHive.openBox(Hive);
   await DriveScoreHive.openBox(Hive);
   await MyWorldHive.openBoxes(Hive);
   await HiveMyWorldSettingsStore.openBox(Hive);
+
+  // Apply World rule/index migrations before the first screen can read the
+  // active snapshot. The operation is local and reuses stored validated roads;
+  // it never triggers a Mapbox request.
+  await MyWorldRuntime.ensureCurrentWorldIndex();
 
   await initializeDateFormatting('tr_TR');
 
@@ -50,6 +60,12 @@ void main() async {
       initialScreen: const HomeScreen(),
     ),
   );
+  // Do not block app startup; pending World jobs are durable and retryable.
+  // Diagnostics remain available through the explicit debug tool rather than
+  // scanning and printing the entire World projection on every launch.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(MyWorldRuntime.drainPendingJobs());
+  });
 }
 
 class DriveItApp extends StatefulWidget {

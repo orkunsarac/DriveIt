@@ -37,19 +37,23 @@ class HiveMyWorldRepository implements MyWorldSourceRepository {
 
   @override
   Future<void> deleteWorldDataForDrive(String driveSessionId) async {
-    for (final road in _validatedRoads.values
+    final roadKeys = _validatedRoads.values
         .where((road) => road.driveSessionId == driveSessionId)
-        .toList()) {
-      await _validatedRoads.delete(road.id);
-    }
-    await _processing.delete(driveSessionId);
-    for (final job in _pendingJobs.values
+        .map((road) => road.id)
+        .toList(growable: false);
+    final jobKeys = _pendingJobs.values
         .where((job) => job.driveSessionId == driveSessionId)
-        .toList()) {
-      await _pendingJobs.delete(
-        WorldPendingJob.idempotencyKey(job.driveSessionId, job.type),
-      );
-    }
+        .map(
+          (job) => WorldPendingJob.idempotencyKey(job.driveSessionId, job.type),
+        )
+        .toList(growable: false);
+    // All three boxes are independent and Hive can batch-delete keys. This
+    // keeps deletion latency bounded without changing cleanup semantics.
+    await Future.wait([
+      if (roadKeys.isNotEmpty) _validatedRoads.deleteAll(roadKeys),
+      _processing.delete(driveSessionId),
+      if (jobKeys.isNotEmpty) _pendingJobs.deleteAll(jobKeys),
+    ]);
   }
 
   @override

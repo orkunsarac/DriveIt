@@ -89,6 +89,16 @@ void main() {
     controller.dispose();
   });
 
+  test('timeline displays the fixed 1x preview axis', () {
+    final controller = DriveReplayController(drive(durationSeconds: 100));
+    expect(controller.basePreviewDuration, const Duration(seconds: 10));
+    controller.seek(.5);
+    expect(controller.previewTime, const Duration(seconds: 5));
+    controller.setDisplayPlaybackSpeed(10);
+    expect(controller.basePreviewDuration, const Duration(seconds: 10));
+    controller.dispose();
+  });
+
   test('accelerated playback does not multiply telemetry speed', () {
     final normal = DriveReplayController(drive());
     final fast = DriveReplayController(drive());

@@ -2,7 +2,7 @@ import '../models/active_world_trace.dart';
 
 /// Stable presentation-only graph colouring for adjacent active traces.
 class WorldTraceVisualVariants {
-  const WorldTraceVisualVariants({this.variantCount = 4});
+  const WorldTraceVisualVariants({this.variantCount = 8});
 
   final int variantCount;
 
@@ -70,7 +70,7 @@ class WorldTraceVisualVariants {
       var selected = preferred;
       for (var attempt = 0; attempt < variantCount; attempt++) {
         final candidate = (preferred + attempt) % variantCount;
-        if (!unavailable.contains(candidate)) {
+        if (!unavailable.any((value) => _isConflicting(candidate, value))) {
           selected = candidate;
           break;
         }
@@ -87,5 +87,17 @@ class WorldTraceVisualVariants {
       hash = (hash * 0x01000193) & 0x7fffffff;
     }
     return hash;
+  }
+
+  bool _isConflicting(int first, int second) {
+    if (first == second) return true;
+    const closePairs = <Set<int>>{
+      {0, 1}, // cyan / blue
+      {3, 6}, // green / gold
+      {5, 7}, // purple / magenta
+    };
+    return closePairs.any(
+      (pair) => pair.contains(first) && pair.contains(second),
+    );
   }
 }

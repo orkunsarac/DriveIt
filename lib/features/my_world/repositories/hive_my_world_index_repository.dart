@@ -3,6 +3,7 @@ import 'package:hive/hive.dart';
 import '../models/active_world_trace.dart';
 import '../models/world_index_mutation_plan.dart';
 import '../models/world_index_snapshot.dart';
+import '../config/my_world_rules.dart';
 import 'my_world_index_repository.dart';
 
 /// Hive copy-on-write index storage. A failed snapshot write can leave an
@@ -115,6 +116,8 @@ class HiveMyWorldIndexRepository
 
   WorldIndexSnapshot _emptySnapshot() => WorldIndexSnapshot.empty(
     driveScoreAlgorithmVersion: 1,
+    // Version 2 intentionally marks a missing pointer as requiring the first
+    // rules-v3 rebuild; an empty index must not hide stored validated roads.
     validatedRoadProcessingVersion: 2,
   );
 
@@ -126,7 +129,7 @@ class HiveMyWorldIndexRepository
           !trace.endOffsetMeters.isFinite ||
           trace.startOffsetMeters < 0 ||
           trace.endOffsetMeters <= trace.startOffsetMeters ||
-          trace.distanceMeters <= 0) {
+          trace.distanceMeters < MyWorldRules.minimumActiveTraceMeters) {
         throw StateError('World index cannot contain an empty trace.');
       }
     }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
@@ -64,6 +66,9 @@ class DriveStorageService {
     }
     try {
       await MyWorldRuntime.enqueueSavedDrive(drive);
+      // World validation is best-effort and secondary to the successful drive
+      // save. The durable job remains available for startup recovery.
+      unawaited(MyWorldRuntime.drainPendingJobs());
     } catch (_) {
       // World validation is secondary. A local queue failure must never turn a
       // successfully persisted drive into a failed save.
@@ -158,25 +163,20 @@ class DriveStorageService {
     await _box.delete(id);
     Object? cleanupError;
     StackTrace? cleanupStackTrace;
+    final cleanupTasks = <Future<void>>[
+      DriveTelemetryStorageService.delete(id),
+      DriveScoreStorageService.deleteForDrive(id),
+    ];
+    if (Hive.isBoxOpen('drive_names')) {
+      cleanupTasks.add(_namesBox.delete(id));
+    }
     try {
-      await DriveTelemetryStorageService.delete(id);
+      // These boxes are independent; wait for all cleanups together instead
+      // of serialising their disk writes behind three awaits.
+      await Future.wait(cleanupTasks);
     } catch (error, stackTrace) {
       cleanupError = error;
       cleanupStackTrace = stackTrace;
-    }
-    try {
-      await DriveScoreStorageService.deleteForDrive(id);
-    } catch (error, stackTrace) {
-      cleanupError ??= error;
-      cleanupStackTrace ??= stackTrace;
-    }
-    if (Hive.isBoxOpen('drive_names')) {
-      try {
-        await _namesBox.delete(id);
-      } catch (error, stackTrace) {
-        cleanupError ??= error;
-        cleanupStackTrace ??= stackTrace;
-      }
     }
     if (cleanupError != null) {
       Error.throwWithStackTrace(cleanupError, cleanupStackTrace!);

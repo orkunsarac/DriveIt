@@ -29,7 +29,7 @@ class LocalWinningRoadRegionService {
       return _empty(
         LocalRoadRegionAnalysisStatus.notEligible,
         match,
-        'Common road is below the 1000 metre comparison threshold.',
+        'Common road is below the 3000 metre comparison threshold.',
       );
     }
     if (match.geometryConfidence <

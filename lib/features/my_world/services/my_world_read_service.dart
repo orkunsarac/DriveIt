@@ -1,9 +1,13 @@
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 
+import '../../../models/canonical_telemetry_point.dart';
 import '../models/validated_road.dart';
 import '../models/world_map_read_model.dart';
 import '../repositories/my_world_index_repository.dart';
 import '../repositories/my_world_repository.dart';
+import 'world_trace_travel_direction_resolver.dart';
+import '../models/world_trace_travel_direction.dart';
 import 'world_trace_geometry_resolver.dart';
 import 'world_trace_visual_variants.dart';
 
@@ -14,11 +18,17 @@ class MyWorldReadService {
     WorldTraceGeometryResolver geometryResolver =
         const WorldTraceGeometryResolver(),
     WorldTraceVisualVariants visualVariants = const WorldTraceVisualVariants(),
+    Future<List<CanonicalTelemetryPoint>> Function(String driveId)?
+    telemetryLoader,
+    WorldTraceTravelDirectionResolver directionResolver =
+        const WorldTraceTravelDirectionResolver(),
   }) => MyWorldReadService._(
     repository,
     indexRepository,
     geometryResolver,
     visualVariants,
+    telemetryLoader,
+    directionResolver,
   );
 
   const MyWorldReadService._(
@@ -26,16 +36,30 @@ class MyWorldReadService {
     this._indexRepository,
     this._geometryResolver,
     this._visualVariants,
+    this._telemetryLoader,
+    this._directionResolver,
   );
 
   final MyWorldSourceRepository _repository;
   final MyWorldIndexRepository _indexRepository;
   final WorldTraceGeometryResolver _geometryResolver;
   final WorldTraceVisualVariants _visualVariants;
+  final Future<List<CanonicalTelemetryPoint>> Function(String driveId)?
+  _telemetryLoader;
+  final WorldTraceTravelDirectionResolver _directionResolver;
 
   Future<MyWorldMapData> load() async {
     final snapshot = await _indexRepository.getActiveSnapshot();
+    if (kDebugMode) {
+      debugPrint(
+        '[WORLD_READ] loadedSnapshotGeneration=${snapshot.generation} '
+        'loadedSnapshotVersion=${snapshot.validatedRoadProcessingVersion} '
+        'cacheHit=false cacheInvalidated=false',
+      );
+    }
     final roadCache = <String, ValidatedRoad?>{};
+    final telemetryCache = <String, List<CanonicalTelemetryPoint>>{};
+    final directionCache = <String, WorldTraceTravelDirectionResult>{};
     final resolved = <ResolvedWorldTrace>[];
     var brokenReferences = 0;
 
@@ -53,9 +77,52 @@ class MyWorldReadService {
         brokenReferences++;
         continue;
       }
+      var presentationGeometry = geometry;
+      var direction = const WorldTraceTravelDirectionResult.unknown();
+      if (_telemetryLoader != null) {
+        final driveId = trace.sourceDriveSessionId;
+        final telemetry = telemetryCache.containsKey(driveId)
+            ? telemetryCache[driveId]!
+            : await _telemetryLoader(driveId);
+        telemetryCache[driveId] = telemetry;
+        final directionKey =
+            '$driveId:${trace.validatedRoadId}:${trace.matchedSectionId}';
+        final cachedDirection = directionCache[directionKey];
+        if (cachedDirection != null) {
+          direction = cachedDirection;
+        } else {
+          direction = _directionResolver.resolve(
+            trace: trace,
+            road: road,
+            telemetry: telemetry,
+          );
+          directionCache[directionKey] = direction;
+        }
+        if (direction.direction == WorldTraceTravelDirection.reverse) {
+          presentationGeometry = geometry.reversed.toList(growable: false);
+        }
+      }
       resolved.add(
-        ResolvedWorldTrace(trace: trace, geometry: geometry, visualVariant: 0),
+        ResolvedWorldTrace(
+          trace: trace,
+          geometry: presentationGeometry,
+          visualVariant: 0,
+          travelDirection: direction.direction,
+          directionConfidence: direction.confidence,
+          firstProjectedOffset: direction.firstProjectedOffset,
+          lastProjectedOffset: direction.lastProjectedOffset,
+          projectedSampleCount: direction.projectedSampleCount,
+        ),
       );
+      if (kDebugMode && trace.distanceMeters < 2000) {
+        debugPrint(
+          '[WORLD_RENDER_TRACE] polylineId=${trace.id} '
+          'activeTraceId=${trace.id} sourceDriveId=${trace.sourceDriveSessionId} '
+          'renderSegmentIndex=0 renderSegmentLengthMeters=${trace.distanceMeters} '
+          'originalActiveTraceLengthMeters=${trace.distanceMeters} '
+          'reasonForSegmentation=NONE',
+        );
+      }
     }
 
     final variants = _visualVariants.assign(resolved.map((item) => item.trace));
@@ -66,13 +133,16 @@ class MyWorldReadService {
           ),
         )
         .toList(growable: false);
-    return MyWorldMapData(
+    final result = MyWorldMapData(
       snapshotGeneration: snapshot.generation,
       traces: List.unmodifiable(styled),
       totalActiveDistanceMeters: snapshot.traces.fold<double>(
         0,
         (sum, trace) => sum + trace.distanceMeters,
       ),
+      // Count processed source drives, not the number of active trace pieces.
+      // A single drive can be split into multiple active traces after record
+      // replacement, so using traces.length understated the drive count.
       processedDriveCount: snapshot.processedDriveSessionIds.toSet().length,
       processedDriveSessionIds: List.unmodifiable(
         snapshot.processedDriveSessionIds.toSet().toList()..sort(),
@@ -80,6 +150,7 @@ class MyWorldReadService {
       skippedBrokenTraceCount: brokenReferences,
       viewport: _dominantViewport(styled),
     );
+    return result;
   }
 
   WorldMapViewport? _dominantViewport(List<ResolvedWorldTrace> traces) {

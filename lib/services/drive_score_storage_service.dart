@@ -30,6 +30,11 @@ class DriveScoreStorageService {
       ? _box.get(keyFor(driveId, algorithmVersion))
       : null;
 
+  static List<DriveScoreRecord> getAll() =>
+      Hive.isBoxOpen(DriveScoreHive.boxName)
+          ? _box.values.toList(growable: false)
+          : const <DriveScoreRecord>[];
+
   static bool exists({
     required String driveId,
     int algorithmVersion = DriveScoreRecord.currentAlgorithmVersion,

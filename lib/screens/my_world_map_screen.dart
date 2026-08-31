@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -11,6 +13,9 @@ import '../features/my_world/services/my_world_runtime.dart';
 import '../features/my_world/services/my_world_settings_service.dart';
 import '../features/my_world/services/world_intro_policy.dart';
 import '../features/my_world/services/world_trace_detail_service.dart';
+import '../features/my_world/services/world_trace_visibility_policy.dart';
+import '../features/my_world/services/world_trace_presentation_service.dart';
+import '../features/my_world/models/world_trace_travel_direction.dart';
 import '../models/drive_score_record.dart';
 import '../models/drive_session.dart';
 import '../services/drive_score_storage_service.dart';
@@ -18,6 +23,7 @@ import '../services/drive_storage_service.dart';
 import '../theme/drive_map_visuals.dart';
 import 'drive_detail_screen.dart';
 import 'world_mode_selection_screen.dart';
+import 'profile_settings_screen.dart';
 
 class MyWorldMapScreen extends StatefulWidget {
   const MyWorldMapScreen({
@@ -38,11 +44,16 @@ class MyWorldMapScreen extends StatefulWidget {
 class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _fallback = LatLng(39.0, 35.0);
+  static const _visibilityPolicy = WorldTraceVisibilityPolicy();
   static const _palette = <Color>[
     Color(0xff53d7ff),
     Color(0xff3b93ff),
-    Color(0xff6ba8ff),
-    Color(0xff31c7e8),
+    Color(0xffff5577),
+    Color(0xff45e08a),
+    Color(0xffffa43a),
+    Color(0xffb477ff),
+    Color(0xffffd34d),
+    Color(0xffff62c8),
   ];
 
   GoogleMapController? _mapController;
@@ -50,12 +61,36 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   late final AnimationController _introController;
   late final MyWorldSettingsStore _settingsStore;
   late final WorldTraceDetailService _detailService;
+  static const _presentation = WorldTracePresentationService();
   MyWorldMapData? _data;
   CameraPosition _camera = const CameraPosition(target: _fallback, zoom: 5);
   String? _selectedTraceId;
+  WorldTraceDetail? _selectedDetail;
   String? _highlightedDriveId;
   bool _introConfigured = false;
   bool _introPlaying = false;
+  final Map<int, BitmapDescriptor> _flowTickIcons = {};
+  Set<String> _oppositeTraceIds = const {};
+  Map<String, ResolvedWorldTrace> _oppositePartners = const {};
+  int? _oppositeGeneration;
+  double _focusMapHeight = 0;
+  String? _lastFlowLogKey;
+  final Set<String> _directionLogKeys = {};
+  int? _lastRenderZoomBucket;
+  Set<Polyline>? _polylineCache;
+  int? _polylineCacheGeneration;
+  int? _polylineCacheZoomBucket;
+  String? _polylineCacheSelection;
+  String? _polylineCacheHighlight;
+  Set<Circle>? _circleCache;
+  int? _circleCacheGeneration;
+  int? _circleCacheZoomBucket;
+  String? _circleCacheSelection;
+  Set<Marker>? _markerCache;
+  int? _markerCacheGeneration;
+  int? _markerCacheZoomBucket;
+  String? _markerCacheSelection;
+  int? _markerCacheIconCount;
 
   bool get _interactionEnabled => !_introPlaying;
 
@@ -75,7 +110,14 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           activeDistanceLoader:
               MyWorldRuntime.indexRepository().activeDistanceForDrive,
         );
-    _loadFuture = (widget.loadData ?? MyWorldRuntime.readService().load)();
+    _loadFuture = _loadWorldData();
+    for (final color in _palette) {
+      DriveMapVisuals.createWorldFlowTick(color: color, scale: .9).then((icon) {
+        if (mounted) {
+          setState(() => _flowTickIcons[color.toARGB32()] = icon);
+        }
+      });
+    }
     _introController =
         AnimationController(vsync: this, duration: WorldIntroPolicy.duration)
           ..addStatusListener((status) {
@@ -83,6 +125,23 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
               setState(() => _introPlaying = false);
             }
           });
+  }
+
+  Future<MyWorldMapData> _loadWorldData() async {
+    if (widget.loadData != null) return widget.loadData!();
+    // Read the current snapshot immediately so map gestures are never held
+    // behind network validation. Reconcile newly completed drives in the
+    // background and refresh once the durable index changes.
+    final initial = await MyWorldRuntime.readWorldData();
+    unawaited(_refreshAfterPendingDrain());
+    return initial;
+  }
+
+  Future<void> _refreshAfterPendingDrain() async {
+    await MyWorldRuntime.drainPendingJobs();
+    if (!mounted) return;
+    final refreshed = await MyWorldRuntime.readWorldData();
+    if (mounted) setState(() => _data = refreshed);
   }
 
   @override
@@ -113,6 +172,17 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           return _WorldReadError(onRetry: () => Navigator.of(context).pop());
         }
         _data ??= snapshot.data;
+        if (_oppositeGeneration != _data!.snapshotGeneration) {
+          _oppositeGeneration = _data!.snapshotGeneration;
+          _oppositeTraceIds = _presentation.oppositeTraceIds(_data!.traces);
+          _oppositePartners = _presentation.oppositePartnerMap(_data!.traces);
+          if (kDebugMode && _oppositeTraceIds.isNotEmpty) {
+            debugPrint(
+              '[WORLD_OPPOSITE] candidateTraceCount=${_oppositeTraceIds.length} '
+              'localOverlap=true offsetApplied=${_selectedTraceId == null}',
+            );
+          }
+        }
         if (_data!.hasOnlyBrokenReferences) {
           return _WorldReadError(onRetry: () => Navigator.of(context).pop());
         }
@@ -141,7 +211,50 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     if (mounted) setState(() => _introPlaying = false);
   }
 
-  Widget _buildMap(MyWorldMapData data) => Stack(
+  Widget _buildMap(MyWorldMapData data) {
+    final focus = _selectedTraceId != null && _selectedDetail != null;
+    if (focus) {
+      return Column(
+        children: [
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final height = constraints.maxHeight;
+                if ((_focusMapHeight - height).abs() > 1) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted || _selectedTraceId == null) return;
+                    _focusMapHeight = height;
+                    final selected = data.traces.where(
+                      (item) => item.trace.id == _selectedTraceId,
+                    );
+                    if (selected.isNotEmpty) _fitFocusTrace(selected.first);
+                  });
+                }
+                return _buildMapViewport(data);
+              },
+            ),
+          ),
+          WorldTraceDetailSheet(
+            detail: _selectedDetail!,
+            onClose: _clearSelection,
+            onViewDrive: () {
+              final detail = _selectedDetail!;
+              _clearSelection();
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => DriveDetailScreen(drive: detail.drive),
+                ),
+              );
+            },
+          ),
+        ],
+      );
+    }
+    return _buildMapViewport(data);
+  }
+
+  Widget _buildMapViewport(MyWorldMapData data) => Stack(
+    fit: StackFit.expand,
     children: [
       GoogleMap(
         initialCameraPosition: _camera,
@@ -159,10 +272,21 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
         rotateGesturesEnabled: _interactionEnabled,
         tiltGesturesEnabled: _interactionEnabled,
         polylines: _polylines(data),
+        circles: _traceMarkers(data),
+        markers: _directionMarkers(data),
         onTap: _selectedTraceId == null ? null : (_) => _clearSelection(),
         onCameraMove: (position) => _camera = position,
         onCameraIdle: () {
-          if (mounted && _interactionEnabled) setState(() {});
+          if (!mounted || !_interactionEnabled) return;
+          // Panning does not alter rendered geometry. Rebuild only when a
+          // zoom visibility bucket changes (for example, direction ticks
+          // becoming eligible), avoiding a full trace rebuild after every
+          // gesture.
+          final bucket = _renderZoomBucket(_camera.zoom);
+          if (_lastRenderZoomBucket != bucket) {
+            _lastRenderZoomBucket = bucket;
+            setState(() {});
+          }
         },
         onMapCreated: (controller) {
           _mapController = controller;
@@ -186,7 +310,9 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
             data: data,
             cameraBearing: _camera.bearing,
             hasLastWorldDrive: _lastProcessedDrive(data) != null,
-            onBack: () => Navigator.of(context).pop(),
+            onBack: _selectedTraceId == null
+                ? () => Navigator.of(context).pop()
+                : _clearSelection,
             onSettings: _openSettings,
             onResetBearing: _resetBearing,
             onShowWorld: data.viewport == null ? null : _showWorld,
@@ -217,36 +343,75 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   );
 
   Set<Polyline> _polylines(MyWorldMapData data) {
+    final zoomBucket = _renderZoomBucket(_camera.zoom);
+    if (_polylineCache != null &&
+        _polylineCacheGeneration == data.snapshotGeneration &&
+        _polylineCacheZoomBucket == zoomBucket &&
+        _polylineCacheSelection == _selectedTraceId &&
+        _polylineCacheHighlight == _highlightedDriveId) {
+      return _polylineCache!;
+    }
     final output = <Polyline>{};
+    final zoom = _camera.zoom;
     for (final item in data.traces) {
-      final points = item.geometry
-          .map((point) => LatLng(point.latitude, point.longitude))
-          .toList(growable: false);
+      if (_selectedTraceId != null && item.trace.id != _selectedTraceId) {
+        continue;
+      }
+      if (!_visibilityPolicy.isVisible(
+        distanceMeters: item.trace.distanceMeters,
+        zoom: zoom,
+      )) {
+        continue;
+      }
+      final points = _presentation.renderGeometry(
+        trace: item,
+        separateOpposite:
+            _selectedTraceId == null &&
+            _oppositeTraceIds.contains(item.trace.id),
+        zoom: zoom,
+        oppositePartner: _selectedTraceId == null
+            ? _oppositePartners[item.trace.id]
+            : null,
+      );
       final color = _palette[item.visualVariant % _palette.length];
       final selected = item.trace.id == _selectedTraceId;
       final highlighted =
           item.trace.sourceDriveSessionId == _highlightedDriveId;
       final otherSelected = _selectedTraceId != null && !selected;
-      output.add(
-        Polyline(
-          polylineId: PolylineId('world_glow:${item.trace.id}'),
-          points: points,
-          color: color.withAlpha(
-            selected || highlighted ? 125 : (otherSelected ? 35 : 65),
+      final veryFar = zoom < 6;
+      final far = zoom < 8;
+      final focus = _selectedTraceId != null;
+      final glowWidth = focus
+          ? 0
+          : (veryFar ? 0 : (selected || highlighted ? 5 : (far ? 2 : 3)));
+      if (glowWidth > 0) {
+        output.add(
+          Polyline(
+            polylineId: PolylineId('world_glow:${item.trace.id}'),
+            points: points,
+            color: color.withAlpha(
+              selected || highlighted
+                  ? (far ? 70 : 125)
+                  : (otherSelected ? 18 : (far ? 28 : 55)),
+            ),
+            width: glowWidth,
+            zIndex: 1,
+            geodesic: true,
           ),
-          width: selected || highlighted ? 16 : 12,
-          zIndex: 1,
-          geodesic: true,
-        ),
-      );
+        );
+      }
       output.add(
         Polyline(
           polylineId: PolylineId('world_core:${item.trace.id}'),
           points: points,
-          color: selected || highlighted
-              ? const Color(0xffbcefff)
-              : color.withAlpha(otherSelected ? 150 : 255),
-          width: selected || highlighted ? 7 : 5,
+          color: focus
+              ? color
+              : (selected || highlighted
+                    ? const Color(0xffbcefff)
+                    : color.withAlpha(otherSelected ? 72 : 255)),
+          width: focus
+              ? 3
+              : (selected || highlighted ? (far ? 2 : 4) : (far ? 1 : 2)),
           zIndex: 2,
           geodesic: true,
           consumeTapEvents: true,
@@ -254,49 +419,342 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
         ),
       );
     }
+    final result = Set<Polyline>.unmodifiable(output);
+    _polylineCache = result;
+    _polylineCacheGeneration = data.snapshotGeneration;
+    _polylineCacheZoomBucket = zoomBucket;
+    _polylineCacheSelection = _selectedTraceId;
+    _polylineCacheHighlight = _highlightedDriveId;
+    return result;
+  }
+
+  int _renderZoomBucket(double zoom) {
+    if (zoom < 6) return 0;
+    if (zoom < 8) return 1;
+    if (zoom < 14) return 2;
+    if (zoom < 15.5) return 3;
+    return 4;
+  }
+
+  Set<Circle> _traceMarkers(MyWorldMapData data) {
+    final zoomBucket = _renderZoomBucket(_camera.zoom);
+    if (_circleCache != null &&
+        _circleCacheGeneration == data.snapshotGeneration &&
+        _circleCacheZoomBucket == zoomBucket &&
+        _circleCacheSelection == _selectedTraceId) {
+      return _circleCache!;
+    }
+    final circles = <Circle>{};
+    final zoom = _camera.zoom;
+    if (!_visibilityPolicy.areMarkersVisible(zoom)) return circles;
+    for (final item in data.traces) {
+      if (_selectedTraceId != null && item.trace.id != _selectedTraceId) {
+        continue;
+      }
+      if (!_visibilityPolicy.isVisible(
+            distanceMeters: item.trace.distanceMeters,
+            zoom: zoom,
+          ) ||
+          item.geometry.length < 2) {
+        continue;
+      }
+      final selected = item.trace.id == _selectedTraceId;
+      final color = _palette[item.visualVariant % _palette.length];
+      final rendered = _presentation.renderGeometry(
+        trace: item,
+        separateOpposite:
+            _selectedTraceId == null &&
+            _oppositeTraceIds.contains(item.trace.id),
+        zoom: zoom,
+        oppositePartner: _selectedTraceId == null
+            ? _oppositePartners[item.trace.id]
+            : null,
+      );
+      final start = rendered.first;
+      final end = rendered.last;
+      final meterRadius = _visibilityPolicy.markerRadiusMeters(
+        zoom: zoom,
+        selected: selected,
+      );
+      circles.add(
+        Circle(
+          circleId: CircleId('world_start:${item.trace.id}'),
+          center: LatLng(start.latitude, start.longitude),
+          radius: meterRadius,
+          strokeWidth: selected ? 2 : 1,
+          strokeColor: color,
+          fillColor: Colors.transparent,
+          zIndex: selected ? 5 : 3,
+        ),
+      );
+      circles.add(
+        Circle(
+          circleId: CircleId('world_end:${item.trace.id}'),
+          center: LatLng(end.latitude, end.longitude),
+          radius: meterRadius,
+          strokeWidth: selected ? 2 : 1,
+          strokeColor: color,
+          fillColor: color.withAlpha(selected ? 210 : 150),
+          zIndex: selected ? 5 : 3,
+        ),
+      );
+    }
+    final result = Set<Circle>.unmodifiable(circles);
+    _circleCache = result;
+    _circleCacheGeneration = data.snapshotGeneration;
+    _circleCacheZoomBucket = zoomBucket;
+    _circleCacheSelection = _selectedTraceId;
+    return result;
+  }
+
+  Set<Marker> _directionMarkers(MyWorldMapData data) {
+    final zoomBucket = _renderZoomBucket(_camera.zoom);
+    if (_markerCache != null &&
+        _markerCacheGeneration == data.snapshotGeneration &&
+        _markerCacheZoomBucket == zoomBucket &&
+        _markerCacheSelection == _selectedTraceId &&
+        _markerCacheIconCount == _flowTickIcons.length) {
+      return _markerCache!;
+    }
+    if (!_visibilityPolicy.areMarkersVisible(_camera.zoom)) {
+      return const <Marker>{};
+    }
+    // Direction ticks are deliberately a near-zoom aid, never a city/region
+    // overlay. This keeps the World network clean at medium and far zoom.
+    if (_camera.zoom < 14) return const <Marker>{};
+    final spacing = _selectedTraceId == null
+        ? (_camera.zoom >= 15.5 ? 575.0 : 800.0)
+        : (_camera.zoom >= 15.5 ? 425.0 : 575.0);
+    final maxTicks = _selectedTraceId == null ? 5 : 7;
+    final output = <Marker>{};
+    var totalGenerated = 0;
+    for (final item in data.traces) {
+      if (_selectedTraceId != null && item.trace.id != _selectedTraceId) {
+        continue;
+      }
+      if (!_visibilityPolicy.isVisible(
+        distanceMeters: item.trace.distanceMeters,
+        zoom: _camera.zoom,
+      )) {
+        continue;
+      }
+      if (item.travelDirection == WorldTraceTravelDirection.unknown) {
+        continue;
+      }
+      final points = _presentation.renderGeometry(
+        trace: item,
+        separateOpposite:
+            _selectedTraceId == null &&
+            _oppositeTraceIds.contains(item.trace.id),
+        zoom: _camera.zoom,
+        oppositePartner: _selectedTraceId == null
+            ? _oppositePartners[item.trace.id]
+            : null,
+      );
+      if (points.length < 2) continue;
+      _logDirection(item, points);
+      final positions = _arrowPositions(points, spacing, maxTicks: maxTicks);
+      totalGenerated += positions.length;
+      for (var i = 0; i < positions.length; i++) {
+        final position = positions[i];
+        final icon =
+            _flowTickIcons[_palette[item.visualVariant % _palette.length]
+                .toARGB32()];
+        if (icon == null) continue;
+        output.add(
+          Marker(
+            markerId: MarkerId('world_direction:${item.trace.id}:$i'),
+            position: position.position,
+            icon: icon,
+            // The flow bitmap's natural chevron tip points down (south) while
+            // Google marker rotation 0° points north. Correct the base shape
+            // once here; travel-oriented geometry must not be reversed again.
+            rotation: (position.bearing + 180) % 360,
+            anchor: const Offset(.5, .5),
+            flat: true,
+            zIndexInt: 6,
+          ),
+        );
+      }
+    }
+    if (kDebugMode) {
+      final key =
+          '${_camera.zoom.floor()}:$totalGenerated:${_flowTickIcons.isNotEmpty}';
+      if (key != _lastFlowLogKey) {
+        _lastFlowLogKey = key;
+        debugPrint(
+          '[WORLD_FLOW] zoom=${_camera.zoom.toStringAsFixed(1)} '
+          'generated=$totalGenerated rendered=${output.length} '
+          'baseShapeReady=${_flowTickIcons.isNotEmpty} '
+          'designVariant=flow_tick rotationCorrection=180 '
+          'spacing=$spacing',
+        );
+      }
+    }
+    final result = Set<Marker>.unmodifiable(output);
+    _markerCache = result;
+    _markerCacheGeneration = data.snapshotGeneration;
+    _markerCacheZoomBucket = zoomBucket;
+    _markerCacheSelection = _selectedTraceId;
+    _markerCacheIconCount = _flowTickIcons.length;
+    return result;
+  }
+
+  void _logDirection(ResolvedWorldTrace item, List<LatLng> points) {
+    if (!kDebugMode) return;
+    final key = '${item.trace.id}:${item.travelDirection}';
+    if (!_directionLogKeys.add(key)) return;
+    final tangentBearing = _bearing(points.first, points[1]);
+    final finalBearing = (tangentBearing + 180) % 360;
+    debugPrint(
+      '[WORLD_DIRECTION_AUDIT] traceId=${item.trace.id} '
+      'sourceDriveId=${item.trace.sourceDriveSessionId} '
+      'projectedSampleCount=${item.projectedSampleCount} '
+      'firstProjectedOffset=${item.firstProjectedOffset?.toStringAsFixed(1) ?? "none"} '
+      'lastProjectedOffset=${item.lastProjectedOffset?.toStringAsFixed(1) ?? "none"} '
+      'signedProgression=${((item.lastProjectedOffset ?? 0) - (item.firstProjectedOffset ?? 0)).toStringAsFixed(1)} '
+      'resolvedDirection=${item.travelDirection.name.toUpperCase()} '
+      'confidence=${item.directionConfidence.toStringAsFixed(2)} '
+      'presentationGeometryReversed=${item.travelDirection == WorldTraceTravelDirection.reverse} '
+      'tangentBearing=${tangentBearing.toStringAsFixed(1)} '
+      'flowBaseOrientationDegrees=180.0 rotationApplied=180.0 '
+      'finalVisualBearing=${finalBearing.toStringAsFixed(1)}',
+    );
+  }
+
+  List<_ArrowPosition> _arrowPositions(
+    List<LatLng> points,
+    double spacing, {
+    required int maxTicks,
+  }) {
+    final output = <_ArrowPosition>[];
+    // Keep direction marks away from start/end pins so the trace endpoints
+    // remain visually clear. The clearance is presentation-only.
+    const endpointClearanceMeters = 50.0;
+    var accumulated = 0.0;
+    var nextTarget = spacing;
+    var totalLength = 0.0;
+    for (var i = 1; i < points.length; i++) {
+      final segment = _distanceMeters(points[i - 1], points[i]);
+      if (segment.isFinite && segment > 0) totalLength += segment;
+    }
+    for (var i = 1; i < points.length; i++) {
+      final previous = points[i - 1];
+      final current = points[i];
+      final segment = _distanceMeters(previous, current);
+      if (!segment.isFinite || segment <= 0) continue;
+      while (accumulated + segment >= nextTarget) {
+        final ratio = ((nextTarget - accumulated) / segment).clamp(0.0, 1.0);
+        final targetFromStart = nextTarget;
+        final targetFromEnd = totalLength - targetFromStart;
+        if (targetFromStart >= endpointClearanceMeters &&
+            targetFromEnd >= endpointClearanceMeters) {
+          final position = LatLng(
+            previous.latitude + (current.latitude - previous.latitude) * ratio,
+            previous.longitude +
+                (current.longitude - previous.longitude) * ratio,
+          );
+          output.add(_ArrowPosition(position, _bearing(previous, current)));
+        }
+        nextTarget += spacing;
+        if (output.length >= maxTicks) return output;
+      }
+      accumulated += segment;
+    }
+    if (output.isEmpty &&
+        points.length >= 2 &&
+        totalLength >= endpointClearanceMeters * 2) {
+      output.add(
+        _ArrowPosition(
+          points[points.length ~/ 2],
+          _bearing(points[points.length ~/ 2 - 1], points[points.length ~/ 2]),
+        ),
+      );
+    }
     return output;
+  }
+
+  double _distanceMeters(LatLng a, LatLng b) {
+    final dLat = (a.latitude - b.latitude) * 111320;
+    final dLon =
+        (a.longitude - b.longitude) *
+        111320 *
+        math.cos(a.latitude * math.pi / 180);
+    return math.sqrt(dLat * dLat + dLon * dLon);
+  }
+
+  double _bearing(LatLng a, LatLng b) {
+    final p1 = a.latitude * math.pi / 180;
+    final p2 = b.latitude * math.pi / 180;
+    final dLon = (b.longitude - a.longitude) * math.pi / 180;
+    final y = math.sin(dLon) * math.cos(p2);
+    final x =
+        math.cos(p1) * math.sin(p2) -
+        math.sin(p1) * math.cos(p2) * math.cos(dLon);
+    return (math.atan2(y, x) * 180 / math.pi + 360) % 360;
   }
 
   Future<void> _selectTrace(ResolvedWorldTrace item) async {
     if (!_interactionEnabled) return;
-    setState(() => _selectedTraceId = item.trace.id);
-    await _fitResolvedTraces([item], padding: 116);
-    final detail = await _detailService.load(item.trace.sourceDriveSessionId);
+    setState(() {
+      _selectedTraceId = item.trace.id;
+      _selectedDetail = null;
+    });
+    final detail = await _detailService.loadTrace(
+      trace: item.trace,
+      geometry: item.geometry,
+    );
     if (!mounted) return;
     if (detail == null) {
       _message('Bu izin sürüş kaydı artık mevcut değil.');
       _clearSelection();
       return;
     }
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (_) => WorldTraceDetailSheet(
-        detail: detail,
-        onViewDrive: () {
-          Navigator.of(context).pop();
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => DriveDetailScreen(drive: detail.drive),
-            ),
-          );
-        },
-      ),
+    if (!mounted || _selectedTraceId != item.trace.id) return;
+    setState(() => _selectedDetail = detail);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _selectedTraceId == item.trace.id) {
+        _fitFocusTrace(item);
+      }
+    });
+  }
+
+  Future<void> _fitFocusTrace(ResolvedWorldTrace item) async {
+    final mapHeight = _focusMapHeight;
+    if (mapHeight <= 0) return;
+    final controller = _mapController;
+    if (controller == null || !mounted) return;
+    await _fitResolvedTraces([item], padding: 34);
+    final boundsCenter = LatLng(
+      (item.geometry.first.latitude + item.geometry.last.latitude) / 2,
+      (item.geometry.first.longitude + item.geometry.last.longitude) / 2,
     );
-    if (mounted) _clearSelection();
+    if (kDebugMode) {
+      debugPrint(
+        '[WORLD_FOCUS] selectedTraceId=${item.trace.id} '
+        'mapWidgetHeight=${mapHeight.toStringAsFixed(0)} '
+        'mapWidgetTop=0 mapWidgetBottom=${mapHeight.toStringAsFixed(0)} '
+        'detailCardTop=${mapHeight.toStringAsFixed(0)} '
+        'boundsCenter=${boundsCenter.latitude.toStringAsFixed(5)},${boundsCenter.longitude.toStringAsFixed(5)} '
+        'finalZoom=${_camera.zoom.toStringAsFixed(2)}',
+      );
+    }
   }
 
   void _clearSelection() {
     if (_selectedTraceId == null) return;
-    setState(() => _selectedTraceId = null);
+    setState(() {
+      _selectedTraceId = null;
+      _selectedDetail = null;
+      _focusMapHeight = 0;
+    });
   }
 
   Future<void> _openSettings() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => MyWorldSettingsSheet(store: _settingsStore),
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ProfileSettingsScreen(worldSettings: _settingsStore),
+      ),
     );
   }
 
@@ -460,6 +918,13 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
   }
+}
+
+class _ArrowPosition {
+  const _ArrowPosition(this.position, this.bearing);
+
+  final LatLng position;
+  final double bearing;
 }
 
 class _WorldIntroOverlay extends StatelessWidget {
@@ -695,76 +1160,17 @@ class _MapChrome extends StatelessWidget {
   );
 }
 
-class MyWorldSettingsSheet extends StatefulWidget {
-  const MyWorldSettingsSheet({super.key, required this.store});
-  final MyWorldSettingsStore store;
-
-  @override
-  State<MyWorldSettingsSheet> createState() => _MyWorldSettingsSheetState();
-}
-
-class _MyWorldSettingsSheetState extends State<MyWorldSettingsSheet> {
-  late bool _skipIntro;
-
-  @override
-  void initState() {
-    super.initState();
-    _skipIntro = widget.store.skipIntroAnimation;
-  }
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Material(
-      color: const Color(0xff07172d),
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Center(
-              child: SizedBox(
-                width: 42,
-                child: Divider(color: Colors.white30, thickness: 3),
-              ),
-            ),
-            const Text(
-              'Dünya Ayarları',
-              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile.adaptive(
-              key: const Key('skip_world_intro_switch'),
-              contentPadding: EdgeInsets.zero,
-              activeTrackColor: const Color(0xff3b93ff),
-              title: const Text('Dünya animasyonunu geç'),
-              subtitle: const Text(
-                'Bir sonraki açılışta haritayı doğrudan gösterir.',
-                style: TextStyle(color: Color(0xff8fa1ba), fontSize: 12),
-              ),
-              value: _skipIntro,
-              onChanged: (value) async {
-                await widget.store.setSkipIntroAnimation(value);
-                if (mounted) setState(() => _skipIntro = value);
-              },
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-}
-
 class WorldTraceDetailSheet extends StatelessWidget {
   const WorldTraceDetailSheet({
     super.key,
     required this.detail,
     required this.onViewDrive,
+    this.onClose,
   });
 
   final WorldTraceDetail detail;
   final VoidCallback onViewDrive;
+  final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
@@ -788,10 +1194,16 @@ class WorldTraceDetailSheet extends StatelessWidget {
               Row(
                 children: [
                   const Text(
-                    'Dünya Rekoru',
+                    'Dünya İzi',
                     style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
                   ),
                   const Spacer(),
+                  if (onClose != null)
+                    IconButton(
+                      tooltip: 'Kapat',
+                      onPressed: onClose,
+                      icon: const Icon(Icons.close),
+                    ),
                   Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 10,
@@ -825,33 +1237,100 @@ class WorldTraceDetailSheet extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                childAspectRatio: 2.7,
-                mainAxisSpacing: 8,
-                crossAxisSpacing: 8,
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                runSpacing: 4,
                 children: [
-                  _metric(
-                    'Drive Score',
-                    detail.score == null
-                        ? 'Mevcut değil'
-                        : detail.score!.totalScore.round().toString(),
-                  ),
-                  _metric(
-                    'Sürüş Süresi',
+                  _secondaryMetric('Mesafe', _formatDistance(drive.distance)),
+                  _secondaryMetric(
+                    'Süre',
                     _formatDuration(drive.durationSeconds),
                   ),
-                  _metric('Maksimum Hız', '${drive.maxSpeed.round()} km/s'),
-                  _metric('Ortalama Hız', '${drive.averageSpeed.round()} km/s'),
-                  _metric('Toplam Mesafe', _formatDistance(drive.distance)),
-                  _metric(
-                    'Dünya’daki Rekor İzi',
+                  _secondaryMetric('Maks.', '${drive.maxSpeed.round()} km/s'),
+                  _secondaryMetric(
+                    'Ort.',
+                    '${drive.averageSpeed.round()} km/s',
+                  ),
+                  _secondaryMetric(
+                    'Aktif iz',
                     _formatDistance(detail.activeWorldDistanceMeters),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+              LayoutBuilder(
+                builder: (context, constraints) => Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children:
+                      [
+                            _metric(
+                              'Dünya İzi Puanı',
+                              detail.worldTraceScore?.round().toString() ??
+                                  'Mevcut değil',
+                            ),
+                            _metric(
+                              'İz Mesafesi',
+                              detail.traceDistanceMeters == null
+                                  ? '—'
+                                  : _formatDistance(
+                                      detail.traceDistanceMeters!,
+                                    ),
+                            ),
+                            _metric('İz Başlangıcı', detail.traceStart ?? '—'),
+                            _metric('İz Bitişi', detail.traceEnd ?? '—'),
+                            _metric(
+                              'Tam Drive Score',
+                              detail.score == null
+                                  ? '—'
+                                  : detail.score!.totalScore.round().toString(),
+                            ),
+                          ]
+                          .map(
+                            (child) => SizedBox(
+                              width: (constraints.maxWidth - 8) / 2,
+                              child: child,
+                            ),
+                          )
+                          .toList(growable: false),
+                ),
+              ),
+              /* _metric(
+                    'Dünya İzi Puanı',
+                    detail.worldTraceScore?.round().toString() ??
+                        'Mevcut değil',
+                  ),
+                  _metric(
+                    'İz Mesafesi',
+                    detail.traceDistanceMeters == null
+                        ? '—'
+                        : _formatDistance(detail.traceDistanceMeters!),
+                  ),
+                  _metric('Başlangıç', detail.traceStart ?? '—'),
+                  _metric('Bitiş', detail.traceEnd ?? '—'),
+                  _metric(
+                    'Tam Drive Score',
+                    detail.score == null
+                        ? '—'
+                        : detail.score!.totalScore.round().toString(),
+                  ), */
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Tam sürüş: ${_formatDistance(drive.distance)}  •  '
+                  '${_formatDuration(drive.durationSeconds)}  •  '
+                  '${drive.maxSpeed.round()} km/s  •  '
+                  '${drive.averageSpeed.round()} km/s  •  '
+                  'Dünya izi: ${_formatDistance(detail.activeWorldDistanceMeters)}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xff8fa1ba),
+                    fontSize: 11,
+                  ),
+                ),
               ),
               const SizedBox(height: 14),
               SizedBox(
@@ -899,6 +1378,23 @@ class WorldTraceDetailSheet extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+        ),
+      ],
+    ),
+  );
+
+  static Widget _secondaryMetric(String label, String value) => Padding(
+    padding: const EdgeInsets.only(right: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          value,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+        ),
+        Text(
+          label,
+          style: const TextStyle(color: Color(0xff8fa1ba), fontSize: 10),
         ),
       ],
     ),

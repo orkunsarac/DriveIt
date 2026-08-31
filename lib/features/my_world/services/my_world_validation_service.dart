@@ -34,7 +34,12 @@ class MyWorldValidationService {
   Future<void> enqueueDrive(DriveSession drive) async {
     final roads = await repository.getValidatedRoadsForDrive(drive.id);
     if (_currentRoad(roads) case final existing? when !existing.requiresRetry) {
-      return;
+      // A validated road is not enough to consider the drive complete: an
+      // interrupted process may have persisted validation but never committed
+      // the World index. Recreate the durable job until world processing is
+      // also marked processed.
+      final record = await repository.getProcessingRecord(drive.id);
+      if (record?.state == WorldProcessingState.processed) return;
     }
     final now = _clock();
     final job = WorldPendingJob.pending(

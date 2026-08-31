@@ -39,7 +39,7 @@ class CommonRoadLocalScoreService {
         match: match,
         algorithmVersion: algorithmVersion,
         outcome: CommonRoadScoreComparisonOutcome.notEligible,
-        reason: 'Common road is below the 1000 metre comparison threshold.',
+        reason: 'Common road is below the 3000 metre comparison threshold.',
       );
     }
     final telemetry = telemetryExtractor.extractRange(

@@ -7,6 +7,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../../models/drive_session.dart';
 import '../../theme/drive_map_visuals.dart';
 import 'drive_replay_controller.dart';
+import 'replay_interpolator.dart';
 
 enum ReplayCameraMode { close, medium, overview, free }
 
@@ -27,9 +28,11 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   BitmapDescriptor? _navigationIcon;
   Duration? _lastTick;
   Duration _lastRenderedTick = Duration.zero;
+  late ReplayFrame _hudFrame;
+  Duration? _lastHudUpdate;
   DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  ReplayCameraMode _cameraMode = ReplayCameraMode.medium;
-  bool _didAutoplay = false;
+  ReplayCameraMode _cameraMode = ReplayCameraMode.overview;
+  bool _hasStartedReplay = false;
   int _activePointers = 0;
   int _programmaticCameraMoves = 0;
 
@@ -38,6 +41,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     super.initState();
     _replay = DriveReplayController(widget.drive)
       ..addListener(_onReplayChanged);
+    _hudFrame = _replay.frame;
     _ticker = createTicker(_onTick)..start();
     _loadNavigationIcon();
   }
@@ -46,22 +50,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     final icon = await DriveMapVisuals.createNavigationArrow();
     if (!mounted) return;
     setState(() => _navigationIcon = icon);
-    _tryAutoplay();
-  }
-
-  void _tryAutoplay() {
-    if (_didAutoplay ||
-        _mapController == null ||
-        _navigationIcon == null ||
-        !_replay.canReplay) {
-      return;
-    }
-    _didAutoplay = true;
-    unawaited(
-      _followCamera(force: true).whenComplete(() {
-        if (mounted) _replay.play();
-      }),
-    );
   }
 
   void _onTick(Duration elapsed) {
@@ -81,7 +69,14 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
 
   void _onReplayChanged() {
     if (!mounted) return;
-    setState(() {});
+    final now = _replay.currentTime;
+    if (_lastHudUpdate == null ||
+        now - _lastHudUpdate! >= const Duration(seconds: 1) ||
+        _replay.isComplete) {
+      _hudFrame = _replay.frame;
+      _lastHudUpdate = now;
+      setState(() {});
+    }
     if (_replay.isPlaying && _cameraMode != ReplayCameraMode.free) {
       _followCamera();
     }
@@ -198,77 +193,124 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     if (!_replay.canReplay) {
       return _UnavailableReplay(onBack: () => Navigator.of(context).pop());
     }
-    final frame = _replay.frame;
     final fullRoute = _replay.timeline
         .map((point) => LatLng(point.latitude, point.longitude))
         .toList(growable: false);
-    final visited = <LatLng>[
-      ...fullRoute.take(frame.segmentIndex + 1),
-      LatLng(frame.latitude, frame.longitude),
-    ];
 
     return Scaffold(
       backgroundColor: DriveMapVisuals.background,
       body: Stack(
         children: [
-          Listener(
-            onPointerDown: (_) => _activePointers++,
-            onPointerUp: (_) =>
-                _activePointers = (_activePointers - 1).clamp(0, 10),
-            onPointerCancel: (_) =>
-                _activePointers = (_activePointers - 1).clamp(0, 10),
-            child: GoogleMap(
-              initialCameraPosition: CameraPosition(
-                target: fullRoute.first,
-                zoom: 16.3,
-              ),
-              style: DriveMapVisuals.darkMapStyle,
-              myLocationEnabled: false,
-              myLocationButtonEnabled: false,
-              zoomControlsEnabled: false,
-              mapToolbarEnabled: false,
-              compassEnabled: false,
-              rotateGesturesEnabled: true,
-              tiltGesturesEnabled: true,
-              onCameraMoveStarted: _onCameraMoveStarted,
-              polylines: {
-                Polyline(
-                  polylineId: const PolylineId('replay_full_route'),
-                  points: fullRoute,
-                  color: DriveMapVisuals.pendingRouteColor,
-                  width: DriveMapVisuals.activeRouteWidth,
-                  jointType: JointType.round,
-                  startCap: Cap.roundCap,
-                  endCap: Cap.roundCap,
-                ),
-                Polyline(
-                  polylineId: const PolylineId('replay_visited_route'),
-                  points: visited,
-                  color: DriveMapVisuals.activeRouteColor,
-                  width: DriveMapVisuals.activeRouteWidth,
-                  jointType: JointType.round,
-                  startCap: Cap.roundCap,
-                  endCap: Cap.roundCap,
-                ),
-              },
-              markers: {
-                if (_navigationIcon != null)
-                  Marker(
-                    markerId: const MarkerId('driveit_replay_vehicle'),
-                    position: LatLng(frame.latitude, frame.longitude),
-                    icon: _navigationIcon!,
-                    anchor: const Offset(.5, .72),
-                    flat: true,
-                    rotation: frame.heading,
+          AnimatedBuilder(
+            animation: _replay,
+            builder: (context, _) {
+              final frame = _replay.frame;
+              final visited = <LatLng>[
+                ...fullRoute.take(frame.segmentIndex + 1),
+                LatLng(frame.latitude, frame.longitude),
+              ];
+              return Listener(
+                onPointerDown: (_) => _activePointers++,
+                onPointerUp: (_) =>
+                    _activePointers = (_activePointers - 1).clamp(0, 10),
+                onPointerCancel: (_) =>
+                    _activePointers = (_activePointers - 1).clamp(0, 10),
+                child: GoogleMap(
+                  initialCameraPosition: CameraPosition(
+                    target: fullRoute.first,
+                    zoom: 16.3,
                   ),
-              },
-              onMapCreated: (controller) {
-                _mapController = controller;
-                _tryAutoplay();
-              },
-            ),
+                  style: DriveMapVisuals.darkMapStyle,
+                  myLocationEnabled: false,
+                  myLocationButtonEnabled: false,
+                  zoomControlsEnabled: false,
+                  mapToolbarEnabled: false,
+                  compassEnabled: false,
+                  rotateGesturesEnabled: true,
+                  tiltGesturesEnabled: true,
+                  onCameraMoveStarted: _onCameraMoveStarted,
+                  polylines: {
+                    Polyline(
+                      polylineId: const PolylineId('replay_full_route'),
+                      points: fullRoute,
+                      color: DriveMapVisuals.pendingRouteColor,
+                      width: DriveMapVisuals.activeRouteWidth,
+                      jointType: JointType.round,
+                      startCap: Cap.roundCap,
+                      endCap: Cap.roundCap,
+                    ),
+                    Polyline(
+                      polylineId: const PolylineId('replay_visited_route'),
+                      points: visited,
+                      color: DriveMapVisuals.activeRouteColor,
+                      width: DriveMapVisuals.activeRouteWidth,
+                      jointType: JointType.round,
+                      startCap: Cap.roundCap,
+                      endCap: Cap.roundCap,
+                    ),
+                  },
+                  markers: {
+                    if (_navigationIcon != null)
+                      Marker(
+                        markerId: const MarkerId('driveit_replay_vehicle'),
+                        position: LatLng(frame.latitude, frame.longitude),
+                        icon: _navigationIcon!,
+                        anchor: const Offset(.5, .72),
+                        flat: true,
+                        rotation: frame.heading,
+                      ),
+                  },
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                    if (_cameraMode != ReplayCameraMode.free) {
+                      unawaited(_followCamera(force: true));
+                    }
+                  },
+                ),
+              );
+            },
           ),
           const Positioned.fill(child: IgnorePointer(child: _MapVignette())),
+          if (!_hasStartedReplay && !_replay.isComplete)
+            Center(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () {
+                    _hasStartedReplay = true;
+                    _replay.play();
+                    setState(() {});
+                  },
+                  borderRadius: BorderRadius.circular(16),
+                  child: Ink(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 16,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xdd071a33),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xff3b93ff)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x553b93ff),
+                          blurRadius: 18,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                    child: const Text(
+                      'Başla!',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 18),
@@ -277,26 +319,37 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                   _ReplayHeader(onBack: () => Navigator.of(context).pop()),
                   const SizedBox(height: 10),
                   _TelemetryHud(
-                    speedKmh: frame.speedKmh,
-                    distanceKm: frame.distanceMeters / 1000,
-                    elapsed: frame.elapsed,
+                    speedKmh: _hudFrame.speedKmh,
+                    distanceKm: _hudFrame.distanceMeters / 1000,
+                    elapsed: _hudFrame.elapsed,
                   ),
                   const Spacer(),
-                  if (_replay.isComplete) _CompletionCard(drive: widget.drive),
+                  AnimatedBuilder(
+                    animation: _replay,
+                    builder: (_, _) => _replay.isComplete
+                        ? _CompletionCard(drive: widget.drive)
+                        : const SizedBox.shrink(),
+                  ),
                   const SizedBox(height: 10),
                   _CameraModeSelector(
                     selected: _cameraMode,
                     onChanged: _changeCameraMode,
                   ),
                   const SizedBox(height: 10),
-                  _ReplayControls(
-                    replay: _replay,
-                    onSeek: (value) {
-                      _replay.seek(value);
-                      if (_cameraMode != ReplayCameraMode.free) {
-                        unawaited(_followCamera(force: true));
-                      }
-                    },
+                  AnimatedBuilder(
+                    animation: _replay,
+                    builder: (_, _) => _ReplayControls(
+                      replay: _replay,
+                      onSeek: (value) {
+                        _replay.seek(value);
+                        _hudFrame = _replay.frame;
+                        _lastHudUpdate = _replay.currentTime;
+                        if (mounted) setState(() {});
+                        if (_cameraMode != ReplayCameraMode.free) {
+                          unawaited(_followCamera(force: true));
+                        }
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -608,7 +661,7 @@ class _ReplayControls extends StatelessWidget {
           ],
         ),
         Text(
-          '${_formatDuration(replay.currentTime)} / ${_formatDuration(replay.totalDuration)}',
+          '${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
           style: const TextStyle(color: Color(0xff91a4c2), fontSize: 11),
         ),
       ],

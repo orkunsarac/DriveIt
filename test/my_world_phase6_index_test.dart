@@ -55,7 +55,7 @@ void main() {
         current: _snapshot([existingTrace]),
         challengerRoad: challenger,
         overlaps: [
-          _overlap(existingTrace, _match(10000), [_winner(4000, 5500)]),
+          _overlap(existingTrace, _match(10000), [_winner(4000, 6000)]),
         ],
         now: now,
       );
@@ -64,11 +64,11 @@ void main() {
       expect(traces, hasLength(3));
       expect(
         traces.where((trace) => trace.sourceDriveSessionId == 'existing-drive').map((trace) => trace.distanceMeters),
-        unorderedEquals([4000.0, 4500.0]),
+        unorderedEquals([4000.0, 4000.0]),
       );
       expect(
         traces.where((trace) => trace.sourceDriveSessionId == 'challenger-drive').single.distanceMeters,
-        1500.0,
+        2000.0,
       );
     });
 
@@ -99,14 +99,14 @@ void main() {
         current: _snapshot([trace]),
         challengerRoad: challenger,
         overlaps: [
-          _overlap(trace, _match(10000), [_winner(1000, 1800), _winner(3500, 4300)]),
+          _overlap(trace, _match(10000), [_winner(1000, 3200), _winner(3500, 5700)]),
         ],
         now: now,
       );
-      expect(plan.resultingSnapshot.traces, hasLength(5));
+      expect(plan.resultingSnapshot.traces, hasLength(4));
       expect(
         plan.resultingSnapshot.traces.where((trace) => trace.sourceDriveSessionId == 'existing-drive'),
-        hasLength(3),
+        hasLength(2),
       );
       expect(
         plan.resultingSnapshot.traces.where((trace) => trace.sourceDriveSessionId == 'challenger-drive'),
@@ -124,10 +124,10 @@ void main() {
         overlaps: [_overlap(trace, _match(300), const [])],
         now: now,
       );
-      expect(plan.resultingSnapshot.traces, hasLength(2));
+      expect(plan.resultingSnapshot.traces, hasLength(1));
       expect(
-        plan.resultingSnapshot.traces.singleWhere((trace) => trace.sourceDriveSessionId == 'existing-drive').distanceMeters,
-        closeTo(300, .1),
+        plan.resultingSnapshot.traces.where((trace) => trace.sourceDriveSessionId == 'existing-drive'),
+        isEmpty,
       );
       final newTrace = plan.resultingSnapshot.traces.singleWhere(
         (trace) => trace.sourceDriveSessionId == 'challenger-drive',
@@ -163,7 +163,7 @@ void main() {
         overlaps: [_overlap(trace, _match(1000), [_winner(500, 1000)])],
         now: now,
       );
-      expect(plan.resultingSnapshot.traces.first.distanceMeters, closeTo(500, .1));
+      expect(plan.resultingSnapshot.traces.first.distanceMeters, closeTo(1000, .1));
     });
 
     test('processing operation is deterministic and snapshot metadata advances once', () {
@@ -177,7 +177,25 @@ void main() {
       expect(first.operationId, second.operationId);
       expect(first.resultingSnapshot.generation, 1);
       expect(first.resultingSnapshot.driveScoreAlgorithmVersion, 1);
-      expect(first.resultingSnapshot.validatedRoadProcessingVersion, 2);
+      expect(first.resultingSnapshot.validatedRoadProcessingVersion, 4);
+    });
+
+    test('global active trace invariant drops 999m first records but keeps 1000m', () {
+      final shortPlan = planner.plan(
+        current: _empty(),
+        challengerRoad: _road('short', 999),
+        overlaps: const [],
+        now: now,
+      );
+      final exactPlan = planner.plan(
+        current: _empty(),
+        challengerRoad: _road('exact', 1000),
+        overlaps: const [],
+        now: now,
+      );
+      expect(shortPlan.resultingSnapshot.traces, isEmpty);
+      expect(exactPlan.resultingSnapshot.traces, hasLength(1));
+      expect(exactPlan.resultingSnapshot.traces.single.distanceMeters, 1000);
     });
   });
 }

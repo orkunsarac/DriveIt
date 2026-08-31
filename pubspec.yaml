@@ -45,6 +45,9 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   path_provider: ^2.1.5
+  image_picker: ^1.2.3
+  image_cropper: ^8.0.2
+  package_info_plus: ^10.2.1
 
 dev_dependencies:
   flutter_test:
@@ -72,8 +75,12 @@ flutter:
   uses-material-design: true
 
   assets:
+    - assets/images/world_card_digital_horizon.webp
+    - assets/images/my_world_card_art.png
+    - assets/images/driveit_planet_card_art.png
     - assets/branding/driveit_logo.png
     - assets/branding/driveit_logo_clean.png
+    - assets/branding/driveit_logo_current.png
     - assets/branding/driveit_hero.png
 
   # To add assets to your application, add an assets section, like this:

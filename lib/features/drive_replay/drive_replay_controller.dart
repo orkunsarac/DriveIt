@@ -31,6 +31,12 @@ class DriveReplayController extends ChangeNotifier {
   ReplayFrame get frame => _frame;
   Duration get currentTime => _frame.elapsed;
   Duration get totalDuration => Duration(seconds: drive.durationSeconds);
+
+  /// The timeline is presented on the 1x preview axis (10x real playback).
+  Duration get basePreviewDuration =>
+      Duration(microseconds: (totalDuration.inMicroseconds / 10).round());
+  Duration get previewTime =>
+      Duration(microseconds: (currentTime.inMicroseconds / 10).round());
   double get progress {
     final total = totalDuration.inMicroseconds;
     return total <= 0

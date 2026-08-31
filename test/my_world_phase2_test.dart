@@ -285,9 +285,9 @@ void main() {
   });
 
   group('validation orchestration', () {
-    test('2999 metres is rejected and 3000 metres is ready', () async {
-      final rejected = await _validationForDistance(2999);
-      final accepted = await _validationForDistance(3000);
+    test('4999 metres is rejected and 5000 metres is ready', () async {
+      final rejected = await _validationForDistance(4999);
+      final accepted = await _validationForDistance(5000);
 
       expect(
         rejected.result.state,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../features/my_world/models/world_map_read_model.dart';
@@ -24,12 +26,30 @@ class WorldModeSelectionScreen extends StatefulWidget {
 class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
   static const _background = Color(0xff020a18);
   static const _blue = Color(0xff3b93ff);
-  late final Future<MyWorldMapData> _data;
+  late Future<MyWorldMapData> _data;
 
   @override
   void initState() {
     super.initState();
-    _data = (widget.loadData ?? MyWorldRuntime.readService().load)();
+    _data = _loadWorldData();
+  }
+
+  Future<MyWorldMapData> _loadWorldData() async {
+    if (widget.loadData != null) return widget.loadData!();
+    final initial = await MyWorldRuntime.readWorldData();
+    unawaited(_refreshAfterPendingDrain());
+    return initial;
+  }
+
+  Future<void> _refreshAfterPendingDrain() async {
+    await MyWorldRuntime.drainPendingJobs();
+    if (!mounted) return;
+    final refreshed = await MyWorldRuntime.readWorldData();
+    if (mounted) {
+      setState(() {
+        _data = Future.value(refreshed);
+      });
+    }
   }
 
   @override
@@ -38,10 +58,7 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
     appBar: AppBar(
       backgroundColor: _background,
       surfaceTintColor: Colors.transparent,
-      title: const Text(
-        'Dünya',
-        style: TextStyle(fontWeight: FontWeight.w700),
-      ),
+      title: const Text('Dünya', style: TextStyle(fontWeight: FontWeight.w700)),
     ),
     body: SafeArea(
       top: false,
@@ -70,11 +87,12 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
                 key: const Key('my_world_card'),
                 title: 'BENİM DÜNYAM',
                 subtitle: 'Kendi sürüşlerinden oluşan kalıcı neon yol ağın.',
-                icon: Icons.public,
                 accent: _blue,
+                artworkAsset: 'assets/images/my_world_card_art.png',
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: widget.myWorldBuilder ??
+                    builder:
+                        widget.myWorldBuilder ??
                         (_) => const MyWorldMapScreen(),
                   ),
                 ),
@@ -99,7 +117,10 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
                     if (!snapshot.hasData) {
                       return const Text(
                         'Dünya verileri şu anda okunamıyor.',
-                        style: TextStyle(color: Color(0xff8fa1ba), fontSize: 12),
+                        style: TextStyle(
+                          color: Color(0xff8fa1ba),
+                          fontSize: 12,
+                        ),
                       );
                     }
                     final data = snapshot.data!;
@@ -113,7 +134,7 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
                         const SizedBox(width: 24),
                         _WorldStat(
                           value: '${data.processedDriveCount}',
-                          label: 'İşlenen Sürüş',
+                          label: 'Sürüş',
                         ),
                       ],
                     );
@@ -127,8 +148,8 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
                 key: const Key('driveit_planet_card'),
                 title: 'DRIVEIT GEZEGENİ',
                 subtitle: 'DriveIt sürücülerinin küresel yol ağı.',
-                icon: Icons.language,
-                accent: const Color(0xff54647c),
+                accent: const Color(0xff9d5cff),
+                artworkAsset: 'assets/images/driveit_planet_card_art.png',
                 locked: true,
                 onTap: () => ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('DriveIt Gezegeni yakında.')),
@@ -151,20 +172,20 @@ class _WorldModeCard extends StatelessWidget {
     super.key,
     required this.title,
     required this.subtitle,
-    required this.icon,
     required this.accent,
     required this.onTap,
     required this.footer,
+    required this.artworkAsset,
     this.locked = false,
   });
 
   final String title;
   final String subtitle;
-  final IconData icon;
   final Color accent;
   final VoidCallback onTap;
   final Widget footer;
   final bool locked;
+  final String artworkAsset;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -195,13 +216,45 @@ class _WorldModeCard extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            Positioned(
-              right: -24,
-              bottom: -30,
-              child: Icon(
-                icon,
-                size: 180,
-                color: accent.withAlpha(18),
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: Image.asset(
+                  artworkAsset,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.centerRight,
+                  filterQuality: FilterQuality.high,
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.center,
+                      colors: [
+                        const Color(0xee061225),
+                        const Color(0xaa061225),
+                        Colors.transparent,
+                      ],
+                      stops: const [0, .48, .82],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.fromBorderSide(
+                      BorderSide(color: accent.withAlpha(190), width: 1.2),
+                    ),
+                  ),
+                ),
               ),
             ),
             Padding(
@@ -209,26 +262,14 @@ class _WorldModeCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 46,
-                        height: 46,
-                        decoration: BoxDecoration(
-                          color: accent.withAlpha(28),
-                          borderRadius: BorderRadius.circular(15),
-                          border: Border.all(color: accent.withAlpha(120)),
-                        ),
-                        child: Icon(locked ? Icons.lock_outline : icon, color: accent),
-                      ),
-                      const Spacer(),
-                      Icon(
-                        locked ? Icons.lock : Icons.arrow_forward_rounded,
-                        color: locked ? Colors.white38 : Colors.white,
-                      ),
-                    ],
+                  Align(
+                    alignment: Alignment.topRight,
+                    child: Icon(
+                      locked ? Icons.lock : Icons.arrow_forward_rounded,
+                      color: locked ? Colors.white38 : Colors.white,
+                    ),
                   ),
-                  const Spacer(),
+                  const SizedBox(height: 12),
                   Text(
                     title,
                     style: TextStyle(
@@ -276,7 +317,10 @@ class _WorldStat extends StatelessWidget {
           fontWeight: FontWeight.w700,
         ),
       ),
-      Text(label, style: const TextStyle(color: Color(0xff8fa1ba), fontSize: 11)),
+      Text(
+        label,
+        style: const TextStyle(color: Color(0xff8fa1ba), fontSize: 11),
+      ),
     ],
   );
 }

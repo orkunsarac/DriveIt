@@ -39,31 +39,31 @@ void main() {
       ]));
     });
 
-    test('a 300 metre challenger run is discarded while exactly 500 metres wins', () {
-      final short = _analyze(List<_WindowKind>.filled(3, _WindowKind.challenger));
-      final exact = _analyze(List<_WindowKind>.filled(5, _WindowKind.challenger));
+    test('a 1900 metre challenger run is discarded while exactly 2000 metres wins', () {
+      final short = _analyze(List<_WindowKind>.filled(19, _WindowKind.challenger));
+      final exact = _analyze(List<_WindowKind>.filled(20, _WindowKind.challenger));
 
       expect(short.winningRegions, isEmpty);
       expect(exact.winningRegions, hasLength(1));
-      expect(exact.winningRegions.single.winningDistanceMeters, closeTo(500, 2));
+      expect(exact.winningRegions.single.winningDistanceMeters, closeTo(2000, 2));
     });
 
     test('a neutral 100 metre gap merges challenger runs', () {
       final result = _analyze(<_WindowKind>[
-        ...List<_WindowKind>.filled(4, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(10, _WindowKind.challenger),
         _WindowKind.neutral,
-        ...List<_WindowKind>.filled(4, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(10, _WindowKind.challenger),
       ]);
 
       expect(result.winningRegions, hasLength(1));
-      expect(result.winningRegions.single.winningDistanceMeters, closeTo(900, 2));
+      expect(result.winningRegions.single.winningDistanceMeters, closeTo(2100, 2));
     });
 
     test('a 300 metre gap does not merge two sub-500 metre challenger runs', () {
       final result = _analyze(<_WindowKind>[
-        ...List<_WindowKind>.filled(4, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(19, _WindowKind.challenger),
         ...List<_WindowKind>.filled(3, _WindowKind.invalid),
-        ...List<_WindowKind>.filled(4, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(19, _WindowKind.challenger),
       ]);
 
       expect(result.winningRegions, isEmpty);
@@ -71,9 +71,9 @@ void main() {
 
     test('a 200 metre invalid gap is tolerated but a 201 metre physical gap is not', () {
       final tolerated = _analyze(<_WindowKind>[
-        ...List<_WindowKind>.filled(7, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(10, _WindowKind.challenger),
         ...List<_WindowKind>.filled(2, _WindowKind.invalid),
-        ...List<_WindowKind>.filled(8, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(11, _WindowKind.challenger),
       ]);
       final notTolerated = _analyze(
         <_WindowKind>[
@@ -82,37 +82,37 @@ void main() {
           _WindowKind.invalidShort,
           ...List<_WindowKind>.filled(4, _WindowKind.challenger),
         ],
-        commonDistanceMeters: 1001,
+        commonDistanceMeters: 3001,
       );
 
       expect(tolerated.winningRegions, hasLength(1));
-      expect(tolerated.winningRegions.single.winningDistanceMeters, closeTo(1700, 2));
+      expect(tolerated.winningRegions.single.winningDistanceMeters, closeTo(2300, 2));
       expect(notTolerated.winningRegions, isEmpty);
     });
 
     test('multiple winner regions retain both drives physical offsets', () {
       final result = _analyze(<_WindowKind>[
-        ...List<_WindowKind>.filled(6, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(20, _WindowKind.challenger),
         ...List<_WindowKind>.filled(3, _WindowKind.existing),
-        ...List<_WindowKind>.filled(7, _WindowKind.challenger),
+        ...List<_WindowKind>.filled(20, _WindowKind.challenger),
       ], firstOffsetStart: 8800, secondOffsetStart: 3700);
 
       expect(result.winningRegions, hasLength(2));
       expect(result.winningRegions.first.startOffsetOnExistingMeters, closeTo(8800, 2));
-      expect(result.winningRegions.first.endOffsetOnExistingMeters, closeTo(9400, 2));
-      expect(result.winningRegions.last.startOffsetOnChallengerMeters, closeTo(4600, 2));
-      expect(result.winningRegions.last.endOffsetOnChallengerMeters, closeTo(5300, 2));
+      expect(result.winningRegions.first.endOffsetOnExistingMeters, closeTo(10800, 2));
+      expect(result.winningRegions.last.startOffsetOnChallengerMeters, closeTo(6000, 2));
+      expect(result.winningRegions.last.endOffsetOnChallengerMeters, closeTo(8000, 2));
     });
 
-    test('a 1050 metre match has a deterministic short final window', () {
+    test('a 2050 metre match has a deterministic short final window', () {
       final result = _analyze(
-        List<_WindowKind>.filled(11, _WindowKind.challenger),
-        commonDistanceMeters: 1050,
+        List<_WindowKind>.filled(21, _WindowKind.challenger),
+        commonDistanceMeters: 2050,
       );
 
-      expect(result.windows, hasLength(11));
+      expect(result.windows, hasLength(21));
       expect(result.windows.last.distanceMeters, closeTo(50, 2));
-      expect(result.winningRegions.single.winningDistanceMeters, closeTo(1050, 2));
+      expect(result.winningRegions.single.winningDistanceMeters, closeTo(2050, 2));
     });
 
     test('a below-one-kilometre common match is skipped before score calls', () {

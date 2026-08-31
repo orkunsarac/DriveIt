@@ -1,5 +1,6 @@
 import 'active_world_trace.dart';
 import 'matched_road_point.dart';
+import 'world_trace_travel_direction.dart';
 
 /// One active World index trace resolved to its read-only drawing geometry.
 class ResolvedWorldTrace {
@@ -7,16 +8,45 @@ class ResolvedWorldTrace {
     required this.trace,
     required this.geometry,
     required this.visualVariant,
+    this.travelDirection = WorldTraceTravelDirection.unknown,
+    this.directionConfidence = 0,
+    this.firstProjectedOffset,
+    this.lastProjectedOffset,
+    this.projectedSampleCount = 0,
   });
 
   final ActiveWorldTrace trace;
   final List<MatchedRoadPoint> geometry;
   final int visualVariant;
+  final WorldTraceTravelDirection travelDirection;
+  final double directionConfidence;
+  final double? firstProjectedOffset;
+  final double? lastProjectedOffset;
+  final int projectedSampleCount;
 
   ResolvedWorldTrace withVisualVariant(int value) => ResolvedWorldTrace(
     trace: trace,
     geometry: geometry,
     visualVariant: value,
+    travelDirection: travelDirection,
+    directionConfidence: directionConfidence,
+    firstProjectedOffset: firstProjectedOffset,
+    lastProjectedOffset: lastProjectedOffset,
+    projectedSampleCount: projectedSampleCount,
+  );
+
+  ResolvedWorldTrace withTravelDirection(
+    WorldTraceTravelDirection direction,
+    double confidence,
+  ) => ResolvedWorldTrace(
+    trace: trace,
+    geometry: geometry,
+    visualVariant: visualVariant,
+    travelDirection: direction,
+    directionConfidence: confidence,
+    firstProjectedOffset: firstProjectedOffset,
+    lastProjectedOffset: lastProjectedOffset,
+    projectedSampleCount: projectedSampleCount,
   );
 }
 

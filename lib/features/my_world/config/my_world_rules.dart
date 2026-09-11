@@ -53,7 +53,7 @@ class MyWorldRules {
 
   /// World ownership semantics version. It invalidates snapshots created with
   /// the previous distance rules without changing Hive schemas.
-  static const int worldRulesVersion = 4;
+  static const int worldRulesVersion = 6;
 
   /// Matches the recorder's existing stationary-noise threshold.
   static const double minimumUsefulPointDistanceMeters = 3;
@@ -61,6 +61,15 @@ class MyWorldRules {
   /// Without timestamps a larger gap cannot be proven continuous. The
   /// preprocessor splits at this boundary instead of deleting either side.
   static const double maximumPlausiblePointJumpMeters = 500;
+
+  /// Large coordinate gaps remain continuous only when their elapsed time
+  /// implies a physically plausible average speed. 70 m/s (252 km/h) keeps
+  /// motorway/tunnel signal loss valid while rejecting GPS teleports.
+  static const double maximumPlausibleGapAverageSpeedMps = 70;
+
+  /// Raw RoutePoint coordinates are matched monotonically to the persisted
+  /// canonical timeline to recover timestamps without changing RoutePoint.
+  static const double canonicalRouteAlignmentToleranceMeters = 2;
 
   /// Mapbox Map Matching accepts at most 100 coordinates per request.
   static const int mapMatchingMaximumCoordinates = 100;
@@ -76,5 +85,5 @@ class MyWorldRules {
   static const Duration mapMatchingTimeout = Duration(seconds: 15);
 
   /// Incremented only when the persisted validated-road representation changes.
-  static const int validatedRoadProcessingVersion = 2;
+  static const int validatedRoadProcessingVersion = 3;
 }

@@ -17,6 +17,7 @@ import 'package:driveit_project/features/my_world/services/map_matching_chunker.
 import 'package:driveit_project/features/my_world/services/my_world_validation_service.dart';
 import 'package:driveit_project/features/my_world/services/road_matching_service.dart';
 import 'package:driveit_project/models/drive_session.dart';
+import 'package:driveit_project/models/canonical_telemetry_point.dart';
 import 'package:driveit_project/models/route_point.dart';
 import 'package:driveit_project/services/drive_storage_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -65,6 +66,50 @@ void main() {
       expect(result.jumpSplitCount, 1);
       expect(result.traces, hasLength(2));
       expect(result.traces.every((trace) => trace.points.length == 2), isTrue);
+    });
+
+    test('keeps the verified tunnel GPS gap in one trace', () {
+      final before = _point(40.5524092, 29.3507245);
+      final after = _point(40.5835759, 29.3627665);
+      final result = preprocessor.clean(
+        [before, after],
+        canonicalTelemetry: [
+          _telemetry(before, DateTime.parse('2026-08-26T00:23:43.033')),
+          _telemetry(after, DateTime.parse('2026-08-26T00:25:54.032')),
+        ],
+      );
+
+      expect(result.traces, hasLength(1));
+      expect(result.jumpSplitCount, 0);
+      expect(result.plausibleGapContinuationCount, 1);
+    });
+
+    test('splits a kilometre-scale GPS teleport over two seconds', () {
+      final before = _point(40.5524092, 29.3507245);
+      final after = _point(40.5835759, 29.3627665);
+      final start = DateTime.utc(2026, 8, 26);
+      final result = preprocessor.clean(
+        [before, after],
+        canonicalTelemetry: [
+          _telemetry(before, start),
+          _telemetry(after, start.add(const Duration(seconds: 2))),
+        ],
+      );
+
+      expect(result.traces, isEmpty);
+      expect(result.jumpSplitCount, 1);
+      expect(result.plausibleGapContinuationCount, 0);
+    });
+
+    test('keeps safe split behavior when timestamp evidence is absent', () {
+      final result = preprocessor.clean([
+        _point(40.5524092, 29.3507245),
+        _point(40.5835759, 29.3627665),
+      ]);
+
+      expect(result.traces, isEmpty);
+      expect(result.jumpSplitCount, 1);
+      expect(result.plausibleGapContinuationCount, 0);
     });
   });
 
@@ -341,6 +386,37 @@ void main() {
       expect(provider.callCount, 1);
       expect(repository.roads, hasLength(1));
     });
+
+    test('stale validated-road version is re-enqueued and revalidated', () async {
+      final repository = _MemoryRepository();
+      final provider = _FakeRoadProvider(_roadResult(3200));
+      final service = _validationService(repository, provider);
+      final drive = _drive('stale-road');
+      final now = DateTime.utc(2026, 8, 11, 11);
+      final staleRoad = _validatedRoad(
+        driveId: drive.id,
+        processingVersion: MyWorldRules.validatedRoadProcessingVersion - 1,
+      );
+      repository.roads[staleRoad.id] = staleRoad;
+      repository.jobs[WorldPendingJob.idempotencyKey(
+        drive.id,
+        WorldJobType.validateRoad,
+      )] = WorldPendingJob.pending(
+        driveSessionId: drive.id,
+        type: WorldJobType.validateRoad,
+        now: now,
+      ).copyWith(status: WorldJobStatus.completed);
+
+      await service.enqueueDrive(drive);
+      expect(repository.jobs.values.single.status, WorldJobStatus.pending);
+
+      final result = await service.validateDrive(drive);
+      expect(result.providerCalled, isTrue);
+      expect(result.road?.processingVersion,
+          MyWorldRules.validatedRoadProcessingVersion);
+      expect(provider.callCount, 1);
+      expect(repository.roads, hasLength(2));
+    });
   });
 
   test('World queue failure never rolls back a saved DriveSession', () async {
@@ -373,6 +449,19 @@ void main() {
 
 RoutePoint _point(double latitude, double longitude) =>
     RoutePoint(latitude: latitude, longitude: longitude);
+
+CanonicalTelemetryPoint _telemetry(RoutePoint point, DateTime timestamp) =>
+    CanonicalTelemetryPoint(
+      latitude: point.latitude,
+      longitude: point.longitude,
+      timestamp: timestamp,
+      speedMps: 0,
+      headingDegrees: 0,
+      altitudeMeters: 0,
+      accuracyMeters: 5,
+      distanceFromPreviousMeters: 0,
+      accelerationMps2: 0,
+    );
 
 List<RoutePoint> _shortRoute() => [_point(41, 29), _point(41.001, 29.001)];
 
@@ -457,6 +546,30 @@ RoadMatchingResult _roadResult(double distance) {
     directionKey: 'east',
     averageHeadingDegrees: 90,
     errorMessage: null,
+  );
+}
+
+ValidatedRoad _validatedRoad({
+  required String driveId,
+  required int processingVersion,
+}) {
+  final result = _roadResult(3200);
+  final now = DateTime.utc(2026, 8, 11, 11);
+  return ValidatedRoad(
+    id: '$driveId:test-provider:v$processingVersion',
+    driveSessionId: driveId,
+    geometry: result.geometry,
+    sections: result.sections,
+    validDistanceMeters: result.validDistanceMeters,
+    status: result.status,
+    validatedAt: now,
+    providerId: 'test-provider',
+    confidence: result.confidence,
+    processingVersion: processingVersion,
+    directionKey: result.directionKey,
+    averageHeadingDegrees: result.averageHeadingDegrees,
+    createdAt: now,
+    updatedAt: now,
   );
 }
 

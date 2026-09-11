@@ -6,6 +6,7 @@ import '../../../models/drive_session.dart';
 import '../../../models/canonical_telemetry_point.dart';
 import '../../../services/drive_telemetry_storage_service.dart';
 import '../../../services/drive_score_storage_service.dart';
+import '../config/my_world_rules.dart';
 import '../models/world_index_snapshot.dart';
 import '../models/world_map_read_model.dart';
 import '../models/validated_road.dart';
@@ -35,6 +36,7 @@ class MyWorldRuntime {
   static MyWorldValidationService validationService() =>
       MyWorldValidationService(
         repository: repository(),
+        telemetryLoader: _loadCanonicalTelemetry,
         roadMatching: RoadMatchingService(
           provider: MapboxRoadMatchingProvider(),
         ),
@@ -148,7 +150,51 @@ class MyWorldRuntime {
       }
     }
     await pendingJobProcessor().drain();
+    await _ensureCurrentValidatedRoadProjection();
     await _cleanupScorelessWorldTraces();
+  }
+
+  static Future<void> _ensureCurrentValidatedRoadProjection() async {
+    try {
+      final snapshot = await indexRepository().getActiveSnapshot();
+      if (snapshot.processedDriveSessionIds.isEmpty) return;
+      final roads = await repository().getAllValidatedRoads();
+      final currentByDrive = <String, ValidatedRoad>{};
+      for (final road in roads) {
+        if (road.processingVersion !=
+            MyWorldRules.validatedRoadProcessingVersion) {
+          continue;
+        }
+        currentByDrive[road.driveSessionId] = road;
+      }
+      if (!snapshot.processedDriveSessionIds.every(
+        currentByDrive.containsKey,
+      )) {
+        return;
+      }
+      final staleProjection = snapshot.traces.any(
+        (trace) =>
+            currentByDrive[trace.sourceDriveSessionId]?.id !=
+            trace.validatedRoadId,
+      );
+      if (!staleProjection) return;
+      final result = await rebuildService().rebuild(
+        targetVersion: DriveScoreAlgorithmVersion.v1,
+        reason: 'validatedRoadProcessingVersionChanged',
+      );
+      if (result.success) _readCache = null;
+      if (kDebugMode) {
+        debugPrint(
+          '[WORLD_REBUILD_AUDIT] validatedRoadMigration=true '
+          'targetRoadVersion=${MyWorldRules.validatedRoadProcessingVersion} '
+          'success=${result.success} traceCount=${result.resultingTraceCount}',
+        );
+      }
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('[WORLD_REBUILD_AUDIT] validatedRoadMigrationFailed=$error');
+      }
+    }
   }
 
   static Future<void> _cleanupScorelessWorldTraces() async {

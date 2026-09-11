@@ -6,6 +6,7 @@ import '../models/matched_road_point.dart';
 import '../models/matched_road_section.dart';
 import '../models/validated_road.dart';
 import 'geo_distance.dart';
+import 'world_section_offset_mapper.dart';
 
 /// Finds continuous common sections in provider-validated, travel-ordered
 /// geometry. It is a pure domain service: no Hive, HTTP, Drive Score, or UI.
@@ -52,11 +53,12 @@ class WorldRoadOverlapService {
     var offset = 0.0;
     final output = <_SectionSamples>[];
     for (final section in sections) {
-      final samples = _resample(section.geometry, offset);
+      final sectionLength = WorldSectionOffsetMapper.sectionLength(section);
+      final samples = _resample(section.geometry, offset, sectionLength);
       if (samples.length >= 2) {
         output.add(_SectionSamples(section.id, samples));
       }
-      offset += section.distanceMeters;
+      offset += sectionLength;
     }
     return output;
   }
@@ -151,6 +153,7 @@ class WorldRoadOverlapService {
       geometryConfidence: geometryConfidence,
       comparisonEligible:
           commonDistance >= MyWorldRules.minimumCommonWorldDistanceMeters,
+      ownershipCovered: true,
       referenceGeometry: List.unmodifiable(geometry),
     );
   }
@@ -158,12 +161,22 @@ class WorldRoadOverlapService {
   List<_RoadSample> _resample(
     List<MatchedRoadPoint> geometry,
     double sectionStartOffsetMeters,
+    double sectionLengthMeters,
   ) {
     if (geometry.length < 2) return const [];
+    final geometryLength = WorldSectionOffsetMapper.geometryLength(geometry);
+    if (geometryLength <= 0) return const [];
+    double normalized(double geometryOffset) =>
+        sectionStartOffsetMeters +
+        WorldSectionOffsetMapper.normalize(
+          geometryOffsetMeters: geometryOffset,
+          geometryLengthMeters: geometryLength,
+          sectionLengthMeters: sectionLengthMeters,
+        );
     final result = <_RoadSample>[
       _RoadSample(
         point: geometry.first,
-        offsetMeters: sectionStartOffsetMeters,
+        offsetMeters: normalized(0),
         headingDegrees: GeoDistance.bearing(
           geometry.first.latitude,
           geometry.first.longitude,
@@ -192,7 +205,7 @@ class WorldRoadOverlapService {
             start,
             end,
             segmentDistanceFromStart / segmentDistance,
-            sectionStartOffsetMeters + nextSampleDistance,
+            normalized(nextSampleDistance),
             heading,
           ),
         );
@@ -201,11 +214,11 @@ class WorldRoadOverlapService {
       cumulative += segmentDistance;
     }
     final last = geometry.last;
-    if (result.isEmpty || result.last.offsetMeters < sectionStartOffsetMeters + cumulative) {
+    if (result.isEmpty || result.last.offsetMeters < sectionStartOffsetMeters + sectionLengthMeters) {
       final previous = geometry[geometry.length - 2];
       result.add(_RoadSample(
         point: last,
-        offsetMeters: sectionStartOffsetMeters + cumulative,
+        offsetMeters: normalized(cumulative),
         headingDegrees: GeoDistance.bearing(
           previous.latitude,
           previous.longitude,

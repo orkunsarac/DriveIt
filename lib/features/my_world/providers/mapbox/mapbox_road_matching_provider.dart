@@ -46,7 +46,10 @@ class MapboxRoadMatchingProvider implements RoadMatchingProvider {
       );
     }
 
-    final cleaned = preprocessor.clean(request.rawRoute);
+    final cleaned = preprocessor.clean(
+      request.rawRoute,
+      canonicalTelemetry: request.canonicalTelemetry,
+    );
     final chunks = chunker.build(cleaned.traces);
     if (chunks.isEmpty) {
       return RoadMatchingResult.failure(

@@ -1,29 +1,34 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:driveit_project/features/my_world/services/geo_distance.dart';
 
 import 'package:driveit_project/features/my_world/models/active_world_trace.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_point.dart';
 import 'package:driveit_project/features/my_world/models/world_map_read_model.dart';
 import 'package:driveit_project/features/my_world/services/world_trace_presentation_service.dart';
+import 'package:driveit_project/features/my_world/models/world_trace_travel_direction.dart';
 
 void main() {
   const service = WorldTracePresentationService();
 
+  // Compare BOTH outputs at corresponding physical locations, not merely
+  // whether either output changed from its input.
+
   ActiveWorldTrace trace(String id, String direction) => ActiveWorldTrace(
-        id: id,
-        sourceDriveSessionId: id,
-        validatedRoadId: 'road',
-        matchedSectionId: 'section',
-        startOffsetMeters: 0,
-        endOffsetMeters: 1000,
-        directionKey: direction,
-        minLatitude: 40,
-        maxLatitude: 40.01,
-        minLongitude: 29,
-        maxLongitude: 29.01,
-        createdAt: DateTime(2026),
-        updatedAt: DateTime(2026),
-        processingVersion: 1,
-      );
+    id: id,
+    sourceDriveSessionId: id,
+    validatedRoadId: 'road',
+    matchedSectionId: 'section',
+    startOffsetMeters: 0,
+    endOffsetMeters: 1000,
+    directionKey: direction,
+    minLatitude: 40,
+    maxLatitude: 40.01,
+    minLongitude: 29,
+    maxLongitude: 29.01,
+    createdAt: DateTime(2026),
+    updatedAt: DateTime(2026),
+    processingVersion: 1,
+  );
 
   List<MatchedRoadPoint> geometry({required bool reverse}) => reverse
       ? const [
@@ -60,6 +65,72 @@ void main() {
     expect(a.geometry.first.longitude, 29);
   });
 
+  test(
+    'opposite tangents separate both outputs on straight and curved roads',
+    () {
+      for (final curved in [false, true]) {
+        final source = [
+          const MatchedRoadPoint(latitude: 40, longitude: 29),
+          const MatchedRoadPoint(latitude: 40, longitude: 29.004),
+          MatchedRoadPoint(latitude: curved ? 40.003 : 40, longitude: 29.008),
+        ];
+        final a = ResolvedWorldTrace(
+          trace: trace('a', 'east'),
+          geometry: source,
+          visualVariant: 0,
+        );
+        final b = ResolvedWorldTrace(
+          trace: trace('b', 'west'),
+          geometry: source.reversed.toList(),
+          visualVariant: 1,
+        );
+        final partners = service.oppositePartnerMap([a, b]);
+        final first = service.renderGeometry(
+          trace: a,
+          separateOpposite: true,
+          oppositePartner: partners['a'],
+          zoom: 13,
+        );
+        final second = service
+            .renderGeometry(
+              trace: b,
+              separateOpposite: true,
+              oppositePartner: partners['b'],
+              zoom: 13,
+            )
+            .reversed
+            .toList();
+        for (var i = 0; i < source.length; i++) {
+          expect(
+            GeoDistance.between(
+              first[i].latitude,
+              first[i].longitude,
+              second[i].latitude,
+              second[i].longitude,
+            ),
+            closeTo(8, .1),
+          );
+          expect(
+            (first[i].latitude - source[i].latitude) *
+                (second[i].latitude - source[i].latitude),
+            lessThanOrEqualTo(0),
+          );
+        }
+        expect(a.geometry, orderedEquals(source));
+        expect(b.geometry, orderedEquals(source.reversed));
+        expect(
+          service.renderGeometry(
+            trace: a,
+            separateOpposite: true,
+            oppositePartner: b,
+            zoom: 13,
+          ),
+          orderedEquals(first),
+        );
+      }
+    },
+  );
+
   test('same direction trace is not offset', () {
     final a = ResolvedWorldTrace(
       trace: trace('a', 'east'),
@@ -79,6 +150,29 @@ void main() {
     );
     expect(rendered.first.latitude, a.geometry.first.latitude);
     expect(rendered.first.longitude, a.geometry.first.longitude);
+  });
+
+  test('direction metadata separates identical ordered centerlines', () {
+    final a = ResolvedWorldTrace(
+      trace: trace('a', 'east'),
+      geometry: geometry(reverse: false),
+      visualVariant: 0,
+      travelDirection: WorldTraceTravelDirection.forward,
+    );
+    final b = ResolvedWorldTrace(
+      trace: trace('b', 'west'),
+      geometry: geometry(reverse: false),
+      visualVariant: 1,
+      travelDirection: WorldTraceTravelDirection.reverse,
+    );
+    final rendered = service.renderGeometry(
+      trace: a,
+      separateOpposite: service.oppositeTraceIds([a, b]).contains('a'),
+      oppositePartner: b,
+      zoom: 13,
+    );
+    expect(rendered.first.latitude, isNot(a.geometry.first.latitude));
+    expect(rendered.first.longitude, isNot(a.geometry.first.longitude));
   });
 
   test('opposite separation is limited to the local overlap', () {

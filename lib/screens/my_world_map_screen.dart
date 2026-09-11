@@ -420,6 +420,28 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       );
     }
     final result = Set<Polyline>.unmodifiable(output);
+    if (kDebugMode) {
+      for (final item in data.traces) {
+        final cores = result.where(
+          (p) => p.polylineId.value == 'world_core:${item.trace.id}',
+        );
+        if (cores.isEmpty) continue;
+        final finalPoints = cores.first.points;
+        for (final index in {0, item.geometry.length ~/ 2}) {
+          final original = item.geometry[index];
+          final rendered = finalPoints[index];
+          final offsetMeters = Geolocator.distanceBetween(
+            original.latitude,
+            original.longitude,
+            rendered.latitude,
+            rendered.longitude,
+          );
+          debugPrint(
+            '[WORLD_RENDER_AUDIT] trace=${item.trace.id} drive=${item.trace.sourceDriveSessionId} direction=${item.travelDirection.name} opposite=${_oppositeTraceIds.contains(item.trace.id)} partner=${_oppositePartners[item.trace.id]?.trace.id} zoom=$zoom index=$index original=${original.latitude},${original.longitude} finalPolyline=${rendered.latitude},${rendered.longitude} offsetMeters=${offsetMeters.toStringAsFixed(2)}',
+          );
+        }
+      }
+    }
     _polylineCache = result;
     _polylineCacheGeneration = data.snapshotGeneration;
     _polylineCacheZoomBucket = zoomBucket;
@@ -431,9 +453,12 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   int _renderZoomBucket(double zoom) {
     if (zoom < 6) return 0;
     if (zoom < 8) return 1;
-    if (zoom < 14) return 2;
-    if (zoom < 15.5) return 3;
-    return 4;
+    if (zoom < 11) return 2;
+    if (zoom < 13) return 3;
+    if (zoom < 14) return 4;
+    if (zoom < 15) return 5;
+    if (zoom < 15.5) return 6;
+    return 7;
   }
 
   Set<Circle> _traceMarkers(MyWorldMapData data) {

@@ -18,6 +18,7 @@ class CommonRoadMatch {
     required this.directionCompatible,
     required this.geometryConfidence,
     required this.comparisonEligible,
+    this.ownershipCovered = true,
     required this.referenceGeometry,
   });
 
@@ -35,5 +36,10 @@ class CommonRoadMatch {
   final bool directionCompatible;
   final double geometryConfidence;
   final bool comparisonEligible;
+
+  /// True when the geometry and travel direction are sufficiently certain
+  /// for World ownership suppression. This is intentionally independent from
+  /// [comparisonEligible], which is gated by the 3 km local-score threshold.
+  final bool ownershipCovered;
   final List<MatchedRoadPoint> referenceGeometry;
 }

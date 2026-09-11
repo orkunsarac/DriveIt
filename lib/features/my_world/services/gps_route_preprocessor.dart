@@ -1,4 +1,5 @@
 import '../../../models/route_point.dart';
+import '../../../models/canonical_telemetry_point.dart';
 import '../config/my_world_rules.dart';
 import '../models/map_matching_input.dart';
 import 'geo_distance.dart';
@@ -10,6 +11,7 @@ class GpsPreprocessingResult {
   final int invalidPointCount;
   final int tooClosePointCount;
   final int jumpSplitCount;
+  final int plausibleGapContinuationCount;
 
   const GpsPreprocessingResult({
     required this.traces,
@@ -18,19 +20,26 @@ class GpsPreprocessingResult {
     required this.invalidPointCount,
     required this.tooClosePointCount,
     required this.jumpSplitCount,
+    this.plausibleGapContinuationCount = 0,
   });
 }
 
 class GpsRoutePreprocessor {
   const GpsRoutePreprocessor();
 
-  GpsPreprocessingResult clean(List<RoutePoint> route) {
+  GpsPreprocessingResult clean(
+    List<RoutePoint> route, {
+    List<CanonicalTelemetryPoint> canonicalTelemetry = const [],
+  }) {
     final traces = <MapMatchingTrace>[];
     var current = <MapMatchingInputPoint>[];
     var invalid = 0;
     var tooClose = 0;
     var jumpSplits = 0;
     var accepted = 0;
+    var plausibleGapContinuations = 0;
+    int? previousAcceptedRouteIndex;
+    final alignedTelemetry = _alignTelemetry(route, canonicalTelemetry);
 
     void closeCurrentTrace() {
       if (current.length >= 2) {
@@ -44,7 +53,8 @@ class GpsRoutePreprocessor {
       current = <MapMatchingInputPoint>[];
     }
 
-    for (final point in route) {
+    for (var routeIndex = 0; routeIndex < route.length; routeIndex++) {
+      final point = route[routeIndex];
       if (!_isValid(point.latitude, point.longitude)) {
         invalid++;
         closeCurrentTrace();
@@ -58,6 +68,7 @@ class GpsRoutePreprocessor {
       if (current.isEmpty) {
         current.add(candidate);
         accepted++;
+        previousAcceptedRouteIndex = routeIndex;
         continue;
       }
 
@@ -73,11 +84,24 @@ class GpsRoutePreprocessor {
         continue;
       }
       if (distance > MyWorldRules.maximumPlausiblePointJumpMeters) {
-        jumpSplits++;
-        closeCurrentTrace();
+        final previousTelemetry = previousAcceptedRouteIndex == null
+            ? null
+            : alignedTelemetry[previousAcceptedRouteIndex];
+        final currentTelemetry = alignedTelemetry[routeIndex];
+        if (_isPlausibleSignalGap(
+          distanceMeters: distance,
+          previous: previousTelemetry,
+          current: currentTelemetry,
+        )) {
+          plausibleGapContinuations++;
+        } else {
+          jumpSplits++;
+          closeCurrentTrace();
+        }
       }
       current.add(candidate);
       accepted++;
+      previousAcceptedRouteIndex = routeIndex;
     }
     closeCurrentTrace();
 
@@ -88,7 +112,51 @@ class GpsRoutePreprocessor {
       invalidPointCount: invalid,
       tooClosePointCount: tooClose,
       jumpSplitCount: jumpSplits,
+      plausibleGapContinuationCount: plausibleGapContinuations,
     );
+  }
+
+  List<CanonicalTelemetryPoint?> _alignTelemetry(
+    List<RoutePoint> route,
+    List<CanonicalTelemetryPoint> telemetry,
+  ) {
+    if (telemetry.isEmpty) {
+      return List<CanonicalTelemetryPoint?>.filled(route.length, null);
+    }
+    final output = List<CanonicalTelemetryPoint?>.filled(route.length, null);
+    var telemetryIndex = 0;
+    for (var routeIndex = 0; routeIndex < route.length; routeIndex++) {
+      final routePoint = route[routeIndex];
+      while (telemetryIndex < telemetry.length) {
+        final candidate = telemetry[telemetryIndex++];
+        if (GeoDistance.between(
+              routePoint.latitude,
+              routePoint.longitude,
+              candidate.latitude,
+              candidate.longitude,
+            ) <=
+            MyWorldRules.canonicalRouteAlignmentToleranceMeters) {
+          output[routeIndex] = candidate;
+          break;
+        }
+      }
+    }
+    return output;
+  }
+
+  bool _isPlausibleSignalGap({
+    required double distanceMeters,
+    required CanonicalTelemetryPoint? previous,
+    required CanonicalTelemetryPoint? current,
+  }) {
+    if (previous == null || current == null) return false;
+    final elapsedSeconds =
+        current.timestamp.difference(previous.timestamp).inMicroseconds /
+        Duration.microsecondsPerSecond;
+    if (!elapsedSeconds.isFinite || elapsedSeconds <= 0) return false;
+    final requiredAverageSpeed = distanceMeters / elapsedSeconds;
+    return requiredAverageSpeed.isFinite &&
+        requiredAverageSpeed <= MyWorldRules.maximumPlausibleGapAverageSpeedMps;
   }
 
   bool _isValid(double latitude, double longitude) =>

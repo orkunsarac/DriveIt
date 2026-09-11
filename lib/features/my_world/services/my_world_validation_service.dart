@@ -1,4 +1,5 @@
 import '../../../models/drive_session.dart';
+import '../../../models/canonical_telemetry_point.dart';
 import '../config/my_world_rules.dart';
 import '../models/validated_road.dart';
 import '../models/world_pending_job.dart';
@@ -24,12 +25,19 @@ class MyWorldValidationService {
   final MyWorldRepository repository;
   final RoadMatchingService roadMatching;
   final DateTime Function() _clock;
+  final Future<List<CanonicalTelemetryPoint>> Function(String driveSessionId)?
+  _telemetryLoader;
 
   MyWorldValidationService({
     required this.repository,
     required this.roadMatching,
     DateTime Function()? clock,
-  }) : _clock = clock ?? DateTime.now;
+    Future<List<CanonicalTelemetryPoint>> Function(String driveSessionId)?
+    telemetryLoader,
+  }) : _clock = clock ?? DateTime.now,
+       // Public constructor keeps the readable `telemetryLoader` name.
+       // ignore: prefer_initializing_formals
+       _telemetryLoader = telemetryLoader;
 
   Future<void> enqueueDrive(DriveSession drive) async {
     final roads = await repository.getValidatedRoadsForDrive(drive.id);
@@ -47,7 +55,17 @@ class MyWorldValidationService {
       type: WorldJobType.validateRoad,
       now: now,
     );
-    await repository.enqueueIfAbsent(job);
+    final existingJob = await repository.getPendingJob(
+      drive.id,
+      WorldJobType.validateRoad,
+    );
+    if (existingJob == null) {
+      await repository.enqueueIfAbsent(job);
+    } else if (_currentRoad(roads) == null &&
+        existingJob.status != WorldJobStatus.pending &&
+        existingJob.status != WorldJobStatus.retryScheduled) {
+      await repository.savePendingJob(job);
+    }
     await repository.saveProcessingRecord(
       WorldDriveProcessingRecord(
         driveSessionId: drive.id,
@@ -85,7 +103,11 @@ class MyWorldValidationService {
     );
     await repository.savePendingJob(job);
 
-    final outcome = await roadMatching.validate(drive);
+    final telemetry = await _telemetryLoader?.call(drive.id) ?? const [];
+    final outcome = await roadMatching.validate(
+      drive,
+      canonicalTelemetry: telemetry,
+    );
     final road = outcome.road;
     final finishedAt = _clock();
     if (road != null) {

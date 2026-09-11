@@ -30,6 +30,8 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   Duration _lastRenderedTick = Duration.zero;
   late ReplayFrame _hudFrame;
   Duration? _lastHudUpdate;
+  final Stopwatch _uiStopwatch = Stopwatch();
+  Duration _hudElapsed = Duration.zero;
   DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   ReplayCameraMode _cameraMode = ReplayCameraMode.overview;
   bool _hasStartedReplay = false;
@@ -69,12 +71,19 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
 
   void _onReplayChanged() {
     if (!mounted) return;
-    final now = _replay.currentTime;
+    if (_replay.isPlaying) {
+      if (!_uiStopwatch.isRunning) _uiStopwatch.start();
+    } else if (_uiStopwatch.isRunning) {
+      _uiStopwatch.stop();
+    }
+    final wallElapsed = _uiStopwatch.elapsed;
     if (_lastHudUpdate == null ||
-        now - _lastHudUpdate! >= const Duration(seconds: 1) ||
+        wallElapsed - (_lastHudUpdate ?? Duration.zero) >=
+            const Duration(seconds: 1) ||
         _replay.isComplete) {
       _hudFrame = _replay.frame;
-      _lastHudUpdate = now;
+      _hudElapsed = wallElapsed;
+      _lastHudUpdate = wallElapsed;
       setState(() {});
     }
     if (_replay.isPlaying && _cameraMode != ReplayCameraMode.free) {
@@ -321,7 +330,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                   _TelemetryHud(
                     speedKmh: _hudFrame.speedKmh,
                     distanceKm: _hudFrame.distanceMeters / 1000,
-                    elapsed: _hudFrame.elapsed,
+                    elapsed: _hudElapsed,
                   ),
                   const Spacer(),
                   AnimatedBuilder(
@@ -343,7 +352,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                       onSeek: (value) {
                         _replay.seek(value);
                         _hudFrame = _replay.frame;
-                        _lastHudUpdate = _replay.currentTime;
                         if (mounted) setState(() {});
                         if (_cameraMode != ReplayCameraMode.free) {
                           unawaited(_followCamera(force: true));

@@ -1,4 +1,5 @@
 import '../../../models/drive_session.dart';
+import '../../../models/canonical_telemetry_point.dart';
 import '../config/my_world_rules.dart';
 import '../models/validated_road.dart';
 import '../providers/road_matching_provider.dart';
@@ -24,13 +25,17 @@ class RoadMatchingService {
   RoadMatchingService({required this.provider, DateTime Function()? clock})
     : _clock = clock ?? DateTime.now;
 
-  Future<RoadValidationOutcome> validate(DriveSession drive) async {
+  Future<RoadValidationOutcome> validate(
+    DriveSession drive, {
+    List<CanonicalTelemetryPoint> canonicalTelemetry = const [],
+  }) async {
     final version = MyWorldRules.validatedRoadProcessingVersion;
     final result = await provider.match(
       RoadMatchingRequest(
         driveSessionId: drive.id,
         rawRoute: List.unmodifiable(drive.route),
         processingVersion: version,
+        canonicalTelemetry: canonicalTelemetry,
       ),
     );
     if (!result.hasUsableGeometry) {

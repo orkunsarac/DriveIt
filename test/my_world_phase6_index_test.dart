@@ -10,6 +10,7 @@ import 'package:driveit_project/features/my_world/models/validated_road.dart';
 import 'package:driveit_project/features/my_world/models/world_index_snapshot.dart';
 import 'package:driveit_project/features/my_world/models/world_trace_overlap_analysis.dart';
 import 'package:driveit_project/features/my_world/services/world_index_mutation_planner.dart';
+import 'package:driveit_project/features/my_world/services/world_section_offset_mapper.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -136,6 +137,95 @@ void main() {
       expect(newTrace.endOffsetMeters, closeTo(4300, .1));
     });
 
+    test('eligible same-direction overlap with no winner does not add duplicate coverage', () {
+      final existingRoad = _road('existing', 7000);
+      final challenger = _road('challenger', 7000);
+      final trace = _trace(existingRoad, 0, 7000);
+      final plan = planner.plan(
+        current: _snapshot([trace]),
+        challengerRoad: challenger,
+        overlaps: [_overlap(trace, _match(7000), const [])],
+        now: now,
+      );
+
+      expect(
+        plan.resultingSnapshot.traces
+            .where((value) => value.sourceDriveSessionId == 'challenger-drive'),
+        isEmpty,
+      );
+      expect(plan.resultingSnapshot.traces, hasLength(1));
+    });
+
+    test('sub-3km same-direction coverage suppresses duplicate ownership', () {
+      final existingRoad = _road('existing', 5000);
+      final challenger = _road('challenger', 5000);
+      final trace = _trace(existingRoad, 0, 5000);
+      final match = _match(950);
+      expect(match.comparisonEligible, isFalse);
+      expect(match.ownershipCovered, isTrue);
+
+      final plan = planner.plan(
+        current: _snapshot([trace]),
+        challengerRoad: challenger,
+        overlaps: [_overlap(trace, match, const [])],
+        now: now,
+      );
+
+      final challengerTraces = plan.resultingSnapshot.traces.where(
+        (value) => value.sourceDriveSessionId == 'challenger-drive',
+      );
+      expect(challengerTraces, hasLength(1));
+      expect(challengerTraces.single.startOffsetMeters, closeTo(950, .1));
+      expect(
+        plan.resultingSnapshot.traces
+            .where((value) => value.sourceDriveSessionId == 'existing-drive')
+            .single
+            .distanceMeters,
+        closeTo(5000, .1),
+      );
+    });
+
+    test('declared and geometry distances share normalized section offsets', () {
+      final section = _section('normalized', 0, 6000);
+      final declared = MatchedRoadSection(
+        id: section.id,
+        geometry: section.geometry,
+        distanceMeters: 7000,
+        confidence: 1,
+        sourceTraceIndex: 0,
+        sourceChunkIndex: 0,
+      );
+      final geometryLength = WorldSectionOffsetMapper.geometryLength(declared.geometry);
+      expect(
+        WorldSectionOffsetMapper.normalize(
+          geometryOffsetMeters: geometryLength,
+          geometryLengthMeters: geometryLength,
+          sectionLengthMeters: WorldSectionOffsetMapper.sectionLength(declared),
+        ),
+        closeTo(7000, .001),
+      );
+    });
+
+    test('offset mapper safely clamps non-finite and empty geometry values', () {
+      expect(WorldSectionOffsetMapper.geometryLength(const []), 0);
+      expect(
+        WorldSectionOffsetMapper.normalize(
+          geometryOffsetMeters: double.nan,
+          geometryLengthMeters: 100,
+          sectionLengthMeters: 100,
+        ),
+        0,
+      );
+      expect(
+        WorldSectionOffsetMapper.normalize(
+          geometryOffsetMeters: 10,
+          geometryLengthMeters: 0,
+          sectionLengthMeters: 100,
+        ),
+        0,
+      );
+    });
+
     test('adjacent same-source intervals merge, but different sources never merge', () {
       final road = _road('existing', 3000);
       final a = _trace(road, 0, 1500);
@@ -177,7 +267,7 @@ void main() {
       expect(first.operationId, second.operationId);
       expect(first.resultingSnapshot.generation, 1);
       expect(first.resultingSnapshot.driveScoreAlgorithmVersion, 1);
-      expect(first.resultingSnapshot.validatedRoadProcessingVersion, 4);
+      expect(first.resultingSnapshot.validatedRoadProcessingVersion, 6);
     });
 
     test('global active trace invariant drops 999m first records but keeps 1000m', () {

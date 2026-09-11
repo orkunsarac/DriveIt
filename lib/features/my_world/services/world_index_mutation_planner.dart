@@ -11,6 +11,7 @@ import '../models/validated_road.dart';
 import '../models/world_index_mutation_plan.dart';
 import '../models/world_index_snapshot.dart';
 import '../models/world_trace_overlap_analysis.dart';
+import 'world_section_offset_mapper.dart';
 
 /// Pure ownership mutation planner. It never writes Hive or scores a road.
 class WorldIndexMutationPlanner {
@@ -31,6 +32,10 @@ class WorldIndexMutationPlanner {
 
     for (final overlap in overlaps) {
       for (final match in overlap.matches) {
+        // Geometric same-road/same-direction coverage suppresses duplicate
+        // ownership even when the overlap is too short for local score
+        // comparison. The 3 km rule belongs exclusively to scoring.
+        if (!match.ownershipCovered || !match.directionCompatible) continue;
         final clipped = _clipMatchToTrace(match, overlap.existingTrace);
         if (clipped == null) continue;
         coveredByExisting
@@ -249,8 +254,9 @@ class WorldIndexMutationPlanner {
           ];
     var offset = 0.0;
     return sections.map((section) {
-      final output = _SectionOffset(section, offset, offset + section.distanceMeters);
-      offset += section.distanceMeters;
+      final sectionLength = WorldSectionOffsetMapper.sectionLength(section);
+      final output = _SectionOffset(section, offset, offset + sectionLength);
+      offset += sectionLength;
       return output;
     }).toList(growable: false);
   }

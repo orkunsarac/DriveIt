@@ -1,4 +1,5 @@
 import '../../../models/route_point.dart';
+import '../../../models/canonical_telemetry_point.dart';
 import '../models/matched_road_point.dart';
 import '../models/matched_road_section.dart';
 import '../models/validated_road.dart';
@@ -7,11 +8,13 @@ class RoadMatchingRequest {
   final String driveSessionId;
   final List<RoutePoint> rawRoute;
   final int processingVersion;
+  final List<CanonicalTelemetryPoint> canonicalTelemetry;
 
   const RoadMatchingRequest({
     required this.driveSessionId,
     required this.rawRoute,
     required this.processingVersion,
+    this.canonicalTelemetry = const [],
   });
 }
 

@@ -1,4 +1,5 @@
 import 'package:driveit_project/features/drive_score/models/drive_score_algorithm_version.dart';
+import 'package:driveit_project/features/my_world/config/my_world_rules.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_point.dart';
 import 'package:driveit_project/features/my_world/models/active_world_trace.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_section.dart';
@@ -91,7 +92,9 @@ ValidatedRoad _road(String driveId) {
     validDistanceMeters: 5000,
     status: RoadValidationStatus.validated,
     validatedAt: DateTime.utc(2026, 1, 1),
-    providerId: 'test', confidence: 1, processingVersion: 2,
+    providerId: 'test',
+    confidence: 1,
+    processingVersion: MyWorldRules.validatedRoadProcessingVersion,
     directionKey: 'east', averageHeadingDegrees: 90,
     createdAt: DateTime.utc(2026, 1, 1), updatedAt: DateTime.utc(2026, 1, 1),
   );

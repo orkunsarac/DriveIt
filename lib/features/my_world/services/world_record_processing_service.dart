@@ -176,6 +176,10 @@ class WorldRecordProcessingService {
       if (existing == null) continue;
       final matches = _overlapService.findCommonRoads(existing.road, challenger);
       if (matches.isEmpty) continue;
+      // Keep every geometric match in the overlap analysis. Only the local
+      // score/winner calculation is gated by comparison eligibility; the
+      // mutation planner still receives sub-threshold ownership coverage so
+      // it can suppress duplicate active traces.
       final regions = <LocalWinningRoadRegion>[];
       for (final match in matches.where((match) => match.comparisonEligible)) {
         final analysis = _winnerRegionService.analyze(

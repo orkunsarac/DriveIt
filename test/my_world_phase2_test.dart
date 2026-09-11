@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:driveit_project/features/my_world/config/my_world_rules.dart';
+import 'package:driveit_project/features/my_world/config/mapbox_config.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_point.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_section.dart';
 import 'package:driveit_project/features/my_world/models/validated_road.dart';
@@ -129,6 +130,11 @@ void main() {
   });
 
   group('Mapbox provider', () {
+    test('uses an embedded public token when no dart-define is supplied', () {
+      expect(MapboxConfig.accessToken, startsWith('pk.'));
+      expect(MapboxConfig.accessToken, isNotEmpty);
+    });
+
     test('missing token fails safely without an HTTP request', () async {
       final transport = _FakeTransport([]);
       final provider = MapboxRoadMatchingProvider(
@@ -387,36 +393,41 @@ void main() {
       expect(repository.roads, hasLength(1));
     });
 
-    test('stale validated-road version is re-enqueued and revalidated', () async {
-      final repository = _MemoryRepository();
-      final provider = _FakeRoadProvider(_roadResult(3200));
-      final service = _validationService(repository, provider);
-      final drive = _drive('stale-road');
-      final now = DateTime.utc(2026, 8, 11, 11);
-      final staleRoad = _validatedRoad(
-        driveId: drive.id,
-        processingVersion: MyWorldRules.validatedRoadProcessingVersion - 1,
-      );
-      repository.roads[staleRoad.id] = staleRoad;
-      repository.jobs[WorldPendingJob.idempotencyKey(
-        drive.id,
-        WorldJobType.validateRoad,
-      )] = WorldPendingJob.pending(
-        driveSessionId: drive.id,
-        type: WorldJobType.validateRoad,
-        now: now,
-      ).copyWith(status: WorldJobStatus.completed);
+    test(
+      'stale validated-road version is re-enqueued and revalidated',
+      () async {
+        final repository = _MemoryRepository();
+        final provider = _FakeRoadProvider(_roadResult(3200));
+        final service = _validationService(repository, provider);
+        final drive = _drive('stale-road');
+        final now = DateTime.utc(2026, 8, 11, 11);
+        final staleRoad = _validatedRoad(
+          driveId: drive.id,
+          processingVersion: MyWorldRules.validatedRoadProcessingVersion - 1,
+        );
+        repository.roads[staleRoad.id] = staleRoad;
+        repository.jobs[WorldPendingJob.idempotencyKey(
+          drive.id,
+          WorldJobType.validateRoad,
+        )] = WorldPendingJob.pending(
+          driveSessionId: drive.id,
+          type: WorldJobType.validateRoad,
+          now: now,
+        ).copyWith(status: WorldJobStatus.completed);
 
-      await service.enqueueDrive(drive);
-      expect(repository.jobs.values.single.status, WorldJobStatus.pending);
+        await service.enqueueDrive(drive);
+        expect(repository.jobs.values.single.status, WorldJobStatus.pending);
 
-      final result = await service.validateDrive(drive);
-      expect(result.providerCalled, isTrue);
-      expect(result.road?.processingVersion,
-          MyWorldRules.validatedRoadProcessingVersion);
-      expect(provider.callCount, 1);
-      expect(repository.roads, hasLength(2));
-    });
+        final result = await service.validateDrive(drive);
+        expect(result.providerCalled, isTrue);
+        expect(
+          result.road?.processingVersion,
+          MyWorldRules.validatedRoadProcessingVersion,
+        );
+        expect(provider.callCount, 1);
+        expect(repository.roads, hasLength(2));
+      },
+    );
   });
 
   test('World queue failure never rolls back a saved DriveSession', () async {

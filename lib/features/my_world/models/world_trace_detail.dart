@@ -10,6 +10,10 @@ class WorldTraceDetail {
     this.traceDistanceMeters,
     this.traceStart,
     this.traceEnd,
+    this.traceDurationSeconds,
+    this.traceAverageSpeed,
+    this.traceMaxSpeed,
+    this.travelDirection,
   });
 
   final DriveSession drive;
@@ -19,4 +23,8 @@ class WorldTraceDetail {
   final double? traceDistanceMeters;
   final String? traceStart;
   final String? traceEnd;
+  final int? traceDurationSeconds;
+  final double? traceAverageSpeed;
+  final double? traceMaxSpeed;
+  final String? travelDirection;
 }

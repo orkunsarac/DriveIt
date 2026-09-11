@@ -24,6 +24,7 @@ import '../theme/drive_map_visuals.dart';
 import 'drive_detail_screen.dart';
 import 'world_mode_selection_screen.dart';
 import 'profile_settings_screen.dart';
+import 'world_trace_detail_screen.dart';
 
 class MyWorldMapScreen extends StatefulWidget {
   const MyWorldMapScreen({
@@ -721,10 +722,6 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
 
   Future<void> _selectTrace(ResolvedWorldTrace item) async {
     if (!_interactionEnabled) return;
-    setState(() {
-      _selectedTraceId = item.trace.id;
-      _selectedDetail = null;
-    });
     final detail = await _detailService.loadTrace(
       trace: item.trace,
       geometry: item.geometry,
@@ -735,13 +732,16 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       _clearSelection();
       return;
     }
-    if (!mounted || _selectedTraceId != item.trace.id) return;
-    setState(() => _selectedDetail = detail);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _selectedTraceId == item.trace.id) {
-        _fitFocusTrace(item);
-      }
-    });
+    if (!mounted) return;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => WorldTraceDetailScreen(
+          detail: detail,
+          geometry: item.geometry,
+          traceColor: _palette[item.visualVariant % _palette.length],
+        ),
+      ),
+    );
   }
 
   Future<void> _fitFocusTrace(ResolvedWorldTrace item) async {

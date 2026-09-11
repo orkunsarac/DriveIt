@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../../../models/drive_score_record.dart';
 import '../../../models/drive_session.dart';
 import '../models/world_trace_detail.dart';
@@ -12,6 +14,7 @@ typedef WorldScoreLoader = DriveScoreRecord? Function(String driveId);
 typedef WorldActiveDistanceLoader = Future<double> Function(String driveId);
 
 class WorldTraceDetailService {
+  static const _maxTelemetryEndpointDistanceMeters = 250.0;
   const WorldTraceDetailService({
     required this.driveLoader,
     required this.scoreLoader,
@@ -47,13 +50,36 @@ class WorldTraceDetailService {
           trace.sourceDriveSessionId,
         );
     double? segmentScore;
+    int? segmentDurationSeconds;
+    double? segmentAverageSpeed;
+    double? segmentMaxSpeed;
     if (telemetry.length >= 2) {
-      final start = _nearestIndex(telemetry, geometry.first);
-      final end = _nearestIndex(telemetry, geometry.last);
+      final startMatch = _nearestMatch(telemetry, geometry.first);
+      final endMatch = _nearestMatch(telemetry, geometry.last);
+      if (startMatch.distanceMeters > _maxTelemetryEndpointDistanceMeters ||
+          endMatch.distanceMeters > _maxTelemetryEndpointDistanceMeters) {
+        return _geometryOnlyDetail(detail, trace, geometry);
+      }
+      final start = startMatch.index;
+      final end = endMatch.index;
       final from = start <= end ? start : end;
       final to = start <= end ? end : start;
       final subset = telemetry.sublist(from, to + 1);
       if (subset.length >= 2) {
+        final elapsed = subset.last.timestamp
+            .difference(subset.first.timestamp)
+            .inSeconds;
+        final distance = trace.distanceMeters > 0
+            ? trace.distanceMeters
+            : subset.fold<double>(
+                0,
+                (sum, point) => sum + point.distanceFromPreviousMeters,
+              );
+        segmentDurationSeconds = elapsed > 0 ? elapsed : null;
+        segmentAverageSpeed = elapsed > 0 ? distance / elapsed * 3.6 : null;
+        segmentMaxSpeed = subset
+            .map((point) => point.speedMps * 3.6)
+            .reduce(math.max);
         try {
           segmentScore = const DriveScoreCalculator()
               .calculate(telemetry: subset)
@@ -71,27 +97,46 @@ class WorldTraceDetailService {
       traceDistanceMeters: trace.distanceMeters,
       traceStart: _formatPoint(geometry.first),
       traceEnd: _formatPoint(geometry.last),
+      traceDurationSeconds: segmentDurationSeconds,
+      traceAverageSpeed: segmentAverageSpeed,
+      traceMaxSpeed: segmentMaxSpeed,
+      travelDirection: trace.directionKey,
     );
   }
 
-  int _nearestIndex(
+  WorldTraceDetail _geometryOnlyDetail(
+    WorldTraceDetail detail,
+    ActiveWorldTrace trace,
+    List<MatchedRoadPoint> geometry,
+  ) => WorldTraceDetail(
+    drive: detail.drive,
+    score: detail.score,
+    activeWorldDistanceMeters: detail.activeWorldDistanceMeters,
+    traceDistanceMeters: trace.distanceMeters,
+    traceStart: _formatPoint(geometry.first),
+    traceEnd: _formatPoint(geometry.last),
+    travelDirection: trace.directionKey,
+  );
+
+  _TelemetryMatch _nearestMatch(
     List<CanonicalTelemetryPoint> points,
     MatchedRoadPoint target,
   ) {
     var best = 0;
-    var distance = double.infinity;
+    var distanceSquared = double.infinity;
     for (var i = 0; i < points.length; i++) {
-      final value =
-          (points[i].latitude - target.latitude) *
-              (points[i].latitude - target.latitude) +
+      final dLat = (points[i].latitude - target.latitude) * 111320;
+      final dLon =
           (points[i].longitude - target.longitude) *
-              (points[i].longitude - target.longitude);
-      if (value < distance) {
-        distance = value;
+          111320 *
+          math.cos((points[i].latitude + target.latitude) * math.pi / 360);
+      final value = dLat * dLat + dLon * dLon;
+      if (value < distanceSquared) {
+        distanceSquared = value;
         best = i;
       }
     }
-    return best;
+    return _TelemetryMatch(best, math.sqrt(distanceSquared));
   }
 
   String _formatPoint(MatchedRoadPoint point) =>
@@ -114,3 +159,10 @@ class WorldTraceDetailService {
 
 typedef WorldTelemetryLoader =
     Future<List<CanonicalTelemetryPoint>> Function(String driveId);
+
+class _TelemetryMatch {
+  const _TelemetryMatch(this.index, this.distanceMeters);
+
+  final int index;
+  final double distanceMeters;
+}

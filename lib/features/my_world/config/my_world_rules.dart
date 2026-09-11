@@ -28,6 +28,14 @@ class MyWorldRules {
   static const double commonRoadTelemetryHeadingToleranceDegrees = 60;
   static const double commonRoadTelemetryOffsetBoundaryToleranceMeters = 5;
 
+  /// Small render-only separation for opposite-direction traces. This value
+  /// is never persisted or used by ownership comparisons.
+  static const double oppositeTraceVisualOffsetMeters = 3;
+  static const double oppositeTraceTangentWindowMeters = 30;
+  static const double oppositeTraceMaximumNormalTurnDegrees = 60;
+  static const double oppositeTraceCornerStartDegrees = 45;
+  static const double minimumCornerOffsetScale = .35;
+
   /// A local score can replace another only with at least this relative gain.
   static const double minimumMeaningfulScoreImprovementRatio = .01;
 

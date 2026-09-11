@@ -177,12 +177,6 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           _oppositeGeneration = _data!.snapshotGeneration;
           _oppositeTraceIds = _presentation.oppositeTraceIds(_data!.traces);
           _oppositePartners = _presentation.oppositePartnerMap(_data!.traces);
-          if (kDebugMode && _oppositeTraceIds.isNotEmpty) {
-            debugPrint(
-              '[WORLD_OPPOSITE] candidateTraceCount=${_oppositeTraceIds.length} '
-              'localOverlap=true offsetApplied=${_selectedTraceId == null}',
-            );
-          }
         }
         if (_data!.hasOnlyBrokenReferences) {
           return _WorldReadError(onRetry: () => Navigator.of(context).pop());
@@ -421,28 +415,6 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       );
     }
     final result = Set<Polyline>.unmodifiable(output);
-    if (kDebugMode) {
-      for (final item in data.traces) {
-        final cores = result.where(
-          (p) => p.polylineId.value == 'world_core:${item.trace.id}',
-        );
-        if (cores.isEmpty) continue;
-        final finalPoints = cores.first.points;
-        for (final index in {0, item.geometry.length ~/ 2}) {
-          final original = item.geometry[index];
-          final rendered = finalPoints[index];
-          final offsetMeters = Geolocator.distanceBetween(
-            original.latitude,
-            original.longitude,
-            rendered.latitude,
-            rendered.longitude,
-          );
-          debugPrint(
-            '[WORLD_RENDER_AUDIT] trace=${item.trace.id} drive=${item.trace.sourceDriveSessionId} direction=${item.travelDirection.name} opposite=${_oppositeTraceIds.contains(item.trace.id)} partner=${_oppositePartners[item.trace.id]?.trace.id} zoom=$zoom index=$index original=${original.latitude},${original.longitude} finalPolyline=${rendered.latitude},${rendered.longitude} offsetMeters=${offsetMeters.toStringAsFixed(2)}',
-          );
-        }
-      }
-    }
     _polylineCache = result;
     _polylineCacheGeneration = data.snapshotGeneration;
     _polylineCacheZoomBucket = zoomBucket;

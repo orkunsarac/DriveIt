@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- path_provider's Android documents directory is dataDir/app_flutter. -->
+    <files-path name="poster_files" path="../app_flutter/posters/" />
+</paths>

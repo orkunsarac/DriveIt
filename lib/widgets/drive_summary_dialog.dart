@@ -5,6 +5,7 @@ import '../models/canonical_telemetry_point.dart';
 import '../services/drive_storage_service.dart';
 import 'package:flutter/material.dart';
 import 'neon_route_preview.dart';
+import '../features/drive_poster/poster_screens.dart';
 
 class DriveSummaryDialog {
   static Future<void> show(
@@ -165,6 +166,7 @@ class DriveSummaryDialog {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text("✅ Sürüş başarıyla kaydedildi")),
                 );
+                await offerDrivePoster(context, drive);
               }
             },
             icon: const Icon(Icons.save),

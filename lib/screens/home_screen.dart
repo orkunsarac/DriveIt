@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
+import '../features/drive_poster/poster_screens.dart';
 import '../services/drive_storage_service.dart';
 import '../services/profile_storage_service.dart';
 import '../services/drive_score_storage_service.dart';
@@ -77,17 +78,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final lastScore = last == null
         ? null
         : DriveScoreStorageService.get(driveId: last.id);
-    final now = DateTime.now();
-    final today = drives
-        .where(
-          (d) =>
-              d.date.year == now.year &&
-              d.date.month == now.month &&
-              d.date.day == now.day,
-        )
-        .toList();
-    final distance = today.fold<double>(0, (s, d) => s + d.distance) / 1000;
-    final seconds = today.fold<int>(0, (s, d) => s + d.durationSeconds);
     return Scaffold(
       backgroundColor: const Color(0xff020a18),
       body: SafeArea(
@@ -151,7 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 10),
                       _last(context, last, lastScore?.totalScore),
                       const SizedBox(height: 10),
-                      _today(distance, seconds, today.length),
+                      _posterCards(context),
                     ],
                   ),
                 );
@@ -287,36 +277,40 @@ class _HomeScreenState extends State<HomeScreen> {
       child: _glass(
         blue,
         Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
-            children: [
-              Icon(Icons.auto_graph, color: blue, size: 18),
-              SizedBox(width: 5),
-              Expanded(
-                child: Text(
-                  'Kariyerim',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: textFont,
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.auto_graph, color: blue, size: 18),
+                SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    'Kariyerim',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: textFont,
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _value(
-            Icons.alt_route,
-            '${km.toStringAsFixed(1)} km',
-            'Toplam Mesafe',
-          ),
-          const Divider(color: Colors.white24, height: 10),
-          _value(Icons.timer_outlined, _formatDuration(seconds), 'Toplam Süre'),
-        ],
+              ],
+            ),
+            const SizedBox(height: 12),
+            _value(
+              Icons.alt_route,
+              '${km.toStringAsFixed(1)} km',
+              'Toplam Mesafe',
+            ),
+            const Divider(color: Colors.white24, height: 10),
+            _value(
+              Icons.timer_outlined,
+              _formatDuration(seconds),
+              'Toplam Süre',
+            ),
+          ],
         ),
       ),
     );
@@ -406,79 +400,87 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _world(BuildContext context) => GestureDetector(
     key: const Key('home_world_card'),
     onTap: () => Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const WorldModeSelectionScreen(),
-      ),
+      MaterialPageRoute<void>(builder: (_) => const WorldModeSelectionScreen()),
     ),
     child: const _HomeWorldCard(),
   );
 
-  Widget _today(double km, int seconds, int count) => _glass(
-    const Color(0xff315071),
-    Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _posterCards(BuildContext context) => SizedBox(
+    height: 100,
+    child: Row(
       children: [
-        Row(
-          children: [
-            Icon(Icons.calendar_month, color: blue, size: 22),
-            SizedBox(width: 8),
-            Text(
-              'Bugünkü Özet',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+        Expanded(
+          child: InkWell(
+            key: const Key('home_poster_card'),
+            borderRadius: BorderRadius.circular(22),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => const PosterCenterScreen(),
               ),
             ),
-            Spacer(),
-            Text('Detay  ›', style: TextStyle(color: Colors.white70)),
-          ],
+            child: _glass(
+              blue,
+              const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.auto_awesome, color: blue, size: 26),
+                    SizedBox(height: 8),
+                    Text(
+                      'Sürüş Posteri',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
-        const Divider(color: Colors.white24, height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: _summaryMetric(
-                Icons.speed,
-                '-',
-                'Sürüş Skoru',
-                blue,
+        const SizedBox(width: 10),
+        Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(22),
+            onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Grup Sürüşü yakında')),
+            ),
+            child: _glass(
+              const Color(0xff9d5cff),
+              const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.groups_outlined,
+                      color: Color(0xffbd82ff),
+                      size: 26,
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'Grup Sürüşü',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-            _summaryDivider(),
-            Expanded(
-              child: _summaryMetric(
-                Icons.alt_route,
-                km.toStringAsFixed(1),
-                'Mesafe km',
-                Colors.green,
-              ),
-            ),
-            _summaryDivider(),
-            Expanded(
-              child: _summaryMetric(
-                Icons.timer_outlined,
-                '${seconds ~/ 60} dk',
-                'Süre',
-                Colors.purple,
-              ),
-            ),
-            _summaryDivider(),
-            Expanded(
-              child: _summaryMetric(
-                Icons.directions_car,
-                '$count',
-                'Sürüş Sayısı',
-                Colors.orange,
-              ),
-            ),
-          ],
+          ),
         ),
       ],
     ),
   );
 
-  Widget _last(BuildContext context, DriveSession? drive, double? score) => GestureDetector(
+  Widget _last(
+    BuildContext context,
+    DriveSession? drive,
+    double? score,
+  ) => GestureDetector(
     onTap: drive == null
         ? null
         : () => Navigator.push(
@@ -623,34 +625,6 @@ class _HomeScreenState extends State<HomeScreen> {
               style: const TextStyle(color: Colors.white70, fontSize: 9),
             ),
           ],
-        ),
-      ),
-    ],
-  );
-  Widget _summaryDivider() =>
-      Container(width: 1, height: 58, color: Colors.white12);
-
-  Widget _summaryMetric(IconData icon, String value, String label, Color color) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(icon, color: color, size: 20),
-      const SizedBox(height: 3),
-      FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Text(
-          value,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-      ),
-      FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Text(
-          label,
-          style: const TextStyle(color: Colors.white70, fontSize: 9),
         ),
       ),
     ],

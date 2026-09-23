@@ -14,6 +14,8 @@ import 'features/my_world/services/my_world_settings_service.dart';
 import 'services/drive_score_storage_service.dart';
 import 'services/drive_telemetry_storage_service.dart';
 import 'services/profile_storage_service.dart';
+import 'config/supabase_bootstrap.dart';
+import 'services/supabase_account_service.dart';
 import 'features/my_world/services/my_world_runtime.dart';
 import 'features/onboarding/screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
@@ -56,6 +58,8 @@ void main() async {
   final activeDrive = await ForegroundService.isDriveActive();
   final stopRequested = await ForegroundService.consumeStopRequest();
   final profile = await ProfileStorageService.open();
+  await SupabaseBootstrap.initializeIfConfigured();
+  SupabaseAccountService.instance.startIdentitySync();
   final onboardingCompleted = profile.onboardingCompleted;
   runApp(
     DriveItApp(

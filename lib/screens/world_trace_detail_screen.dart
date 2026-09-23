@@ -7,6 +7,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../features/my_world/models/matched_road_point.dart';
 import '../features/my_world/models/world_trace_detail.dart';
 import '../services/profile_storage_service.dart';
+import '../services/supabase_account_service.dart';
 import '../theme/drive_map_visuals.dart';
 import 'drive_detail_screen.dart';
 
@@ -30,6 +31,8 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   GoogleMapController? _controller;
   Uint8List? _photo;
   String? _name;
+  String? _localName;
+  final _accountIdentity = SupabaseAccountService.instance;
   BitmapDescriptor? _startIcon;
   BitmapDescriptor? _finishIcon;
 
@@ -40,8 +43,23 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _accountIdentity.addListener(_onAccountIdentityChanged);
     _loadProfile();
     _loadEndpointIcons();
+  }
+
+  @override
+  void dispose() {
+    _accountIdentity.removeListener(_onAccountIdentityChanged);
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  void _onAccountIdentityChanged() {
+    if (!mounted) return;
+    setState(() {
+      _name = _accountIdentity.effectiveDisplayName(localName: _localName);
+    });
   }
 
   Future<void> _loadEndpointIcons() async {
@@ -113,7 +131,8 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
       final profile = await ProfileStorageService.open();
       if (!mounted) return;
       setState(() {
-        _name = profile.name;
+        _localName = profile.name;
+        _name = _accountIdentity.effectiveDisplayName(localName: _localName);
         _photo = profile.photo;
       });
     } catch (_) {}

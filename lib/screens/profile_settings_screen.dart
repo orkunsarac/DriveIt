@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -8,6 +9,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../features/my_world/services/my_world_settings_service.dart';
 import '../services/profile_storage_service.dart';
+import '../services/supabase_account_service.dart';
+import '../features/account/widgets/driveit_account_section.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({
@@ -15,11 +18,13 @@ class ProfileSettingsScreen extends StatefulWidget {
     this.worldSettings,
     this.profileLoader,
     this.imagePicker,
+    this.accountGateway,
   });
 
   final MyWorldSettingsStore? worldSettings;
   final Future<ProfileStorageService> Function()? profileLoader;
   final ImagePicker? imagePicker;
+  final DriveItAccountGateway? accountGateway;
 
   @override
   State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
@@ -34,6 +39,12 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   ProfileStorageService? _profile;
   Uint8List? _photo;
   String? _name;
+  String? _cloudProfileError;
+  bool _cloudSession = false;
+  bool _cloudProfileLoading = false;
+  DriveItAccountProfile? _cloudProfile;
+  late final DriveItAccountGateway _accountGateway;
+  StreamSubscription<dynamic>? _authSubscription;
   String _version = '…';
   bool _loading = true;
   bool _photoBusy = false;
@@ -47,9 +58,77 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _worldSettings = widget.worldSettings ?? const HiveMyWorldSettingsStore();
     _showIntro = !_worldSettings.skipIntroAnimation;
     _picker = widget.imagePicker ?? ImagePicker();
+    _accountGateway = widget.accountGateway ?? SupabaseAccountService.instance;
+    _authSubscription = _accountGateway.authStateChanges.listen(
+      (_) => _loadCloudProfile(),
+    );
     _loadProfile();
+    _loadCloudProfile();
     _loadVersion();
   }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadCloudProfile() async {
+    final signedIn = _accountGateway.isAvailable && _accountGateway.hasSession;
+    if (!signedIn) {
+      if (mounted) {
+        setState(() {
+          _cloudSession = false;
+          _cloudProfile = null;
+          _cloudProfileError = null;
+          _cloudProfileLoading = false;
+        });
+      }
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _cloudSession = true;
+        _cloudProfileLoading = true;
+        _cloudProfileError = null;
+      });
+    }
+    try {
+      final profile = await _accountGateway.fetchCurrentProfile();
+      if (!mounted) return;
+      setState(() {
+        _cloudProfile = profile;
+        _cloudProfileLoading = false;
+        _cloudProfileError = profile == null
+            ? 'Hesap profili bulunamadı. Yeniden deneyebilirsin.'
+            : null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _cloudProfile = null;
+        _cloudProfileLoading = false;
+        _cloudProfileError =
+            'Hesap bilgileri alınamadı. Yeniden deneyebilirsin.';
+      });
+    }
+  }
+
+  String? get _effectiveName => DriveItEffectiveProfile.displayName(
+    localName: _name,
+    hasSession: _cloudSession,
+    cloudProfile: _cloudProfile,
+    cloudProfileLoaded: !_cloudProfileLoading && _cloudProfileError == null,
+    cloudProfileFailed: _cloudProfileError != null,
+  );
+
+  String? get _effectiveUsername => DriveItEffectiveProfile.username(
+    localUsername: _profile?.username,
+    hasSession: _cloudSession,
+    cloudProfile: _cloudProfile,
+    cloudProfileLoaded: !_cloudProfileLoading && _cloudProfileError == null,
+    cloudProfileFailed: _cloudProfileError != null,
+  );
 
   Future<void> _loadVersion() async {
     try {
@@ -142,7 +221,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       // have no cropper host, so retain the existing safe picker path there.
       if (file.path.isNotEmpty &&
           (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS)) {
+              defaultTargetPlatform == TargetPlatform.iOS)) {
         final cropped = await ImageCropper().cropImage(
           sourcePath: file.path,
           aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
@@ -174,6 +253,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   Future<void> _editName() async {
+    if (_cloudSession) return;
     final value = await showDialog<String>(
       context: context,
       builder: (_) => _NameDialog(initialName: _name),
@@ -298,12 +378,24 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                           ),
                         ),
                         TextButton.icon(
-                          onPressed: _loading || _profile == null
+                          key: const Key('profile_display_name_button'),
+                          onPressed:
+                              _loading || _profile == null || _cloudSession
                               ? null
                               : _editName,
-                          icon: const Icon(Icons.edit_outlined, size: 17),
+                          icon: Icon(
+                            _cloudSession
+                                ? Icons.lock_outline
+                                : Icons.edit_outlined,
+                            size: 17,
+                          ),
                           label: Text(
-                            _name ?? 'İsim Belirle',
+                            _effectiveName ??
+                                (_cloudSession
+                                    ? (_cloudProfileLoading
+                                          ? 'Hesap bilgileri yükleniyor…'
+                                          : 'Hesap bilgileri kullanılamıyor')
+                                    : 'İsim Belirle'),
                             textAlign: TextAlign.center,
                           ),
                           style: TextButton.styleFrom(
@@ -311,6 +403,36 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                             textStyle: Theme.of(context).textTheme.titleMedium,
                           ),
                         ),
+                        if (_cloudSession && _effectiveUsername != null)
+                          Text(
+                            _effectiveUsername!,
+                            key: const Key('profile_cloud_username'),
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        if (_cloudSession)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              _cloudProfileError ??
+                                  'DriveIt hesabındaki ad kullanılıyor.',
+                              key: const Key('profile_cloud_name_status'),
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: _cloudProfileError == null
+                                    ? Colors.white54
+                                    : const Color(0xffff8a8a),
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        if (_cloudSession && _cloudProfileError != null)
+                          TextButton(
+                            key: const Key('profile_cloud_retry'),
+                            onPressed: _cloudProfileLoading
+                                ? null
+                                : _loadCloudProfile,
+                            child: const Text('Yeniden Dene'),
+                          ),
                         if (_loading)
                           const LinearProgressIndicator(
                             minHeight: 2,
@@ -325,6 +447,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                     ),
                   ),
                 ),
+                _section('DRIVEIT HESABI'),
+                DriveItAccountSection(accountGateway: _accountGateway),
                 _section('AYARLAR'),
                 _section('DÜNYA'),
                 _card(

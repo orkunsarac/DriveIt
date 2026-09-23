@@ -10,6 +10,7 @@ import '../features/onboarding/widgets/home_tour_overlay.dart';
 import '../services/drive_storage_service.dart';
 import '../services/profile_storage_service.dart';
 import '../services/drive_score_storage_service.dart';
+import '../services/supabase_account_service.dart';
 import '../widgets/neon_route_preview.dart';
 import 'drive_center_screen.dart';
 import 'drive_detail_screen.dart';
@@ -32,7 +33,9 @@ class _HomeScreenState extends State<HomeScreen> {
   static const blue = HomeScreen.blue;
   static const textFont = HomeScreen.textFont;
   String? _profileName = 'Orkun';
+  String? _localProfileName;
   Uint8List? _profilePhoto;
+  final _accountIdentity = SupabaseAccountService.instance;
   final _driveTourKey = GlobalKey();
   final _drivesTourKey = GlobalKey();
   final _worldTourKey = GlobalKey();
@@ -42,8 +45,23 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    if (_accountIdentity.hasSession) _profileName = null;
+    _accountIdentity.addListener(_onAccountIdentityChanged);
     _loadProfile();
     _loadHomeTourState();
+  }
+
+  @override
+  void dispose() {
+    _accountIdentity.removeListener(_onAccountIdentityChanged);
+    super.dispose();
+  }
+
+  void _onAccountIdentityChanged() {
+    if (!mounted) return;
+    setState(() {
+      _profileName = _resolvedProfileName();
+    });
   }
 
   Future<void> _loadProfile() async {
@@ -55,12 +73,21 @@ class _HomeScreenState extends State<HomeScreen> {
       final profile = await ProfileStorageService.open();
       if (!mounted) return;
       setState(() {
-        _profileName = profile.name ?? _profileName;
+        _localProfileName = profile.name;
+        _profileName = _resolvedProfileName();
         _profilePhoto = profile.photo;
       });
     } catch (_) {
       // Profile is optional; retain the existing fallback header.
     }
+  }
+
+  String? _resolvedProfileName() {
+    final effective = _accountIdentity.effectiveDisplayName(
+      localName: _localProfileName,
+    );
+    if (effective != null || _accountIdentity.hasSession) return effective;
+    return 'Orkun';
   }
 
   Future<void> _loadHomeTourState() async {

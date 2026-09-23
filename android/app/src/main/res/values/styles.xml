@@ -15,4 +15,16 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
+
+    <!-- uCrop owns the poster positioning screen. Keep its toolbar below the
+         system status inset and use the same dark palette as the Flutter UI. -->
+    <style name="PosterCropperTheme" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">#091B30</item>
+        <item name="android:navigationBarColor">#020A18</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
 </resources>

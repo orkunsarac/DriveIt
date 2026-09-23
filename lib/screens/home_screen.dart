@@ -6,6 +6,7 @@ import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
 import '../features/drive_poster/poster_screens.dart';
+import '../features/onboarding/widgets/home_tour_overlay.dart';
 import '../services/drive_storage_service.dart';
 import '../services/profile_storage_service.dart';
 import '../services/drive_score_storage_service.dart';
@@ -32,11 +33,17 @@ class _HomeScreenState extends State<HomeScreen> {
   static const textFont = HomeScreen.textFont;
   String? _profileName = 'Orkun';
   Uint8List? _profilePhoto;
+  final _driveTourKey = GlobalKey();
+  final _drivesTourKey = GlobalKey();
+  final _worldTourKey = GlobalKey();
+  final _careerTourKey = GlobalKey();
+  bool _showHomeTour = false;
 
   @override
   void initState() {
     super.initState();
     _loadProfile();
+    _loadHomeTourState();
   }
 
   Future<void> _loadProfile() async {
@@ -54,6 +61,27 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (_) {
       // Profile is optional; retain the existing fallback header.
     }
+  }
+
+  Future<void> _loadHomeTourState() async {
+    if (!Hive.isBoxOpen(ProfileStorageService.boxName)) return;
+    try {
+      final profile = await ProfileStorageService.open();
+      if (!mounted) return;
+      if (profile.onboardingCompleted && !profile.homeTourCompleted) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _showHomeTour = true);
+        });
+      }
+    } catch (_) {
+      // The tour is optional; never block the real home screen on storage I/O.
+    }
+  }
+
+  Future<void> _completeHomeTour() async {
+    final profile = await ProfileStorageService.open();
+    await profile.markHomeTourCompleted();
+    if (mounted) setState(() => _showHomeTour = false);
   }
 
   Future<void> _openProfileSettings(BuildContext context) async {
@@ -78,75 +106,115 @@ class _HomeScreenState extends State<HomeScreen> {
     final lastScore = last == null
         ? null
         : DriveScoreStorageService.get(driveId: last.id);
-    return Scaffold(
-      backgroundColor: const Color(0xff020a18),
-      body: SafeArea(
-        child: Stack(
+    return PopScope(
+      canPop: !_showHomeTour,
+      child: Scaffold(
+        backgroundColor: const Color(0xff020a18),
+        body: Stack(
           children: [
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: 535,
-              child: ClipRect(
-                child: Transform.translate(
-                  offset: const Offset(0, -18),
-                  child: SizedBox(
-                    width: double.infinity,
-                    height: 553,
-                    child: Image.asset(
-                      'assets/branding/driveit_hero.png',
-                      fit: BoxFit.cover,
-                      alignment: Alignment.topCenter,
-                      filterQuality: FilterQuality.high,
-                    ),
-                  ),
-                ),
-              ),
-            ),
             Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.transparent,
-                      const Color(0x22020a18),
-                      const Color(0xff020a18),
-                    ],
-                    stops: const [.2, .5, .78],
-                  ),
+              child: SafeArea(
+                child: Stack(
+                  children: [
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      height: 535,
+                      child: ClipRect(
+                        child: Transform.translate(
+                          offset: const Offset(0, -18),
+                          child: SizedBox(
+                            width: double.infinity,
+                            height: 553,
+                            child: Image.asset(
+                              'assets/branding/driveit_hero.png',
+                              fit: BoxFit.cover,
+                              alignment: Alignment.topCenter,
+                              filterQuality: FilterQuality.high,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              const Color(0x22020a18),
+                              const Color(0xff020a18),
+                            ],
+                            stops: const [.2, .5, .78],
+                          ),
+                        ),
+                      ),
+                    ),
+                    LayoutBuilder(
+                      builder: (context, viewport) {
+                        final fitsViewport = viewport.maxHeight >= 700;
+                        return SingleChildScrollView(
+                          physics: fitsViewport
+                              ? const NeverScrollableScrollPhysics()
+                              : null,
+                          padding: const EdgeInsets.fromLTRB(19, 12, 19, 26),
+                          child: Column(
+                            children: [
+                              _header(context),
+                              SizedBox(height: viewport.maxHeight * .20),
+                              _heroCards(context, drives),
+                              const SizedBox(height: 10),
+                              _world(context),
+                              const SizedBox(height: 10),
+                              _last(context, last, lastScore?.totalScore),
+                              const SizedBox(height: 10),
+                              _posterCards(context),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
             ),
-            LayoutBuilder(
-              builder: (context, viewport) {
-                // A55 and similarly sized phones fit the compact stack in one
-                // viewport. Keep a scroll fallback for accessibility/font
-                // scaling and genuinely smaller windows.
-                final fitsViewport = viewport.maxHeight >= 700;
-                return SingleChildScrollView(
-                  physics: fitsViewport
-                      ? const NeverScrollableScrollPhysics()
-                      : null,
-                  padding: const EdgeInsets.fromLTRB(19, 12, 19, 26),
-                  child: Column(
-                    children: [
-                      _header(context),
-                      SizedBox(height: viewport.maxHeight * .20),
-                      _heroCards(context, drives),
-                      const SizedBox(height: 10),
-                      _world(context),
-                      const SizedBox(height: 10),
-                      _last(context, last, lastScore?.totalScore),
-                      const SizedBox(height: 10),
-                      _posterCards(context),
-                    ],
+            if (_showHomeTour)
+              HomeTourOverlay(
+                steps: [
+                  HomeTourStep(
+                    targetKey: _driveTourKey,
+                    title: 'Sürüşe Başla',
+                    description:
+                        'Yola çıktığında DriveIt burada seninle. Sürüşünü başlat; rota, mesafe, süre, hız ve sürüş verilerin kaydedilsin.',
+                    radius: 70,
                   ),
-                );
-              },
-            ),
+                  HomeTourStep(
+                    targetKey: _drivesTourKey,
+                    title: 'Sürüşlerim',
+                    description:
+                        'Kaydettiğin tüm sürüşleri, rotalarını, sürelerini, hızlarını ve Drive Score sonuçlarını burada inceleyebilirsin.',
+                    radius: 24,
+                  ),
+                  HomeTourStep(
+                    targetKey: _worldTourKey,
+                    title: 'Benim Dünyam',
+                    description:
+                        'Geçtiğin yollarla gezegende iz bırak. Sürdüğün yollar zamanla kendi DriveIt dünyanı oluşturur.',
+                    radius: 24,
+                  ),
+                  HomeTourStep(
+                    targetKey: _careerTourKey,
+                    title: 'Kariyerim',
+                    description:
+                        "Sürüş performansını, gelişimini ve DriveIt'taki ilerlemeni burada takip edebilirsin.",
+                    radius: 24,
+                  ),
+                ],
+                onComplete: _completeHomeTour,
+              ),
           ],
         ),
       ),
@@ -169,19 +237,28 @@ class _HomeScreenState extends State<HomeScreen> {
                   top: 0,
                   bottom: 0,
                   width: cardWidth,
-                  child: _career(context),
+                  child: KeyedSubtree(
+                    key: _careerTourKey,
+                    child: _career(context),
+                  ),
                 ),
                 Positioned(
                   right: 0,
                   top: 0,
                   bottom: 0,
                   width: cardWidth,
-                  child: _drives(context, drives),
+                  child: KeyedSubtree(
+                    key: _drivesTourKey,
+                    child: _drives(context, drives),
+                  ),
                 ),
                 Positioned(
                   width: buttonSize,
                   height: buttonSize,
-                  child: _driveButton(context),
+                  child: KeyedSubtree(
+                    key: _driveTourKey,
+                    child: _driveButton(context),
+                  ),
                 ),
               ],
             );
@@ -397,12 +474,17 @@ class _HomeScreenState extends State<HomeScreen> {
     ),
   );
 
-  Widget _world(BuildContext context) => GestureDetector(
-    key: const Key('home_world_card'),
-    onTap: () => Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const WorldModeSelectionScreen()),
+  Widget _world(BuildContext context) => KeyedSubtree(
+    key: _worldTourKey,
+    child: GestureDetector(
+      key: const Key('home_world_card'),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const WorldModeSelectionScreen(),
+        ),
+      ),
+      child: const _HomeWorldCard(),
     ),
-    child: const _HomeWorldCard(),
   );
 
   Widget _posterCards(BuildContext context) => SizedBox(

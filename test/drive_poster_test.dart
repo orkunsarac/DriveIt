@@ -8,6 +8,7 @@ import 'package:driveit_project/features/drive_poster/poster_canvas.dart';
 import 'package:driveit_project/features/drive_poster/poster_layout.dart';
 import 'package:driveit_project/features/drive_poster/poster_screens.dart';
 import 'package:driveit_project/features/drive_poster/poster_store.dart';
+import 'package:driveit_project/features/drive_poster/poster_theme.dart';
 import 'package:driveit_project/features/drive_poster/drive_route_thumbnail.dart';
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/models/route_point.dart';
@@ -182,6 +183,139 @@ void main() {
       isTrue,
     );
     expect(tester.takeException(), isNull);
+  });
+
+  test('poster themes keep independent palettes and Classic defaults', () {
+    expect(PosterThemeData.fromId(null).id, PosterThemeId.classic);
+    expect(posterLogoVariantFromName(null), PosterLogoVariant.symbol);
+    expect(PosterThemeData.softWhite.startPinColor, isNot(posterStartPinColor));
+    expect(PosterThemeData.softWhite.endPinColor, isNot(posterEndPinColor));
+    expect(PosterThemeData.values.map((theme) => theme.displayName), [
+      'Classic',
+      'Soft White',
+      'Ice',
+      'Blackout',
+    ]);
+    expect(PosterThemeData.blackout.routeColor, const Color(0xff25282c));
+    expect(posterThemeIdFromName('mono'), PosterThemeId.blackout);
+    expect(PosterThemeData.ice.routeColor, const Color(0xffbceaff));
+
+    final legacy = SavedDrivePoster.fromMap({
+      'id': 'theme-legacy',
+      'driveId': 'drive',
+      'createdAt': DateTime(2026).millisecondsSinceEpoch,
+      'fileName': 'legacy.png',
+    });
+    expect(legacy.themeId, 'classic');
+    expect(legacy.logoVariant, 'symbol');
+
+    final monoRecord = SavedDrivePoster.fromMap({
+      ...legacy.toMap(),
+      'themeId': 'mono',
+      'logoVariant': 'wordmark',
+    });
+    expect(monoRecord.themeId, 'blackout');
+    expect(monoRecord.toMap()['themeId'], 'blackout');
+
+    final selected = SavedDrivePoster.fromMap({
+      ...legacy.toMap(),
+      'themeId': 'ice',
+      'logoVariant': 'wordmark',
+    });
+    expect(selected.themeId, 'ice');
+    expect(selected.logoVariant, 'wordmark');
+  });
+
+  testWidgets('theme and logo selectors update the live poster canvas', (
+    tester,
+  ) async {
+    final saved = SavedDrivePoster(
+      id: 'live-theme',
+      driveId: sampleDrive().id,
+      createdAt: DateTime(2026),
+      fileName: 'poster.png',
+      backgroundSourceType: PosterBackgroundSourceType.customImage,
+      startLabel: 'Yenişehir',
+      endLabel: 'Başiskele',
+      showMaxSpeed: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PosterEditorScreen(
+          drive: sampleDrive(),
+          savedPoster: saved,
+          savedBackgroundPath: testBackground,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<PosterCanvas>(find.byType(PosterCanvas)).themeId,
+      PosterThemeId.classic,
+    );
+    expect(
+      tester.widget<PosterCanvas>(find.byType(PosterCanvas)).logoVariant,
+      PosterLogoVariant.symbol,
+    );
+
+    final scrollable = find
+        .descendant(
+          of: find.byKey(const ValueKey('poster_editor_scroll')),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    await tester.scrollUntilVisible(
+      find.text('Ice'),
+      220,
+      scrollable: scrollable,
+    );
+    await tester.tap(find.text('Ice'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('poster_canvas_tap_area')),
+      -220,
+      scrollable: scrollable,
+    );
+    await tester.pumpAndSettle();
+    var canvas = tester.widget<PosterCanvas>(find.byType(PosterCanvas));
+    expect(canvas.themeId, PosterThemeId.ice);
+    expect(canvas.logoVariant, PosterLogoVariant.symbol);
+
+    await tester.scrollUntilVisible(
+      find.text('DriveIt Yazı'),
+      180,
+      scrollable: scrollable,
+    );
+    await tester.ensureVisible(find.text('DriveIt Yazı'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('DriveIt Yazı'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('poster_canvas_tap_area')),
+      -220,
+      scrollable: scrollable,
+    );
+    await tester.pumpAndSettle();
+    canvas = tester.widget<PosterCanvas>(find.byType(PosterCanvas));
+    expect(canvas.themeId, PosterThemeId.ice);
+    expect(canvas.logoVariant, PosterLogoVariant.wordmark);
+    final logo = tester.widget<Image>(
+      find.byKey(const Key('poster_fixed_logo')),
+    );
+    expect(
+      (logo.image as AssetImage).assetName,
+      'assets/onboarding/driveit_wordmark.png',
+    );
+    final routePaint = tester.widget<CustomPaint>(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is CustomPaint && widget.painter is PosterRoutePainter,
+      ),
+    );
+    expect(
+      (routePaint.painter! as PosterRoutePainter).theme.id,
+      PosterThemeId.ice,
+    );
   });
 
   testWidgets('badge slots share geometry and hidden slots collapse', (
@@ -638,6 +772,8 @@ void main() {
     expect(restored.showRoute, isTrue);
     expect(restored.startLabel, isEmpty);
     expect(restored.layout, isNull);
+    expect(restored.themeId, 'classic');
+    expect(restored.logoVariant, 'symbol');
   });
 
   test('rich poster metadata and PNG survive Hive reopening', () async {
@@ -667,6 +803,8 @@ void main() {
           endLabel: 'Bitiş',
           showMaxSpeed: false,
           showRoute: false,
+          themeId: 'ice',
+          logoVariant: 'wordmark',
           layout: const PosterLayout(
             score: PosterTransform(x: .3, y: .4, scale: .8),
             route: PosterTransform(x: .5, y: .55, scale: .7),
@@ -688,6 +826,8 @@ void main() {
       expect(restored.endLabel, 'Bitiş');
       expect(restored.showMaxSpeed, isFalse);
       expect(restored.showRoute, isFalse);
+      expect(restored.themeId, 'ice');
+      expect(restored.logoVariant, 'wordmark');
       expect(restored.layout!.score.toMap(), {'x': .3, 'y': .4, 'scale': .8});
       expect(restored.layout!.route.scale, .7);
       await box.close();

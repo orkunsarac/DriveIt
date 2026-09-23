@@ -110,6 +110,29 @@ void main() {
     },
   );
 
+  test('display name and username survive Hive reopening', () async {
+    await profile.saveProfile(
+      displayName: '  Çağrı Şahin  ',
+      username: 'Drive.IT_26',
+    );
+    await Hive.close();
+    profile = await ProfileStorageService.open();
+    expect(profile.name, 'Çağrı Şahin');
+    expect(profile.username, 'drive.it_26');
+  });
+  test('onboarding completion and timestamp survive Hive reopening', () async {
+    final completedAt = DateTime.utc(2026, 9, 16, 12, 30);
+    await profile.markOnboardingCompleted(completedAt: completedAt);
+    await Hive.close();
+    profile = await ProfileStorageService.open();
+    expect(profile.onboardingCompleted, isTrue);
+    expect(profile.onboardingCompletedAt, completedAt);
+    expect(profile.homeTourCompleted, isFalse);
+    await profile.markHomeTourCompleted();
+    await Hive.close();
+    profile = await ProfileStorageService.open();
+    expect(profile.homeTourCompleted, isTrue);
+  });
   testWidgets(
     'small screen edits name, toggles existing setting and shows version',
     (tester) async {

@@ -8,6 +8,7 @@ import 'package:intl/intl.dart';
 import '../../models/drive_session.dart';
 import '../../models/route_point.dart';
 import 'poster_layout.dart';
+import 'poster_theme.dart';
 
 const posterSize = Size(360, 640);
 const posterRouteRect = Rect.fromLTWH(24, 176, 312, 310);
@@ -254,6 +255,8 @@ class PosterCanvas extends StatelessWidget {
     this.showDate = true,
     this.showScore = true,
     this.showRoute = true,
+    this.themeId = PosterThemeId.classic,
+    this.logoVariant = PosterLogoVariant.symbol,
     this.layout,
     this.selectedElement,
     this.onTransform,
@@ -272,6 +275,8 @@ class PosterCanvas extends StatelessWidget {
   final bool showDate;
   final bool showScore;
   final bool showRoute;
+  final PosterThemeId themeId;
+  final PosterLogoVariant logoVariant;
   final PosterLayout? layout;
   final PosterElement? selectedElement;
   final void Function(PosterElement, PosterTransform)? onTransform;
@@ -281,6 +286,9 @@ class PosterCanvas extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = PosterThemeData.values.firstWhere(
+      (candidate) => candidate.id == themeId,
+    );
     final route = projectPosterRoute(drive.route);
     // Keep the established transform footprint so existing saved route
     // transforms reopen identically after route labels are removed.
@@ -318,6 +326,15 @@ class PosterCanvas extends StatelessWidget {
       badges.add(SizedBox(width: double.infinity, child: module(key, child)));
     }
 
+    final logo = Image.asset(
+      logoVariant == PosterLogoVariant.symbol
+          ? 'assets/branding/driveit_logo_current.png'
+          : 'assets/onboarding/driveit_wordmark.png',
+      key: const Key('poster_fixed_logo'),
+      width: posterBadgeColumnWidth,
+      height: posterBadgeColumnWidth,
+      fit: BoxFit.contain,
+    );
     addBadge(
       'badge_logo',
       SizedBox(
@@ -328,13 +345,15 @@ class PosterCanvas extends StatelessWidget {
             scale: posterLogoAlphaTrimScale,
             child: Opacity(
               opacity: .9,
-              child: Image.asset(
-                'assets/branding/driveit_logo_current.png',
-                key: const Key('poster_fixed_logo'),
-                width: posterBadgeColumnWidth,
-                height: posterBadgeColumnWidth,
-                fit: BoxFit.contain,
-              ),
+              child: theme.tintLogo
+                  ? ColorFiltered(
+                      colorFilter: ColorFilter.mode(
+                        theme.logoTintColor,
+                        BlendMode.srcIn,
+                      ),
+                      child: logo,
+                    )
+                  : logo,
             ),
           ),
         ),
@@ -348,7 +367,8 @@ class PosterCanvas extends StatelessWidget {
           pinKey: const ValueKey('poster_start_badge_pin'),
           helper: 'Başlangıç',
           location: posterDistrict(startName),
-          color: posterStartPinColor,
+          color: theme.startPinColor,
+          theme: theme,
         ),
       );
       addBadge(
@@ -358,7 +378,8 @@ class PosterCanvas extends StatelessWidget {
           pinKey: const ValueKey('poster_end_badge_pin'),
           helper: 'Bitiş',
           location: posterDistrict(endName),
-          color: posterEndPinColor,
+          color: theme.endPinColor,
+          theme: theme,
         ),
       );
     }
@@ -371,7 +392,7 @@ class PosterCanvas extends StatelessWidget {
           textAlign: TextAlign.center,
           style: fittedStyle(
             DateFormat('dd.MM.yyyy').format(drive.date),
-            const TextStyle(color: Colors.white60, fontSize: 8),
+            TextStyle(color: theme.secondaryTextColor, fontSize: 8),
           ),
         ),
       );
@@ -388,12 +409,21 @@ class PosterCanvas extends StatelessWidget {
               textAlign: TextAlign.center,
               style: fittedStyle(
                 score?.round().toString() ?? '—',
-                const TextStyle(
-                  color: Color(0xff63dcff),
+                TextStyle(
+                  color: theme.scoreColor,
                   fontSize: 28,
                   height: .95,
                   fontWeight: FontWeight.w800,
-                  shadows: [Shadow(color: Color(0x66248fff), blurRadius: 8)],
+                  shadows: theme.scoreGlowIntensity <= 0
+                      ? const []
+                      : [
+                          Shadow(
+                            color: theme.scoreGlowColor.withValues(
+                              alpha: theme.scoreGlowIntensity,
+                            ),
+                            blurRadius: 8,
+                          ),
+                        ],
                 ),
               ),
             ),
@@ -404,11 +434,11 @@ class PosterCanvas extends StatelessWidget {
               textAlign: TextAlign.center,
               style: fittedStyle(
                 score == null ? 'DRIVE SCORE · VERİ YOK' : 'DRIVE SCORE / 1000',
-                const TextStyle(
+                TextStyle(
                   fontSize: 7,
                   height: 1.2,
                   letterSpacing: .35,
-                  color: Colors.white60,
+                  color: theme.secondaryTextColor,
                 ),
                 horizontalSafety: 2,
               ),
@@ -420,7 +450,7 @@ class PosterCanvas extends StatelessWidget {
     return SizedBox.fromSize(
       size: posterSize,
       child: DefaultTextStyle(
-        style: const TextStyle(color: Colors.white, fontFamily: 'Roboto'),
+        style: TextStyle(color: theme.primaryTextColor, fontFamily: 'Roboto'),
         child: GestureDetector(
           key: const ValueKey('poster_canvas_tap_area'),
           behavior: HitTestBehavior.opaque,
@@ -482,7 +512,12 @@ class PosterCanvas extends StatelessWidget {
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
-                              CustomPaint(painter: PosterRoutePainter(route)),
+                              CustomPaint(
+                                painter: PosterRoutePainter(
+                                  route,
+                                  theme: theme,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -509,11 +544,24 @@ class PosterCanvas extends StatelessWidget {
                     _metric(
                       '${(drive.distance / 1000).toStringAsFixed(1)} km',
                       'MESAFE',
+                      theme: theme,
                     ),
-                    _metric(posterDuration(drive.durationSeconds), 'SÜRE'),
-                    _metric(drive.averageSpeed.toStringAsFixed(1), 'ORT. HIZ'),
+                    _metric(
+                      posterDuration(drive.durationSeconds),
+                      'SÜRE',
+                      theme: theme,
+                    ),
+                    _metric(
+                      drive.averageSpeed.toStringAsFixed(1),
+                      'ORT. HIZ',
+                      theme: theme,
+                    ),
                     if (showMaxSpeed)
-                      _metric(drive.maxSpeed.toStringAsFixed(1), 'MAKS. HIZ'),
+                      _metric(
+                        drive.maxSpeed.toStringAsFixed(1),
+                        'MAKS. HIZ',
+                        theme: theme,
+                      ),
                   ],
                 ),
               ),
@@ -524,21 +572,29 @@ class PosterCanvas extends StatelessWidget {
     );
   }
 
-  Widget _metric(String value, String label) => Expanded(
+  Widget _metric(
+    String value,
+    String label, {
+    required PosterThemeData theme,
+  }) => Expanded(
     child: Column(
       children: [
         FittedBox(
           fit: BoxFit.scaleDown,
           child: Text(
             value,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            style: TextStyle(
+              color: theme.primaryTextColor,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ),
         const SizedBox(height: 5),
         Text(
           label,
-          style: const TextStyle(
-            color: Colors.white60,
+          style: TextStyle(
+            color: theme.secondaryTextColor,
             fontSize: 7,
             letterSpacing: .5,
           ),
@@ -555,11 +611,13 @@ class _PosterLocationBadge extends StatelessWidget {
     required this.helper,
     required this.location,
     required this.color,
+    required this.theme,
   });
   final Key pinKey;
   final String helper;
   final String location;
   final Color color;
+  final PosterThemeData theme;
 
   @override
   Widget build(BuildContext context) => SizedBox(
@@ -582,8 +640,8 @@ class _PosterLocationBadge extends StatelessWidget {
                 helper,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: TextStyle(
+                  color: theme.secondaryTextColor,
                   fontSize: 6.5,
                   height: 1,
                   fontWeight: FontWeight.w500,
@@ -598,8 +656,8 @@ class _PosterLocationBadge extends StatelessWidget {
                     location,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xfff1f5fb),
+                    style: TextStyle(
+                      color: theme.primaryTextColor,
                       fontSize: 8.25,
                       height: 1,
                       fontWeight: FontWeight.w600,
@@ -633,8 +691,9 @@ class _PosterPinPainter extends CustomPainter {
 }
 
 class PosterRoutePainter extends CustomPainter {
-  const PosterRoutePainter(this.points);
+  const PosterRoutePainter(this.points, {this.theme = PosterThemeData.classic});
   final List<Offset> points;
+  final PosterThemeData theme;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -643,32 +702,58 @@ class PosterRoutePainter extends CustomPainter {
     for (var index = 1; index < points.length; index++) {
       path.lineTo(points[index].dx, points[index].dy);
     }
+    if (theme.routeGlowIntensity > 0) {
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = theme.routeGlowColor.withValues(
+            alpha: theme.routeGlowIntensity,
+          )
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 8
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+      );
+    }
     canvas.drawPath(
       path,
       Paint()
-        ..color = const Color(0x9b248fff)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 8
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
-    );
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = const Color(0xff63e6ff)
+        ..color = theme.routeColor
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.2
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round,
     );
-    _paintPosterPin(canvas, points.first, 4.2, posterStartPinColor);
-    _paintPosterPin(canvas, points.last, 4.2, posterEndPinColor);
+    if (theme.id == PosterThemeId.blackout) {
+      // Keep the charcoal route visible on dark photos with a restrained
+      // smoke-gray edge, without reintroducing the neon palette.
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = theme.routeGlowColor.withValues(alpha: .58)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.8
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = theme.routeColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round,
+      );
+    }
+    _paintPosterPin(canvas, points.first, 4.2, theme.startPinColor);
+    _paintPosterPin(canvas, points.last, 4.2, theme.endPinColor);
   }
 
   @override
   bool shouldRepaint(covariant PosterRoutePainter oldDelegate) =>
-      oldDelegate.points != points;
+      oldDelegate.points != points || oldDelegate.theme != theme;
 }
 
 PosterLayout automaticPosterLayout(List<Offset> points) {

@@ -82,6 +82,14 @@ flutter:
     - assets/branding/driveit_logo_clean.png
     - assets/branding/driveit_logo_current.png
     - assets/branding/driveit_hero.png
+    - assets/onboarding/welcome_background.png
+    - assets/onboarding/welcome_background_phone.png
+    - assets/onboarding/features_background_phone.png
+    - assets/onboarding/permissions_background_phone.png
+    - assets/onboarding/legal_background_phone.png
+    - assets/onboarding/profile_background_phone.png
+    - assets/onboarding/ready_background_phone.png
+    - assets/onboarding/driveit_wordmark.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

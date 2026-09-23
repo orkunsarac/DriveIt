@@ -15,6 +15,7 @@ import 'services/drive_score_storage_service.dart';
 import 'services/drive_telemetry_storage_service.dart';
 import 'services/profile_storage_service.dart';
 import 'features/my_world/services/my_world_runtime.dart';
+import 'features/onboarding/screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/map_screen.dart';
 
@@ -54,10 +55,14 @@ void main() async {
   await ForegroundService.init();
   final activeDrive = await ForegroundService.isDriveActive();
   final stopRequested = await ForegroundService.consumeStopRequest();
+  final profile = await ProfileStorageService.open();
+  final onboardingCompleted = profile.onboardingCompleted;
   runApp(
     DriveItApp(
-      resumeDrive: activeDrive || stopRequested,
-      initialScreen: const HomeScreen(),
+      resumeDrive: onboardingCompleted && (activeDrive || stopRequested),
+      initialScreen: onboardingCompleted
+          ? const HomeScreen()
+          : const OnboardingScreen(),
     ),
   );
   // Do not block app startup; pending World jobs are durable and retryable.
@@ -142,6 +147,7 @@ class _DriveItAppState extends State<DriveItApp> {
               ),
             ),
       ),
+      routes: {OnboardingScreen.previewRoute: (_) => const OnboardingScreen()},
       home: widget.initialScreen,
     );
   }

@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'poster_background.dart';
 import 'poster_layout.dart';
+import 'poster_theme.dart';
 
 class SavedDrivePoster {
   const SavedDrivePoster({
@@ -22,6 +23,8 @@ class SavedDrivePoster {
     this.showDate = true,
     this.showScore = true,
     this.showRoute = true,
+    this.themeId = 'classic',
+    this.logoVariant = 'symbol',
     this.backgroundFileName,
     this.aiVehicle,
     this.layout,
@@ -40,6 +43,8 @@ class SavedDrivePoster {
   final bool showDate;
   final bool showScore;
   final bool showRoute;
+  final String themeId;
+  final String logoVariant;
   final PosterLayout? layout;
 
   Map<String, Object?> toMap() => {
@@ -59,6 +64,8 @@ class SavedDrivePoster {
     'showDate': showDate,
     'showScore': showScore,
     'showRoute': showRoute,
+    'themeId': themeId,
+    'logoVariant': logoVariant,
     'templateVersion': 2,
     'layout': layout?.toMap(),
   };
@@ -95,6 +102,10 @@ class SavedDrivePoster {
       showDate: value['showDate'] as bool? ?? true,
       showScore: value['showScore'] as bool? ?? true,
       showRoute: value['showRoute'] as bool? ?? true,
+      themeId: posterThemeIdFromName(value['themeId'] as String?).name,
+      logoVariant: posterLogoVariantFromName(
+        value['logoVariant'] as String?,
+      ).name,
       layout: value['layout'] is Map
           ? PosterLayout.fromMap(value['layout'] as Map)
           : null,
@@ -114,6 +125,8 @@ class PosterSaveRequest {
     this.showDate = true,
     this.showScore = true,
     this.showRoute = true,
+    this.themeId = 'classic',
+    this.logoVariant = 'symbol',
     this.backgroundPath,
     this.aiVehicle,
     this.layout,
@@ -130,6 +143,8 @@ class PosterSaveRequest {
   final bool showDate;
   final bool showScore;
   final bool showRoute;
+  final String themeId;
+  final String logoVariant;
   final PosterLayout? layout;
 }
 
@@ -274,6 +289,8 @@ class PosterStore {
       showDate: request.showDate,
       showScore: request.showScore,
       showRoute: request.showRoute,
+      themeId: posterThemeIdFromName(request.themeId).name,
+      logoVariant: posterLogoVariantFromName(request.logoVariant).name,
       layout: request.layout,
     );
     final output = file(poster);

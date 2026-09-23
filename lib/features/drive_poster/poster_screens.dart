@@ -15,6 +15,7 @@ import '../../services/drive_storage_service.dart';
 import 'poster_background.dart';
 import 'poster_canvas.dart';
 import 'poster_layout.dart';
+import 'poster_theme.dart';
 import 'poster_store.dart';
 import 'drive_route_thumbnail.dart';
 
@@ -332,6 +333,8 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
   bool _showRoute = true;
   bool _routeSelected = true;
   bool _gestureActive = false;
+  PosterThemeId _themeId = PosterThemeId.classic;
+  PosterLogoVariant _logoVariant = PosterLogoVariant.symbol;
   late PosterLayout _layout;
 
   @override
@@ -349,6 +352,8 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
       _showDate = saved.showDate;
       _showScore = saved.showScore;
       _showRoute = saved.showRoute;
+      _themeId = posterThemeIdFromName(saved.themeId);
+      _logoVariant = posterLogoVariantFromName(saved.logoVariant);
       _routeSelected = saved.showRoute;
       _sourceType = saved.backgroundSourceType;
       _backgroundPath = widget.savedBackgroundPath;
@@ -515,6 +520,8 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     showDate: _showDate,
     showScore: _showScore,
     showRoute: _showRoute,
+    themeId: _themeId,
+    logoVariant: _logoVariant,
     backgroundPath: _backgroundPath!,
     layout: _layout,
     selectedElement: editing && _showRoute && _routeSelected
@@ -552,10 +559,7 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     await precacheImage(FileImage(File(_backgroundPath!)), context);
     debugPrint('[POSTER_SAVE] render.backgroundReady');
     if (!mounted) throw StateError('Poster ekranı kapandı');
-    await precacheImage(
-      const AssetImage('assets/branding/driveit_logo_current.png'),
-      context,
-    );
+    await precacheImage(AssetImage(_logoAssetPath), context);
     debugPrint('[POSTER_SAVE] render.logoReady');
     if (!mounted) throw StateError('Poster ekranı kapandı');
     final key = GlobalKey();
@@ -642,6 +646,8 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
         showDate: _showDate,
         showScore: _showScore,
         showRoute: _showRoute,
+        themeId: _themeId.name,
+        logoVariant: _logoVariant.name,
         layout: _layout,
       ),
     );
@@ -652,6 +658,10 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     _saved = saved;
     return saved;
   }
+
+  String get _logoAssetPath => _logoVariant == PosterLogoVariant.symbol
+      ? 'assets/branding/driveit_logo_current.png'
+      : 'assets/onboarding/driveit_wordmark.png';
 
   Future<Uint8List> _renderPosterPng() async {
     final image = await _renderPosterImage();
@@ -1021,6 +1031,59 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
         onChanged: _busy
             ? null
             : (value) => _draftChanged(() => _showScore = value),
+      ),
+      const SizedBox(height: 12),
+      const Text('TEMA', style: TextStyle(fontWeight: FontWeight.w700)),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: PosterThemeData.values
+            .map((theme) {
+              return ChoiceChip(
+                label: Text(theme.displayName),
+                selected: _themeId == theme.id,
+                onSelected: _busy
+                    ? null
+                    : (selected) {
+                        if (!selected) return;
+                        _draftChanged(() => _themeId = theme.id);
+                      },
+              );
+            })
+            .toList(growable: false),
+      ),
+      const SizedBox(height: 8),
+      const Text('LOGO', style: TextStyle(fontWeight: FontWeight.w700)),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        children: [
+          ChoiceChip(
+            label: const Text('Sembol'),
+            selected: _logoVariant == PosterLogoVariant.symbol,
+            onSelected: _busy
+                ? null
+                : (selected) {
+                    if (!selected) return;
+                    _draftChanged(
+                      () => _logoVariant = PosterLogoVariant.symbol,
+                    );
+                  },
+          ),
+          ChoiceChip(
+            label: const Text('DriveIt Yazı'),
+            selected: _logoVariant == PosterLogoVariant.wordmark,
+            onSelected: _busy
+                ? null
+                : (selected) {
+                    if (!selected) return;
+                    _draftChanged(
+                      () => _logoVariant = PosterLogoVariant.wordmark,
+                    );
+                  },
+          ),
+        ],
       ),
       OutlinedButton.icon(
         onPressed: _busy

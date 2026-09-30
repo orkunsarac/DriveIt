@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:driveit_project/features/my_world/config/my_world_rules.dart';
 import 'package:driveit_project/features/world_publish/models/world_publish.dart';
 import 'package:driveit_project/features/world_publish/services/world_publish_service.dart';
@@ -70,6 +72,8 @@ class _ProcessingGateway implements WorldPublishProcessingGateway {
   bool available = true;
   bool session = true;
   Object? response = {'ok': false, 'error_code': 'publish_lookup_failed'};
+  String responseStatus = 'processing';
+  Completer<void>? hold;
   int calls = 0;
   @override
   bool get isAvailable => available;
@@ -80,8 +84,9 @@ class _ProcessingGateway implements WorldPublishProcessingGateway {
     expect(functionName, 'process-world-publish');
     expect(body, {'publish_id': 'publish-1'});
     calls++;
+    await hold?.future;
     if (response is Map && (response as Map)['ok'] == true) {
-      owner.row = _row('processing', ready: true);
+      owner.row = _row(responseStatus, ready: true);
     }
     return response;
   }
@@ -277,6 +282,60 @@ void main() {
     expect(uploader.calls, 0);
     expect(find.text("DriveIt Gezegeni'ne işleniyor"), findsOneWidget);
     expect(find.text('İşlemeyi Başlat'), findsNothing);
+  });
+
+  testWidgets('processing source-ready row resumes only function and refetches', (
+    tester,
+  ) async {
+    final gateway = _Gateway()..row = _row('processing', ready: true);
+    final processingGateway = _ProcessingGateway(gateway)
+      ..response = {
+        'ok': true,
+        'validation': {
+          'validated_road_id': 'road-1',
+          'valid_distance_meters': 6998.4,
+          'eligible_for_world': true,
+          'section_count': 1,
+        },
+      }
+      ..responseStatus = 'published'
+      ..hold = Completer<void>();
+    final uploader = _UploadService();
+    await _show(
+      tester,
+      gateway,
+      uploadService: uploader,
+      processingService: WorldPublishProcessingService(
+        gateway: processingGateway,
+      ),
+    );
+
+    expect(find.text("DriveIt Gezegeni'ne işleniyor"), findsOneWidget);
+    final resume = find.byKey(
+      const ValueKey('resume_world_publish_processing'),
+    );
+    expect(resume, findsOneWidget);
+    await tester.tap(resume);
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('DriveIt Gezegeni işleniyor...'), findsOneWidget);
+    expect(find.text('İşlemeyi Sürdür'), findsNothing);
+    expect(processingGateway.calls, 1);
+    expect(gateway.insertCalls, 0);
+    expect(uploader.calls, 0);
+
+    processingGateway.hold!.complete();
+    await tester.pumpAndSettle();
+    expect(
+      gateway.lookupCalls,
+      3,
+      reason: 'initial lookup, recovery lookup, and post-invoke server refetch',
+    );
+    expect(find.text("DriveIt Gezegeni'nde"), findsOneWidget);
+    expect(processingGateway.calls, 1);
+    expect(gateway.insertCalls, 0);
+    expect(uploader.calls, 0);
   });
 
   testWidgets('retryable processing failure can be retried without upload', (

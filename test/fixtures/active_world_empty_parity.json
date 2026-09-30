@@ -1,0 +1,189 @@
+{
+  "cases": [
+    {
+      "name": "canonical-float8-transport-regression",
+      "drive_id": "drive-precision",
+      "road_id": "road-precision",
+      "direction_key": "forward-precision",
+      "processing_version": 3,
+      "sections": [{
+        "id": "section-precision",
+        "distance_meters": 6998.4040194567788,
+        "distance_meters_exact": "6998.404019456779",
+        "geometry": [[0, 0], [0, 0.02]]
+      }],
+      "expected": {
+        "generation": 1,
+        "operation_id": "world:drive-precision:v1",
+        "trace_count": 1,
+        "traces": [{
+          "id": "drive-precision:road-precision:section-precision:0.000:6998.404",
+          "source_drive_id": "drive-precision",
+          "validated_road_id": "road-precision",
+          "section_id": "section-precision",
+          "start_offset_meters": 0,
+          "end_offset_meters": 6998.4040194567788,
+          "direction_key": "forward-precision",
+          "bounds": [0, 0, 0, 0.02],
+          "processing_version": 3
+        }]
+      }
+    },
+    {
+      "name": "canonical-float8-cumulative-transport-regression",
+      "drive_id": "drive-precision-multi",
+      "road_id": "road-precision-multi",
+      "direction_key": "forward-precision",
+      "processing_version": 3,
+      "sections": [
+        { "id": "a-short", "distance_meters": 600, "distance_meters_exact": "600", "geometry": [[0, 0], [0, 0.01]] },
+        { "id": "b-precision", "distance_meters": 6998.4040194567788, "distance_meters_exact": "6998.404019456779", "geometry": [[0, 0.01], [0, 0.02]] },
+        { "id": "c-tail", "distance_meters": 1200.25, "distance_meters_exact": "1200.25", "geometry": [[0, 0.02], [0, 0.03]] }
+      ],
+      "expected": {
+        "generation": 1, "operation_id": "world:drive-precision-multi:v1", "trace_count": 2,
+        "traces": [
+          { "id": "drive-precision-multi:road-precision-multi:b-precision:600.000:7598.404", "source_drive_id": "drive-precision-multi", "validated_road_id": "road-precision-multi", "section_id": "b-precision", "start_offset_meters": 600, "end_offset_meters": 7598.404019456779, "direction_key": "forward-precision", "bounds": [0, 0, 0.01, 0.02], "processing_version": 3 },
+          { "id": "drive-precision-multi:road-precision-multi:c-tail:7598.404:8798.654", "source_drive_id": "drive-precision-multi", "validated_road_id": "road-precision-multi", "section_id": "c-tail", "start_offset_meters": 7598.404019456779, "end_offset_meters": 8798.654019456779, "direction_key": "forward-precision", "bounds": [0, 0, 0.02, 0.03], "processing_version": 3 }
+        ]
+      }
+    },
+    {
+      "name": "single-section-first-activation",
+      "drive_id": "drive-single",
+      "road_id": "road-single",
+      "direction_key": "forward-a",
+      "processing_version": 3,
+      "sections": [
+        {
+          "id": "section-single",
+          "distance_meters": 6998.40401945678,
+          "geometry": [[40.7, 29.9], [40.72, 29.93], [40.75, 29.95]]
+        }
+      ],
+      "expected": {
+        "generation": 1,
+        "operation_id": "world:drive-single:v1",
+        "trace_count": 1,
+        "traces": [
+          {
+            "id": "drive-single:road-single:section-single:0.000:6998.404",
+            "source_drive_id": "drive-single",
+            "validated_road_id": "road-single",
+            "section_id": "section-single",
+            "start_offset_meters": 0,
+            "end_offset_meters": 6998.40401945678,
+            "direction_key": "forward-a",
+            "bounds": [40.7, 40.75, 29.9, 29.95],
+            "processing_version": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "multi-section-cumulative-offset-and-short-section-filter",
+      "drive_id": "drive-multi",
+      "road_id": "road-multi",
+      "direction_key": "reverse-b",
+      "processing_version": 3,
+      "sections": [
+        {
+          "id": "section-short",
+          "distance_meters": 600,
+          "geometry": [[40.7, 29.9], [40.701, 29.901]]
+        },
+        {
+          "id": "section-two",
+          "distance_meters": 1200.25,
+          "geometry": [[40.71, 29.91], [40.72, 29.92]]
+        },
+        {
+          "id": "section-three",
+          "distance_meters": 2200.5,
+          "geometry": [[40.73, 29.93], [40.74, 29.94]]
+        }
+      ],
+      "expected": {
+        "generation": 1,
+        "operation_id": "world:drive-multi:v1",
+        "trace_count": 2,
+        "traces": [
+          {
+            "id": "drive-multi:road-multi:section-three:1800.250:4000.750",
+            "source_drive_id": "drive-multi",
+            "validated_road_id": "road-multi",
+            "section_id": "section-three",
+            "start_offset_meters": 1800.25,
+            "end_offset_meters": 4000.75,
+            "direction_key": "reverse-b",
+            "bounds": [40.73, 40.74, 29.93, 29.94],
+            "processing_version": 3
+          },
+          {
+            "id": "drive-multi:road-multi:section-two:600.000:1800.250",
+            "source_drive_id": "drive-multi",
+            "validated_road_id": "road-multi",
+            "section_id": "section-two",
+            "start_offset_meters": 600,
+            "end_offset_meters": 1800.25,
+            "direction_key": "reverse-b",
+            "bounds": [40.71, 40.72, 29.91, 29.92],
+            "processing_version": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "non-positive-provider-distance-uses-geometry-fallback",
+      "drive_id": "drive-fallback",
+      "road_id": "road-fallback",
+      "direction_key": "forward-fallback",
+      "processing_version": 3,
+      "sections": [
+        {
+          "id": "section-fallback",
+          "distance_meters": 0,
+          "geometry": [[0, 0], [0, 0.01]]
+        }
+      ],
+      "expected": {
+        "generation": 1,
+        "operation_id": "world:drive-fallback:v1",
+        "trace_count": 1,
+        "traces": [
+          {
+            "id": "drive-fallback:road-fallback:section-fallback:0.000:1111.951",
+            "source_drive_id": "drive-fallback",
+            "validated_road_id": "road-fallback",
+            "section_id": "section-fallback",
+            "start_offset_meters": 0,
+            "end_offset_meters": 1111.9508023353292,
+            "direction_key": "forward-fallback",
+            "bounds": [0, 0, 0, 0.01],
+            "processing_version": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "sub-kilometer-is-sanitized",
+      "drive_id": "drive-short",
+      "road_id": "road-short",
+      "direction_key": "forward-c",
+      "processing_version": 3,
+      "sections": [
+        {
+          "id": "section-under-1km",
+          "distance_meters": 999.99,
+          "geometry": [[40.8, 29.8], [40.801, 29.801]]
+        }
+      ],
+      "expected": {
+        "generation": 1,
+        "operation_id": "world:drive-short:v1",
+        "trace_count": 0,
+        "traces": []
+      }
+    }
+  ]
+}

@@ -325,9 +325,32 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
                       ),
                   ],
                 ),
-        WorldPublishStatus.processing => _status(
-          Icons.sync_rounded,
-          "DriveIt Gezegeni'ne işleniyor",
+        WorldPublishStatus.processing => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _status(
+              Icons.sync_rounded,
+              "DriveIt Gezegeni'ne işleniyor",
+            ),
+            if (publish.sourceReady) ...[
+              const SizedBox(height: 8),
+              TextButton(
+                key: const ValueKey('resume_world_publish_processing'),
+                onPressed: _submitting || _loading
+                    ? null
+                    : () => _publishDrive(processingOnly: true),
+                child: const Text('İşlemeyi Sürdür'),
+              ),
+            ],
+            if (_message != null)
+              Text(
+                _message!,
+                style: const TextStyle(
+                  color: Color(0xffff9c8e),
+                  fontSize: 12,
+                ),
+              ),
+          ],
         ),
         WorldPublishStatus.published => _status(
           Icons.check_circle_outline_rounded,

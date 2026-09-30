@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { sourceMatches } from "./source_contract.ts";
 import { publishColumns, publishLookupFailure, resolveAdminKey } from "./admin_client.ts";
+import { planEmptyWorld } from "./active_world_empty_planner.ts";
+import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_geojson.ts";
 import {
   matchRoad, retryable, rules,
   type MatchedSection,
@@ -36,21 +38,106 @@ function error(code: string, status: number): Response {
   return json({ ok: false, error_code: code }, status);
 }
 
-function validationResponse(
+function safeDbCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code) ? code : null;
+}
+
+function logWorldStage(stage: string, publishId: string): void {
+  console.info(JSON.stringify({ stage, publish_id: publishId }));
+}
+
+function logWorldStageFailure(
+  operation: string,
   publishId: string,
-  road: Record<string, unknown>,
-): Response {
-  const distance = Number(road.valid_distance_meters);
-  return json({
-    ok: true,
+  errorCode: string,
+  error?: unknown,
+): void {
+  console.error(JSON.stringify({
+    stage: operation,
+    operation,
     publish_id: publishId,
-    validation: {
-      validated_road_id: road.validated_road_id ?? road.id,
-      valid_distance_meters: distance,
-      eligible_for_world: distance >= rules.minimumValidDistanceMeters,
-      section_count: road.section_count,
-    },
+    error_code: errorCode,
+    safe_db_code: safeDbCode(error),
+  }));
+}
+
+async function activateEmptyWorld(admin: ReturnType<typeof createClient>, publishId: string, localDriveId: string): Promise<Response> {
+  const { data: road, error: roadError } = await admin.from("world_validated_roads")
+    .select("id,valid_distance_meters,section_count,processing_version,direction_key")
+    .eq("publish_id", publishId).maybeSingle();
+  if (roadError || !road) {
+    logWorldStageFailure("active_world_road_lookup", publishId, "validated_road_lookup_failed", roadError);
+    return error("validated_road_lookup_failed", 503);
+  }
+  const { data: rawSections, error: sectionsError } = await admin.rpc(
+    "get_world_validated_road_sections_for_processing_exact",
+    { p_validated_road_id: road.id },
+  );
+  if (sectionsError || !Array.isArray(rawSections)) {
+    logWorldStageFailure("active_world_sections_lookup", publishId, "validated_sections_lookup_failed", sectionsError);
+    return error("validated_sections_lookup_failed", 503);
+  }
+  const distances = rawSections.map((section) => sectionDistanceMeters(section.distance_meters));
+  if (distances.some((distance) => distance === null)) {
+    logWorldStageFailure("active_world_section_distance", publishId, "validated_sections_invalid");
+    return error("validated_sections_invalid", 503);
+  }
+  const sections = rawSections.map((section, index) => ({
+    id: String(section.section_key),
+    distanceMeters: distances[index]!,
+    geometry: sectionCoordinates(section.geometry) ?? [],
+  }));
+  if (sections.some((section) => section.geometry.length < 2)) {
+    logWorldStageFailure("active_world_section_geometry", publishId, "validated_sections_invalid");
+    return error("validated_sections_invalid", 503);
+  }
+  logWorldStage("validated_sections_loaded", publishId);
+  const plan = planEmptyWorld({
+    generation: 0,
+    driveScoreAlgorithmVersion: rules.driveScoreAlgorithmVersion,
+    sourceDriveSessionId: localDriveId,
+    validatedRoadId: String(road.id),
+    directionKey: String(road.direction_key),
+    processingVersion: Number(road.processing_version),
+    sections,
   });
+  logWorldStage("empty_world_plan_built", publishId);
+  logWorldStage("activate_empty_world_rpc", publishId);
+  const { data: activated, error: activationError } = await admin.rpc(
+    "activate_empty_world_publish",
+    {
+      p_publish_id: publishId,
+      p_expected_generation: plan.baseGeneration,
+      p_drive_score_algorithm_version: plan.driveScoreAlgorithmVersion,
+      p_world_rules_version: plan.validatedRoadProcessingVersion,
+      p_expected_plan: plan,
+    },
+  );
+  if (activationError || !activated) {
+    logWorldStageFailure("active_world_commit", publishId, "active_world_commit_failed", activationError);
+    return error("active_world_commit_failed", 503);
+  }
+  const state = String(activated.state ?? "");
+  if (state === "committed" || state === "already_processed") {
+    logWorldStage("completed", publishId);
+    return json({
+      ok: true,
+      publish_id: publishId,
+      validation: {
+        validated_road_id: road.id,
+        valid_distance_meters: Number(road.valid_distance_meters),
+        eligible_for_world: Number(road.valid_distance_meters) >= rules.minimumValidDistanceMeters,
+        section_count: Number(road.section_count),
+      },
+      active_world: activated,
+    });
+  }
+  if (state === "world_comparison_not_implemented") return error(state, 409);
+  if (state === "ineligible_validated_road") return error("world_ineligible", 422);
+  if (state === "stale_generation") return error(state, 409);
+  return error(state && /^[a-z0-9_]{1,64}$/.test(state) ? state : "active_world_commit_failed", 503);
 }
 
 function roadPayload(sections: MatchedSection[], result: Awaited<ReturnType<typeof matchRoad>>) {
@@ -115,6 +202,7 @@ Deno.serve(async (request) => {
   const { data: rawPublish, error: lookupError } = await admin
     .from("world_publishes").select(publishColumns).eq("id", publishId).maybeSingle();
   if (lookupError) return publishLookupFailure(lookupError);
+  logWorldStage("publish_lookup", publishId);
   const publish = rawPublish as PublishRow | null;
   if (!publish || publish.user_id !== userId) return error("not_found", 404);
   if (!publish.source_path || !publish.source_ready_at) {
@@ -128,14 +216,20 @@ Deno.serve(async (request) => {
     .select("id,valid_distance_meters,section_count")
     .eq("publish_id", publishId).maybeSingle();
   if (existingError) return error("validation_lookup_failed", 503);
-  if (existing) return validationResponse(publishId, existing);
+  if (existing) {
+    logWorldStage("validated_road_reuse", publishId);
+    return activateEmptyWorld(admin, publishId, publish.local_drive_id);
+  }
 
   const { data: claim, error: claimError } = await admin.rpc(
     "claim_world_publish_validation",
     { p_publish_id: publishId, p_user_id: userId },
   );
   if (claimError || !claim) return error("claim_failed", 503);
-  if (claim.state === "exists") return validationResponse(publishId, claim);
+  if (claim.state === "exists") {
+    logWorldStage("validated_road_reuse", publishId);
+    return activateEmptyWorld(admin, publishId, publish.local_drive_id);
+  }
   if (claim.state === "busy") return error("processing", 202);
   if (claim.state !== "claimed" || typeof claim.claim_token !== "string") {
     return error(String(claim.state ?? "claim_failed"), 409);
@@ -214,11 +308,11 @@ Deno.serve(async (request) => {
       const { data: committed } = await admin.from("world_validated_roads")
         .select("id,valid_distance_meters,section_count")
         .eq("publish_id", publishId).maybeSingle();
-      if (committed) return validationResponse(publishId, committed);
+      if (committed) return activateEmptyWorld(admin, publishId, publish.local_drive_id);
       return await fail("validation_persist_failed", true, 503);
     }
     if (persisted.state === "created" || persisted.state === "exists") {
-      return validationResponse(publishId, persisted);
+      return activateEmptyWorld(admin, publishId, publish.local_drive_id);
     }
     return error("validation_claim_expired", 409);
   } catch {

@@ -186,7 +186,7 @@ class WorldPublishSubmissionService {
     );
   }
 
-  /// Recovery action for an already-created pending publish whose source is
+  /// Recovery action for an already-created publish whose source is
   /// attached. This path deliberately performs no create or storage upload.
   Future<WorldPublishSubmissionResult> processReadyPublishForDrive(
     DriveSession drive, {
@@ -229,6 +229,13 @@ class WorldPublishSubmissionService {
           onProcessingStarted: onProcessingStarted,
         );
       case WorldPublishStatus.processing:
+        if (publish.sourceReady) {
+          return _processReadyPublish(
+            drive,
+            publish,
+            onProcessingStarted: onProcessingStarted,
+          );
+        }
         return WorldPublishSubmissionResult(
           WorldPublishSubmissionStatus.processing,
           publish: publish,

@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../config/supabase_bootstrap.dart';
@@ -88,12 +91,9 @@ class WorldPublishProcessingService {
     }
     switch (publish.status) {
       case WorldPublishStatus.processing:
-        return Future.value(
-          const WorldPublishProcessingResult(
-            WorldPublishProcessingStatus.retryableFailure,
-            errorCode: 'processing',
-          ),
-        );
+        // A processing row can represent an interrupted server invocation.
+        // The server owns idempotency and can resume from its persisted road.
+        break;
       case WorldPublishStatus.published:
         return Future.value(
           const WorldPublishProcessingResult(
@@ -113,12 +113,12 @@ class WorldPublishProcessingService {
     }
     final existing = _inFlight[publish.id];
     if (existing != null) return existing;
-    final future = _processPending(publish);
+    final future = _processReadyPublish(publish);
     _inFlight[publish.id] = future;
     return future.whenComplete(() => _inFlight.remove(publish.id));
   }
 
-  Future<WorldPublishProcessingResult> _processPending(
+  Future<WorldPublishProcessingResult> _processReadyPublish(
     WorldPublish publish,
   ) async {
     if (!_gateway.isAvailable) {
@@ -139,6 +139,7 @@ class WorldPublishProcessingService {
       });
       return _parseResponse(response);
     } on FunctionException catch (error) {
+      _logFunctionException(publish.id, error);
       return _mapFunctionException(error);
     } catch (_) {
       // Do not propagate/log transport details, which may contain headers.
@@ -148,6 +149,24 @@ class WorldPublishProcessingService {
         wasInvoked: true,
       );
     }
+  }
+
+  void _logFunctionException(String publishId, FunctionException error) {
+    if (!kDebugMode) return;
+    Object? details = error.details;
+    if (details is String) {
+      try {
+        details = jsonDecode(details);
+      } on FormatException {
+        details = null;
+      }
+    }
+    final code = details is Map ? _safeErrorCode(details['error_code']) : null;
+    debugPrint(
+      'DriveItWorldPublish function=$processWorldPublishFunction '
+      'publish_id=$publishId http_status=${error.status} '
+      'error_code=${code ?? 'unavailable'}',
+    );
   }
 
   WorldPublishProcessingResult _parseResponse(Object? response) {

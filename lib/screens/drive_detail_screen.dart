@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../features/drive_replay/drive_replay_screen.dart';
+import '../features/world_publish/widgets/drive_world_publish_section.dart';
+import '../features/world_publish/services/world_publish_service.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
 import '../theme/drive_map_visuals.dart';
@@ -13,8 +15,13 @@ import '../widgets/drive_score_summary_section.dart';
 
 class DriveDetailScreen extends StatefulWidget {
   final DriveSession drive;
+  final WorldPublishService? worldPublishService;
 
-  const DriveDetailScreen({super.key, required this.drive});
+  const DriveDetailScreen({
+    super.key,
+    required this.drive,
+    this.worldPublishService,
+  });
 
   @override
   State<DriveDetailScreen> createState() => _DriveDetailScreenState();
@@ -381,6 +388,11 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
+                    DriveWorldPublishSection(
+                      drive: widget.drive,
+                      publishService: widget.worldPublishService,
+                    ),
+                    const SizedBox(height: 16),
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final cards = [

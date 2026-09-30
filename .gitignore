@@ -35,6 +35,8 @@ migrate_working_dir/
 
 # Local Supabase development credentials (never commit this file).
 /config/supabase.dev.json
+/supabase/functions/.env
+/supabase/functions/.env.*
 
 # Symbolication related
 app.*.symbols

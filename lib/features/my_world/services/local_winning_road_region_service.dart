@@ -22,8 +22,7 @@ class LocalWinningRoadRegionService {
     required Iterable<CanonicalTelemetryPoint> existingTelemetry,
     required ValidatedRoad challengerRoad,
     required Iterable<CanonicalTelemetryPoint> challengerTelemetry,
-    DriveScoreAlgorithmVersion algorithmVersion =
-        DriveScoreAlgorithmVersion.v1,
+    DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
   }) {
     if (!match.comparisonEligible) {
       return _empty(
@@ -41,12 +40,21 @@ class LocalWinningRoadRegionService {
       );
     }
 
+    // Window +/-5m tolerance must not admit samples outside the canonical
+    // active/common span. The same outer clip is used by the server adapter.
+    final bounded = localScoreService.telemetryExtractor.extract(
+      match: match,
+      firstRoad: existingRoad,
+      firstTelemetry: existingTelemetry,
+      secondRoad: challengerRoad,
+      secondTelemetry: challengerTelemetry,
+    );
     final windows = _buildWindows(
       match: match,
       existingRoad: existingRoad,
-      existingTelemetry: existingTelemetry,
+      existingTelemetry: bounded.first.telemetry,
       challengerRoad: challengerRoad,
-      challengerTelemetry: challengerTelemetry,
+      challengerTelemetry: bounded.second.telemetry,
       algorithmVersion: algorithmVersion,
     );
     final regions = _winningRegions(
@@ -97,16 +105,18 @@ class LocalWinningRoadRegionService {
         offsetBoundaryToleranceMeters:
             MyWorldRules.commonRoadTelemetryOffsetBoundaryToleranceMeters,
       );
-      windows.add(LocalRoadScoreWindow(
-        commonStartOffsetMeters: commonStart,
-        commonEndOffsetMeters: commonEnd,
-        existingStartOffsetMeters: existingStart,
-        existingEndOffsetMeters: existingEnd,
-        challengerStartOffsetMeters: challengerStart,
-        challengerEndOffsetMeters: challengerEnd,
-        state: _stateFor(comparison),
-        comparison: comparison,
-      ));
+      windows.add(
+        LocalRoadScoreWindow(
+          commonStartOffsetMeters: commonStart,
+          commonEndOffsetMeters: commonEnd,
+          existingStartOffsetMeters: existingStart,
+          existingEndOffsetMeters: existingEnd,
+          challengerStartOffsetMeters: challengerStart,
+          challengerEndOffsetMeters: challengerEnd,
+          state: _stateFor(comparison),
+          comparison: comparison,
+        ),
+      );
       commonStart = commonEnd;
     }
     return windows;
@@ -124,7 +134,8 @@ class LocalWinningRoadRegionService {
     void finalize() {
       final value = candidate;
       if (value == null) return;
-      if (value.distanceMeters >= MyWorldRules.minimumLocalWinningRegionMeters) {
+      if (value.distanceMeters >=
+          MyWorldRules.minimumLocalWinningRegionMeters) {
         regions.add(value.toRegion(match, algorithmVersion));
       }
       candidate = null;
@@ -206,14 +217,14 @@ class LocalWinningRoadRegionService {
 
 class _WinningCandidate {
   _WinningCandidate.fromWindow(LocalRoadScoreWindow window)
-      : commonStartOffsetMeters = window.commonStartOffsetMeters,
-        commonEndOffsetMeters = window.commonEndOffsetMeters,
-        existingStartOffsetMeters = window.existingStartOffsetMeters,
-        existingEndOffsetMeters = window.existingEndOffsetMeters,
-        challengerStartOffsetMeters = window.challengerStartOffsetMeters,
-        challengerEndOffsetMeters = window.challengerEndOffsetMeters,
-        confidence = 1,
-        supportingWindowCount = 1;
+    : commonStartOffsetMeters = window.commonStartOffsetMeters,
+      commonEndOffsetMeters = window.commonEndOffsetMeters,
+      existingStartOffsetMeters = window.existingStartOffsetMeters,
+      existingEndOffsetMeters = window.existingEndOffsetMeters,
+      challengerStartOffsetMeters = window.challengerStartOffsetMeters,
+      challengerEndOffsetMeters = window.challengerEndOffsetMeters,
+      confidence = 1,
+      supportingWindowCount = 1;
 
   final double commonStartOffsetMeters;
   double commonEndOffsetMeters;

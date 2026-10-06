@@ -13,9 +13,28 @@ import '../lib/features/my_world/models/validated_road.dart';
 import '../lib/features/my_world/services/common_road_local_score_service.dart';
 import '../lib/features/my_world/services/common_road_telemetry_extractor.dart';
 import '../lib/features/my_world/services/local_winning_road_region_service.dart';
+import '../lib/features/my_world/services/active_world_coverage.dart';
 import '../lib/models/canonical_telemetry_point.dart';
 
 typedef Json = Map<String, dynamic>;
+Json? evaluateActiveCoverage(Json input) {
+  final m = ActiveWorldCoverage.clipSpan(
+    decodeMatch(input['match']),
+    sectionId: input['sectionId'],
+    startOffsetMeters: number(input, 'start'),
+    endOffsetMeters: number(input, 'end'),
+  );
+  if (m == null) return null;
+  return {
+    'firstStartOffsetMeters': m.firstStartOffsetMeters,
+    'firstEndOffsetMeters': m.firstEndOffsetMeters,
+    'secondStartOffsetMeters': m.secondStartOffsetMeters,
+    'secondEndOffsetMeters': m.secondEndOffsetMeters,
+    'commonDistanceMeters': m.commonDistanceMeters,
+    'comparisonEligible': m.comparisonEligible,
+  };
+}
+
 double number(Json map, String key) => (map[key] as num).toDouble();
 MatchedRoadPoint point(Json p) => MatchedRoadPoint(
   latitude: number(p, 'latitude'),
@@ -123,6 +142,22 @@ Json evaluateWorldScoring(Json input) {
     };
   }
   final match = decodeMatch(input['match'] as Json);
+  if (input['operation'] == 'extract') {
+    final pair = const CommonRoadTelemetryExtractor().extract(
+      match: match,
+      firstRoad: road(input['firstRoad']),
+      firstTelemetry: telemetry(input['firstTelemetry']),
+      secondRoad: road(input['secondRoad']),
+      secondTelemetry: telemetry(input['secondTelemetry']),
+    );
+    return {
+      'status': pair.isUsable ? 'success' : 'telemetryUnavailable',
+      'firstExtraction': subset(pair.first),
+      'secondExtraction': subset(pair.second),
+      'windows': [],
+      'winningRegions': [],
+    };
+  }
   if (!match.comparisonEligible) {
     return {'status': 'notEligible', 'windows': [], 'winningRegions': []};
   }

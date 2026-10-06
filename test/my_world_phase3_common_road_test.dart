@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:driveit_project/features/my_world/models/matched_road_point.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_section.dart';
 import 'package:driveit_project/features/my_world/models/validated_road.dart';
@@ -58,8 +59,8 @@ void main() {
       _road('second', _line(0, 2999)),
     );
     final at = overlap.findCommonRoads(
-      _road('first', _line(0, 3200)),
-      _road('second', _line(0, 3200)),
+      _road('first', _line(0, 3000), canonicalDistance: 3000),
+      _road('second', _line(0, 3000), canonicalDistance: 3000),
     );
 
     expect(below.single.comparisonEligible, isFalse);
@@ -80,16 +81,19 @@ void main() {
     expect(crossing, isEmpty);
   });
 
-  test('small Mapbox geometry variation and point density remain matchable', () {
-    final dense = List.generate(49, (index) => _point(index * 25.0, 6));
-    final matches = overlap.findCommonRoads(
-      _road('first', _line(0, 1200)),
-      _road('second', dense),
-    );
+  test(
+    'small Mapbox geometry variation and point density remain matchable',
+    () {
+      final dense = List.generate(49, (index) => _point(index * 25.0, 6));
+      final matches = overlap.findCommonRoads(
+        _road('first', _line(0, 1200)),
+        _road('second', dense),
+      );
 
-    expect(matches, hasLength(1));
-    expect(matches.single.commonDistanceMeters, greaterThan(1100));
-  });
+      expect(matches, hasLength(1));
+      expect(matches.single.commonDistanceMeters, greaterThan(1100));
+    },
+  );
 
   test('disconnected matched sections produce separate common matches', () {
     final first = _roadWithSections('first', [
@@ -104,12 +108,20 @@ void main() {
     final matches = overlap.findCommonRoads(first, second);
 
     expect(matches, hasLength(2));
-    expect(matches.map((match) => match.commonDistanceMeters),
-        everyElement(closeTo(500, 35)));
+    expect(
+      matches.map((match) => match.commonDistanceMeters),
+      everyElement(closeTo(500, 35)),
+    );
   });
 
   test('empty and one-point validated geometry are safe', () {
-    expect(overlap.findCommonRoads(_road('empty', []), _road('other', _line(0, 500))), isEmpty);
+    expect(
+      overlap.findCommonRoads(
+        _road('empty', []),
+        _road('other', _line(0, 500)),
+      ),
+      isEmpty,
+    );
     expect(
       overlap.findCommonRoads(
         _road('one', [_point(0)]),
@@ -120,11 +132,15 @@ void main() {
   });
 }
 
-ValidatedRoad _road(String id, List<MatchedRoadPoint> geometry) => ValidatedRoad(
+ValidatedRoad _road(
+  String id,
+  List<MatchedRoadPoint> geometry, {
+  double? canonicalDistance,
+}) => ValidatedRoad(
   id: id,
   driveSessionId: '$id-drive',
   geometry: geometry,
-  validDistanceMeters: _distance(geometry),
+  validDistanceMeters: canonicalDistance ?? _distance(geometry),
   status: RoadValidationStatus.validated,
   validatedAt: DateTime.utc(2026, 8, 12),
   providerId: 'test',
@@ -142,8 +158,10 @@ ValidatedRoad _roadWithSections(String id, List<MatchedRoadSection> sections) =>
       driveSessionId: '$id-drive',
       geometry: sections.expand((section) => section.geometry).toList(),
       sections: sections,
-      validDistanceMeters:
-          sections.fold(0, (sum, section) => sum + section.distanceMeters),
+      validDistanceMeters: sections.fold(
+        0,
+        (sum, section) => sum + section.distanceMeters,
+      ),
       status: RoadValidationStatus.partiallyValidated,
       validatedAt: DateTime.utc(2026, 8, 12),
       providerId: 'test',
@@ -171,11 +189,12 @@ List<MatchedRoadPoint> _line(
   double yMeters = 0,
 }) => [_point(startMeters, yMeters), _point(endMeters, yMeters)];
 
-MatchedRoadPoint _point(double xMeters, [double yMeters = 0]) => MatchedRoadPoint(
-  latitude: 41 + yMeters / 111320,
-  longitude: 29 + xMeters / 84000,
-  headingDegrees: 90,
-);
+MatchedRoadPoint _point(double xMeters, [double yMeters = 0]) =>
+    MatchedRoadPoint(
+      latitude: 41 + yMeters / 111320,
+      longitude: 29 + xMeters / 84000,
+      headingDegrees: 90,
+    );
 
 double _distance(List<MatchedRoadPoint> points) {
   var result = 0.0;
@@ -184,21 +203,10 @@ double _distance(List<MatchedRoadPoint> points) {
     final second = points[index];
     final latitudeDistance = (second.latitude - first.latitude) * 111320;
     final longitudeDistance = (second.longitude - first.longitude) * 84000;
-    result += (latitudeDistance * latitudeDistance +
-            longitudeDistance * longitudeDistance)
-        .sqrt();
+    result += math.sqrt(
+      latitudeDistance * latitudeDistance +
+          longitudeDistance * longitudeDistance,
+    );
   }
   return result;
-}
-
-extension on double {
-  double sqrt() => this <= 0 ? 0 : _sqrt(this);
-}
-
-double _sqrt(double value) {
-  var estimate = value;
-  for (var index = 0; index < 12; index++) {
-    estimate = (estimate + value / estimate) / 2;
-  }
-  return estimate;
 }

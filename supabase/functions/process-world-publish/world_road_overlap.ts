@@ -1,6 +1,7 @@
 // Port of Dart WorldRoadOverlapService and WorldIndexMutationPlanner's
 // _clipMatchToTrace. Full-section sampling precedes span clipping: trimming
 // geometry first changes the 25m sampling phase and is not My World parity.
+import { clipActiveCoverage } from "./world_scoring.ts";
 export type Point = { latitude: number; longitude: number };
 export type Section = { id: string; distanceMeters: number; geometry: Point[] };
 export type Road = { id: string; driveId: string; sections: Section[] };
@@ -174,19 +175,13 @@ export type Coverage = {
 // Same interval interpolation as Dart _clipMatchToTrace. Retain the raw
 // geometric match separately; never expose its full span as active coverage.
 export function clipMatchToTrace(match: Match, trace: Trace): Coverage | null {
-  if (match.firstSectionId !== trace.matchedSectionId) return null;
-  const start = Math.max(match.firstStartOffsetMeters, trace.startOffsetMeters);
-  const end = Math.min(match.firstEndOffsetMeters, trace.endOffsetMeters);
-  const span = match.firstEndOffsetMeters - match.firstStartOffsetMeters;
-  if (end - start <= overlapRules.clipEpsilon || span <= overlapRules.clipEpsilon) return null;
-  const interpolate = (ratio: number) => match.secondStartOffsetMeters +
-    (match.secondEndOffsetMeters - match.secondStartOffsetMeters) * ratio;
-  const challengerStart = interpolate((start - match.firstStartOffsetMeters) / span);
-  const challengerEnd = interpolate((end - match.firstStartOffsetMeters) / span);
-  const common = Math.min(end - start, challengerEnd - challengerStart);
-  return { trace, match, activeStartOffsetMeters: start, activeEndOffsetMeters: end,
-    challengerStartOffsetMeters: challengerStart, challengerEndOffsetMeters: challengerEnd,
-    commonDistanceMeters: common, comparisonEligible: common >= overlapRules.comparison };
+  const clipped = clipActiveCoverage(match, trace.matchedSectionId, trace.startOffsetMeters, trace.endOffsetMeters);
+  if (!clipped) return null;
+  return { trace, match, activeStartOffsetMeters: clipped.firstStartOffsetMeters,
+    activeEndOffsetMeters: clipped.firstEndOffsetMeters,
+    challengerStartOffsetMeters: clipped.secondStartOffsetMeters,
+    challengerEndOffsetMeters: clipped.secondEndOffsetMeters,
+    commonDistanceMeters: clipped.commonDistanceMeters, comparisonEligible: clipped.comparisonEligible };
 }
 export function analyzeActiveCandidates(challenger: Road, candidates: Trace[], roads: Road[]): Coverage[] {
   const roadById = new Map(roads.map((road) => [road.id, road]));

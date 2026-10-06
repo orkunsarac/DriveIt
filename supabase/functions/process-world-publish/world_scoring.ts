@@ -1,4 +1,4 @@
-// Generated from the unchanged My World/Drive Score Dart services. No parallel
+// Generated from the shared My World/Drive Score Dart services. No parallel
 // scoring formula. Regeneration and native-vs-JS checks: tool/world_scoring_*.
 import "./world_scoring.generated.js";
 import type { CanonicalSourcePoint } from "./source_contract.ts";
@@ -32,4 +32,11 @@ export type ScoringInput = { algorithmVersion: number; match: Match;
 export function evaluateScoring(input: ScoringInput): ScoringResult {
   const bridge = (globalThis as unknown as { driveItWorldScoring: (s: string) => string }).driveItWorldScoring;
   return JSON.parse(bridge(JSON.stringify(input)));
+}
+export type ActiveCoverage = { firstStartOffsetMeters: number; firstEndOffsetMeters: number;
+  secondStartOffsetMeters: number; secondEndOffsetMeters: number;
+  commonDistanceMeters: number; comparisonEligible: boolean };
+export function clipActiveCoverage(match: Match, sectionId: string, start: number, end: number): ActiveCoverage | null {
+  const bridge = (globalThis as unknown as { driveItActiveCoverage: (s: string) => string }).driveItActiveCoverage;
+  return JSON.parse(bridge(JSON.stringify({ match, sectionId, start, end })));
 }

@@ -54,5 +54,19 @@ const boundaries = [boundary('D-exact-1pct',win(30)), boundary('C-under-1pct',Ar
   boundary('F-gap-300',[...win(20),...gap(3),...win(20)]),
   boundary('G-region-1900',[...win(19),...Array(11).fill('equal')]),
   boundary('H-region-2000',[...win(20),...Array(10).fill('equal')])];
-const cases = [a,b,c,short,partial,version,reverse,heading60,headingOver,lateral35,lateralOver,micro,multi,missing,...boundaries];
+const canonical = make('SEM-A-geometry4000-canonical5000','good','good',4000,2400,2600);
+canonical.firstRoad.sections[0].distanceMeters=5000;
+canonical.secondRoad.sections[0].distanceMeters=5000;
+const canonicalMulti=structuredClone(multi);canonicalMulti.name='SEM-multi-cumulative';
+for(const r of [canonicalMulti.firstRoad,canonicalMulti.secondRoad]) {
+  r.sections[0].distanceMeters=5000;r.sections[1].distanceMeters=6000;
+}
+Object.assign(canonicalMulti.match,{firstStartOffsetMeters:6200,firstEndOffsetMeters:6500,
+  secondStartOffsetMeters:6200,secondEndOffsetMeters:6500,commonDistanceMeters:300,comparisonEligible:false});
+const canonicalFallback=structuredClone(canonicalMulti);canonicalFallback.name='SEM-prefix-fallback';
+for(const r of [canonicalFallback.firstRoad,canonicalFallback.secondRoad])r.sections[0].distanceMeters=0;
+Object.assign(canonicalFallback.match,{firstStartOffsetMeters:4200,firstEndOffsetMeters:4500,
+  secondStartOffsetMeters:4200,secondEndOffsetMeters:4500});
+const cases = [a,b,c,short,partial,version,reverse,heading60,headingOver,lateral35,lateralOver,micro,multi,missing,...boundaries,
+  {...canonical,operation:'extract'},{...canonicalMulti,operation:'extract'},{...canonicalFallback,operation:'extract'}];
 await Deno.writeTextFile("test/fixtures/active_world_scoring.json", JSON.stringify(cases));

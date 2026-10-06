@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { evaluateScoring, type ScoringInput } from "./world_scoring.ts";
+import { clipActiveCoverage, evaluateScoring, type ScoringInput } from "./world_scoring.ts";
 import "../../../test/fixtures/world_scoring_boundary.generated.js";
 import { analyzeWorldScoring, RequestSourceLoader, type SourceRow } from "./world_scoring_stage.ts";
 import type { Coverage } from "./world_road_overlap.ts";
@@ -10,6 +10,41 @@ const root = new URL("../../../", import.meta.url);
 type Fixture = ScoringInput & { name: string; scores?: (number | null)[] };
 const cases: Fixture[] = JSON.parse(readFileSync(new URL("test/fixtures/active_world_scoring.json",root),"utf8"));
 const oracle = JSON.parse(readFileSync(new URL("test/fixtures/active_world_scoring_oracle.json",root),"utf8"));
+test("shared active span excludes inactive length at exact 2999/3000 boundaries",()=> {
+  const match=cases[0].match;
+  const active=clipActiveCoverage(match,match.firstSectionId,1000,3000)!;
+  assert.deepEqual(active,{firstStartOffsetMeters:1000,firstEndOffsetMeters:3000,
+    secondStartOffsetMeters:1000,secondEndOffsetMeters:3000,
+    commonDistanceMeters:2000,comparisonEligible:false});
+  assert.equal(clipActiveCoverage(match,match.firstSectionId,500,3499)!.comparisonEligible,false);
+  assert.equal(clipActiveCoverage(match,match.firstSectionId,500,3500)!.comparisonEligible,true);
+  assert.equal(clipActiveCoverage(match,match.firstSectionId,5000,6000),null);
+  // Defensive bridge test: the overlap engine normally emits only true.
+  const reverse=JSON.parse(JSON.stringify({...match,directionCompatible:false}));
+  assert.equal(clipActiveCoverage(reverse,match.firstSectionId,500,3500),null);
+  const unequal={...match,firstStartOffsetMeters:0,firstEndOffsetMeters:5000,
+    secondStartOffsetMeters:0,secondEndOffsetMeters:4000};
+  assert.deepEqual(clipActiveCoverage(unequal,match.firstSectionId,2400,2600),{
+    firstStartOffsetMeters:2400,firstEndOffsetMeters:2600,
+    secondStartOffsetMeters:1920,secondEndOffsetMeters:2080,
+    commonDistanceMeters:160,comparisonEligible:false});
+  const cumulative={...match,firstStartOffsetMeters:5000,firstEndOffsetMeters:9000,
+    secondStartOffsetMeters:6000,secondEndOffsetMeters:10000};
+  assert.deepEqual(clipActiveCoverage(cumulative,match.firstSectionId,6000,8000),{
+    firstStartOffsetMeters:6000,firstEndOffsetMeters:8000,
+    secondStartOffsetMeters:7000,secondEndOffsetMeters:9000,
+    commonDistanceMeters:2000,comparisonEligible:false});
+});
+test("normalized telemetry follows physical geometry, including cumulative/fallback prefixes",()=> {
+  for(const [name,low,high] of [
+    ['SEM-A-geometry4000-canonical5000',192,208],
+    ['SEM-multi-cumulative',380,400],['SEM-prefix-fallback',380,400]] as const) {
+    const result=evaluateScoring(cases.find(c=>c.name===name)!);
+    assert.equal(result.status,'success');
+    assert.ok(result.firstExtraction!.startIndex>=low && result.firstExtraction!.startIndex<=low+1);
+    assert.ok(result.firstExtraction!.endIndex>=high-1 && result.firstExtraction!.endIndex<=high);
+  }
+});
 // Only machine-level floating point drift is tolerated in geometric/scoring
 // doubles; names, outcomes, timestamp strings, indices and counts are exact.
 function parity(actual: unknown, expected: unknown, path = ""): void {

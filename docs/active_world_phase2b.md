@@ -29,13 +29,41 @@ native-vs-JS totals/contributions. Scripted-score fixtures exercise exact 1%,
 - <3000 m overlap preserves geometry coverage but never loads or scores sources.
 - Unsupported schema/telemetry/score/world versions produce typed failures.
 
-**Source-of-truth risk, not changed here:** the extractor sums provider section
-distances for preceding sections, then measures offsets inside the selected
-section from geometry. Stage 2A overlap uses provider-normalized section offsets.
-Where provider and geometric lengths differ, extracted samples can shift or
-be omitted. Tests preserve this native behavior; do not normalize it silently
-before Stage 2C. Floating-point projection can also exclude a boundary sample
-by a sub-ULP difference; no arbitrary offset rounding/widening was added.
+## Shared semantic correction before Phase 2C
+
+Two approaches were evaluated: migrate every ownership coordinate to geometric
+metres, or retain the provider canonical coordinate and normalize physical
+projection explicitly. The second is selected: it preserves persisted offsets
+and deterministic trace IDs without reinterpreting existing snapshots.
+
+For each section, `C = positive finite provider distance`, otherwise spherical
+geometry length `G`. Cumulative prefixes sum C, without disconnected gap lengths.
+A physical geometry offset g maps to `prefix + C * g / G`; its inverse is
+`G * (canonical - prefix) / C`. Geometry 4000/C=5000 therefore maps canonical
+[2400,2600] to physical [1920,2080]. Telemetry projection and road overlap now
+use the same coordinate, rather than mixing canonical prefixes with geometric
+section offsets. Raw telemetry distance is not an ownership coordinate.
+
+`ActiveWorldCoverage` intersects a full same-direction match with the incumbent's
+actual active interval, then maps both endpoints into the challenger coordinate.
+Comparison distance is the minimum of these **clipped canonical spans**.
+It must be >=3000 exactly; inactive source length never contributes. Thus 4000m
+full coverage with only 2000m active ownership is geometrically covered but not
+performance eligible. Uncovered source pieces remain separate challenger
+coverage; they cannot be used to defeat the incumbent. Full reference geometry
+is provenance, not an active-length or eligibility source.
+
+My World applies this clip before scoring, and Planet calls the very same Dart
+implementation compiled into JS. Both strictly bound outer telemetry before
+the existing per-window tolerance. Projection floating-point differences are
+not hidden by offset rounding or widening. The 3km comparison, 2km winning
+region, and 1km remainder rules are unchanged; offsets/IDs are not redefined.
+
+No persisted snapshot, rule-version migration or processed-drive reset occurs
+here. Historical local ownership produced under the old scoring semantics is
+not retroactively recomputed. Existing DEV generation 1 remains untouched.
+Future Phase 2C mutation must consume these clipped intervals, never full
+reference geometry as active ownership.
 
 ## Storage, security and performance
 

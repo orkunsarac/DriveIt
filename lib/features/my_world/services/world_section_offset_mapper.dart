@@ -43,4 +43,16 @@ class WorldSectionOffsetMapper {
     final ratio = (geometryOffsetMeters / geometryLengthMeters).clamp(0.0, 1.0);
     return (ratio * sectionLengthMeters).clamp(0.0, sectionLengthMeters);
   }
+
+  /// Inverse of normalize on the same section. No new physical measurement,
+  /// rounding or epsilon: canonical fraction identifies the geometry position.
+  static double geometryOffsetForCanonical({
+    required double canonicalOffsetMeters,
+    required double geometryLengthMeters,
+    required double sectionLengthMeters,
+  }) => normalize(
+    geometryOffsetMeters: canonicalOffsetMeters,
+    geometryLengthMeters: sectionLengthMeters,
+    sectionLengthMeters: geometryLengthMeters,
+  );
 }

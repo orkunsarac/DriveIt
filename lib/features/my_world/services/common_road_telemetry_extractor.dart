@@ -8,6 +8,7 @@ import '../models/matched_road_point.dart';
 import '../models/matched_road_section.dart';
 import '../models/validated_road.dart';
 import 'geo_distance.dart';
+import 'world_section_offset_mapper.dart';
 
 /// Maps canonical GPS samples to the exact validated road section that forms a
 /// [CommonRoadMatch]. It deliberately projects points to matched geometry
@@ -47,8 +48,7 @@ class CommonRoadTelemetryExtractor {
     first: _extractSubset(
       road: firstRoad,
       sectionId: match.firstSectionId,
-      startOffsetMeters:
-          firstStartOffsetMeters ?? match.firstStartOffsetMeters,
+      startOffsetMeters: firstStartOffsetMeters ?? match.firstStartOffsetMeters,
       endOffsetMeters: firstEndOffsetMeters ?? match.firstEndOffsetMeters,
       offsetBoundaryToleranceMeters: offsetBoundaryToleranceMeters,
       telemetry: firstTelemetry,
@@ -93,6 +93,19 @@ class CommonRoadTelemetryExtractor {
         'Matched road section offset is unavailable.',
       );
     }
+    final geometryLength = WorldSectionOffsetMapper.geometryLength(
+      section.geometry,
+    );
+    final canonicalLength = WorldSectionOffsetMapper.sectionLength(section);
+    if (!geometryLength.isFinite ||
+        geometryLength <= 0 ||
+        !canonicalLength.isFinite ||
+        canonicalLength <= 0) {
+      return _failure(
+        CommonRoadTelemetryMappingStatus.mappingFailed,
+        'Matched section has no valid canonical offset axis.',
+      );
+    }
 
     final selected = <_ProjectedTelemetry>[];
     for (var index = 0; index < points.length; index++) {
@@ -104,6 +117,8 @@ class CommonRoadTelemetryExtractor {
         point,
         section.geometry,
         sectionStart,
+        geometryLength,
+        canonicalLength,
         startOffsetMeters,
         endOffsetMeters,
         offsetBoundaryToleranceMeters,
@@ -137,16 +152,18 @@ class CommonRoadTelemetryExtractor {
         );
       }
     }
-    final averageDistance = selected.fold<double>(
+    final averageDistance =
+        selected.fold<double>(
           0,
           (sum, item) => sum + item.projection.distanceMeters,
         ) /
         selected.length;
-    final confidence = (1 -
-            averageDistance /
-                MyWorldRules.commonRoadTelemetryProjectionToleranceMeters)
-        .clamp(0.0, 1.0)
-        .toDouble();
+    final confidence =
+        (1 -
+                averageDistance /
+                    MyWorldRules.commonRoadTelemetryProjectionToleranceMeters)
+            .clamp(0.0, 1.0)
+            .toDouble();
     return CommonRoadTelemetrySubset(
       status: CommonRoadTelemetryMappingStatus.success,
       telemetry: List.unmodifiable(ordered),
@@ -199,7 +216,7 @@ class CommonRoadTelemetryExtractor {
       if (section.id == sectionId) {
         return offset;
       }
-      offset += section.distanceMeters;
+      offset += WorldSectionOffsetMapper.sectionLength(section);
     }
     return null;
   }
@@ -208,6 +225,8 @@ class CommonRoadTelemetryExtractor {
     CanonicalTelemetryPoint telemetry,
     List<MatchedRoadPoint> geometry,
     double sectionStartOffsetMeters,
+    double geometryLengthMeters,
+    double canonicalLengthMeters,
     double requiredStartOffsetMeters,
     double requiredEndOffsetMeters,
     double offsetBoundaryToleranceMeters,
@@ -229,7 +248,13 @@ class CommonRoadTelemetryExtractor {
       final candidate = _GeometryProjection(
         distanceMeters: projected.distanceMeters,
         roadOffsetMeters:
-            sectionStartOffsetMeters + segmentOffset + segmentLength * projected.ratio,
+            sectionStartOffsetMeters +
+            WorldSectionOffsetMapper.normalize(
+              geometryOffsetMeters:
+                  segmentOffset + segmentLength * projected.ratio,
+              geometryLengthMeters: geometryLengthMeters,
+              sectionLengthMeters: canonicalLengthMeters,
+            ),
         headingDifferenceDegrees: _headingDifference(
           telemetry.headingDegrees,
           _bearingDegrees(start, end),
@@ -238,8 +263,8 @@ class CommonRoadTelemetryExtractor {
       final isInsideRequiredRange =
           candidate.roadOffsetMeters >=
               requiredStartOffsetMeters - offsetBoundaryToleranceMeters &&
-              candidate.roadOffsetMeters <=
-                  requiredEndOffsetMeters + offsetBoundaryToleranceMeters;
+          candidate.roadOffsetMeters <=
+              requiredEndOffsetMeters + offsetBoundaryToleranceMeters;
       if (best == null ||
           (isInsideRequiredRange && !bestIsInsideRequiredRange) ||
           (isInsideRequiredRange == bestIsInsideRequiredRange &&
@@ -317,17 +342,22 @@ class _ProjectionOnSegment {
 double _radians(double degrees) => degrees * math.pi / 180;
 
 double _bearingDegrees(MatchedRoadPoint start, MatchedRoadPoint end) {
-    final longitudeDelta = _radians(end.longitude - start.longitude);
+  final longitudeDelta = _radians(end.longitude - start.longitude);
   final startLatitude = _radians(start.latitude);
   final endLatitude = _radians(end.latitude);
   final y = math.sin(longitudeDelta) * math.cos(endLatitude);
-  final x = math.cos(startLatitude) * math.sin(endLatitude) -
-      math.sin(startLatitude) * math.cos(endLatitude) * math.cos(longitudeDelta);
+  final x =
+      math.cos(startLatitude) * math.sin(endLatitude) -
+      math.sin(startLatitude) *
+          math.cos(endLatitude) *
+          math.cos(longitudeDelta);
   return (math.atan2(y, x) * 180 / math.pi + 360) % 360;
 }
 
 double? _headingDifference(double telemetryHeading, double geometryHeading) {
-  if (!telemetryHeading.isFinite || telemetryHeading < 0 || telemetryHeading >= 360) {
+  if (!telemetryHeading.isFinite ||
+      telemetryHeading < 0 ||
+      telemetryHeading >= 360) {
     return null;
   }
   final difference = (telemetryHeading - geometryHeading).abs() % 360;
@@ -340,5 +370,6 @@ bool _nearlyEqual(double first, double second, [double tolerance = 1e-6]) =>
 bool _headingIsCloser(
   _GeometryProjection candidate,
   _GeometryProjection current,
-) => (candidate.headingDifferenceDegrees ?? double.infinity) <
+) =>
+    (candidate.headingDifferenceDegrees ?? double.infinity) <
     (current.headingDifferenceDegrees ?? double.infinity);

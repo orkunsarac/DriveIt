@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
 import '../../../models/canonical_telemetry_point.dart';
 import '../models/active_world_trace.dart';
+import '../models/common_road_match.dart';
 import '../models/local_winning_road_region.dart';
 import '../models/validated_road.dart';
 import '../models/world_processing.dart';
@@ -12,12 +13,17 @@ import '../repositories/my_world_repository.dart';
 import 'local_winning_road_region_service.dart';
 import 'world_index_mutation_planner.dart';
 import 'world_road_overlap_service.dart';
+import 'active_world_coverage.dart';
 
-typedef WorldTelemetryLoader = Future<List<CanonicalTelemetryPoint>> Function(
-  String driveSessionId,
-);
+typedef WorldTelemetryLoader =
+    Future<List<CanonicalTelemetryPoint>> Function(String driveSessionId);
 
-enum WorldRecordProcessingOutcome { processed, alreadyProcessed, notReady, failed }
+enum WorldRecordProcessingOutcome {
+  processed,
+  alreadyProcessed,
+  notReady,
+  failed,
+}
 
 class WorldRecordProcessingResult {
   const WorldRecordProcessingResult({
@@ -40,7 +46,8 @@ class WorldRecordProcessingService {
     WorldRoadOverlapService overlapService = const WorldRoadOverlapService(),
     LocalWinningRoadRegionService winnerRegionService =
         const LocalWinningRoadRegionService(),
-    WorldIndexMutationPlanner mutationPlanner = const WorldIndexMutationPlanner(),
+    WorldIndexMutationPlanner mutationPlanner =
+        const WorldIndexMutationPlanner(),
     DateTime Function()? clock,
   }) => WorldRecordProcessingService._(
     repository,
@@ -72,8 +79,7 @@ class WorldRecordProcessingService {
 
   Future<WorldRecordProcessingResult> processReadyDrive(
     String driveSessionId, {
-    DriveScoreAlgorithmVersion algorithmVersion =
-        DriveScoreAlgorithmVersion.v1,
+    DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
   }) async {
     final record = await _repository.getProcessingRecord(driveSessionId);
     if (record?.state != WorldProcessingState.readyForWorldProcessing &&
@@ -144,13 +150,15 @@ class WorldRecordProcessingService {
     } catch (error) {
       // Index mutation is copy-on-write; a failed plan or commit leaves the
       // old active generation in place. The normal DriveSession is untouched.
-      await _repository.saveProcessingRecord(WorldDriveProcessingRecord(
-        driveSessionId: driveSessionId,
-        state: WorldProcessingState.failedRetryable,
-        validatedRoadId: challenger.id,
-        lastError: error.toString(),
-        updatedAt: _clock().toUtc(),
-      ));
+      await _repository.saveProcessingRecord(
+        WorldDriveProcessingRecord(
+          driveSessionId: driveSessionId,
+          state: WorldProcessingState.failedRetryable,
+          validatedRoadId: challenger.id,
+          lastError: error.toString(),
+          updatedAt: _clock().toUtc(),
+        ),
+      );
       return WorldRecordProcessingResult(
         outcome: WorldRecordProcessingOutcome.failed,
         traceCount: 0,
@@ -174,7 +182,11 @@ class WorldRecordProcessingService {
       // compatibility at the actual overlapping section.
       final existing = await _existingRoadData(trace, cache);
       if (existing == null) continue;
-      final matches = _overlapService.findCommonRoads(existing.road, challenger);
+      final matches = _overlapService
+          .findCommonRoads(existing.road, challenger)
+          .map((match) => ActiveWorldCoverage.clip(match, trace))
+          .whereType<CommonRoadMatch>()
+          .toList(growable: false);
       if (matches.isEmpty) continue;
       // Keep every geometric match in the overlap analysis. Only the local
       // score/winner calculation is gated by comparison eligibility; the
@@ -194,11 +206,13 @@ class WorldRecordProcessingService {
           regions.addAll(analysis.winningRegions);
         }
       }
-      output.add(WorldTraceOverlapAnalysis(
-        existingTrace: trace,
-        matches: matches,
-        winningRegions: regions,
-      ));
+      output.add(
+        WorldTraceOverlapAnalysis(
+          existingTrace: trace,
+          matches: matches,
+          winningRegions: regions,
+        ),
+      );
     }
     return output;
   }
@@ -207,7 +221,9 @@ class WorldRecordProcessingService {
     ActiveWorldTrace trace,
     Map<String, _ExistingRoadData?> cache,
   ) async {
-    if (cache.containsKey(trace.validatedRoadId)) return cache[trace.validatedRoadId];
+    if (cache.containsKey(trace.validatedRoadId)) {
+      return cache[trace.validatedRoadId];
+    }
     final road = await _repository.getValidatedRoad(trace.validatedRoadId);
     if (road == null) return cache[trace.validatedRoadId] = null;
     final telemetry = await _telemetryLoader(trace.sourceDriveSessionId);
@@ -246,13 +262,15 @@ class WorldRecordProcessingService {
   }
 
   Future<void> _markProcessed(String driveSessionId, String roadId) =>
-      _repository.saveProcessingRecord(WorldDriveProcessingRecord(
-        driveSessionId: driveSessionId,
-        state: WorldProcessingState.processed,
-        validatedRoadId: roadId,
-        lastError: null,
-        updatedAt: _clock().toUtc(),
-      ));
+      _repository.saveProcessingRecord(
+        WorldDriveProcessingRecord(
+          driveSessionId: driveSessionId,
+          state: WorldProcessingState.processed,
+          validatedRoadId: roadId,
+          lastError: null,
+          updatedAt: _clock().toUtc(),
+        ),
+      );
 }
 
 class _ExistingRoadData {

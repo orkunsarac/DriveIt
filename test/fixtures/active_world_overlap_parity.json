@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {"name":"same-road-eligible","first":[{"id":"a","distance":4000,"points":[[0,0],[4000,0]]}],"second":[{"id":"b","distance":4000,"points":[[0,0],[4000,0]]}],"count":1,"eligible":true},
+    {"name":"short-ownership-coverage","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":1800,"points":[[0,0],[1800,0]]}],"count":1,"eligible":false},
+    {"name":"2999-boundary","first":[{"id":"a","distance":2999,"points":[[0,0],[2999,0]]}],"second":[{"id":"b","distance":2999,"points":[[0,0],[2999,0]]}],"count":1,"eligible":false},
+    {"name":"3000-boundary","first":[{"id":"a","distance":3000,"points":[[0,0],[3000,0]]}],"second":[{"id":"b","distance":3000,"points":[[0,0],[3000,0]]}],"count":1,"eligible":true},
+    {"name":"reverse","first":[{"id":"a","distance":4000,"points":[[0,0],[4000,0]]}],"second":[{"id":"b","distance":4000,"points":[[4000,0],[0,0]]}],"count":0},
+    {"name":"parallel35m","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":1800,"points":[[0,35],[1800,35]]}],"count":0},
+    {"name":"intersection","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":500,"points":[[900,-250],[900,250]]}],"count":0},
+    {"name":"outside-tolerance","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":1800,"points":[[0,16],[1800,16]]}],"count":0},
+    {"name":"heading45","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":1800,"points":[[0,0],[1300,1300]]}],"count":0},
+    {"name":"confidence-under65","first":[{"id":"a","distance":1800,"points":[[0,0],[1800,0]]}],"second":[{"id":"b","distance":1800,"points":[[0,10],[1800,10]]}],"count":0},
+    {"name":"partial-active-span","first":[{"id":"a","distance":4000,"points":[[0,0],[4000,0]]}],"second":[{"id":"b","distance":4000,"points":[[0,0],[4000,0]]}],"count":1,"eligible":true,"trace_span":[500,2000]},
+    {"name":"multi-section-cumulative","first":[{"id":"a","distance":500,"points":[[0,0],[500,0]]},{"id":"c","distance":1800,"points":[[1000,0],[2800,0]]}],"second":[{"id":"b","distance":500,"points":[[0,0],[500,0]]},{"id":"d","distance":1800,"points":[[1000,0],[2800,0]]}],"count":2,"eligible":false},
+    {"name":"relative-length-mismatch","first":[{"id":"a","distance":4000,"points":[[0,0],[4000,0]]}],"second":[{"id":"b","distance":2000,"points":[[0,0],[4000,0]]}],"count":0},
+    {"name":"no-geometry","first":[],"second":[],"count":0}
+  ]
+}

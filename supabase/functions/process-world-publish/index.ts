@@ -1,8 +1,9 @@
-import { createClient } from "npm:@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { sourceMatches } from "./source_contract.ts";
 import { publishColumns, publishLookupFailure, resolveAdminKey } from "./admin_client.ts";
 import { planEmptyWorld } from "./active_world_empty_planner.ts";
 import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_geojson.ts";
+import { evaluateCandidateSnapshot } from "./active_world_overlap_stage.ts";
 import {
   matchRoad, retryable, rules,
   type MatchedSection,
@@ -63,7 +64,7 @@ function logWorldStageFailure(
   }));
 }
 
-async function activateEmptyWorld(admin: ReturnType<typeof createClient>, publishId: string, localDriveId: string): Promise<Response> {
+async function activateEmptyWorld(admin: SupabaseClient, publishId: string, localDriveId: string): Promise<Response> {
   const { data: road, error: roadError } = await admin.from("world_validated_roads")
     .select("id,valid_distance_meters,section_count,processing_version,direction_key")
     .eq("publish_id", publishId).maybeSingle();
@@ -71,6 +72,14 @@ async function activateEmptyWorld(admin: ReturnType<typeof createClient>, publis
     logWorldStageFailure("active_world_road_lookup", publishId, "validated_road_lookup_failed", roadError);
     return error("validated_road_lookup_failed", 503);
   }
+  const { data: completed, error: completedError } = await admin.from("world_active_world_generations")
+    .select("generation,operation_id,trace_count").eq("source_publish_id", publishId).maybeSingle();
+  if (completedError) return error("active_world_lookup_failed", 503);
+  if (completed) return json({ ok: true, publish_id: publishId,
+    validation: { validated_road_id: road.id, valid_distance_meters: Number(road.valid_distance_meters),
+      eligible_for_world: Number(road.valid_distance_meters) >= rules.minimumValidDistanceMeters,
+      section_count: Number(road.section_count) }, active_world: { state: "already_processed", ...completed } });
+  if (!(Number(road.valid_distance_meters) >= rules.minimumValidDistanceMeters)) return error("world_ineligible", 422);
   const { data: rawSections, error: sectionsError } = await admin.rpc(
     "get_world_validated_road_sections_for_processing_exact",
     { p_validated_road_id: road.id },
@@ -94,6 +103,29 @@ async function activateEmptyWorld(admin: ReturnType<typeof createClient>, publis
     return error("validated_sections_invalid", 503);
   }
   logWorldStage("validated_sections_loaded", publishId);
+  // One read-only snapshot prevents mixing temporal generations. Even when
+  // spatial candidates are empty a non-empty world must not run Stage 1.
+  const { data: candidateSnapshot, error: candidateError } = await admin.rpc(
+    "get_active_world_overlap_candidates", { p_challenger_road_id: road.id },
+  );
+  if (candidateError || !candidateSnapshot) {
+    logWorldStageFailure("active_world_candidates", publishId, "active_world_candidates_failed", candidateError);
+    return error("active_world_candidates_failed", 503);
+  }
+  let overlapStage;
+  try {
+    overlapStage = evaluateCandidateSnapshot({ id: String(road.id), driveId: localDriveId, sections }, candidateSnapshot);
+  } catch {
+    logWorldStageFailure("active_world_overlap", publishId, "active_world_overlap_invalid");
+    return error("active_world_overlap_invalid", 503);
+  }
+  if (overlapStage.state === "ownership_processing_not_implemented") {
+    logWorldStage("active_world_overlap_completed", publishId);
+    // Do not send owners, geometry or spans back to the mobile client.
+    return json({ ok: false, error_code: "world_ownership_processing_not_implemented",
+      active_world: { state: overlapStage.state, generation: overlapStage.snapshot.generation,
+        candidate_count: overlapStage.snapshot.candidates.length, overlap_count: overlapStage.overlaps.length } }, 409);
+  }
   const plan = planEmptyWorld({
     generation: 0,
     driveScoreAlgorithmVersion: rules.driveScoreAlgorithmVersion,

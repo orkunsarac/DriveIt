@@ -98,6 +98,9 @@ test("pipeline duplicate short-circuits; non-empty intermediate path cannot comm
   const source=readFileSync(new URL("./index.ts",import.meta.url),"utf8");
   assert.ok(source.indexOf('if (completed) return json') < source.indexOf('get_active_world_overlap_candidates'));
   const guard=source.slice(source.indexOf('if (overlapStage.state ==='),source.indexOf('const plan = planEmptyWorld'));
-  assert.match(guard,/world_ownership_processing_not_implemented/);
+  assert.match(guard,/analyzeWorldScoring/);
+  assert.match(guard,/error_code: scoring.state/);
+  const scoring=readFileSync(new URL('./world_scoring_stage.ts',import.meta.url),'utf8');
+  assert.match(scoring,/world_ownership_mutation_not_implemented/);
   assert.doesNotMatch(guard,/admin.rpc|activate_empty_world_publish|upload|matchRoad/);
 });

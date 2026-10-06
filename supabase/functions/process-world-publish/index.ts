@@ -4,6 +4,7 @@ import { publishColumns, publishLookupFailure, resolveAdminKey } from "./admin_c
 import { planEmptyWorld } from "./active_world_empty_planner.ts";
 import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_geojson.ts";
 import { evaluateCandidateSnapshot } from "./active_world_overlap_stage.ts";
+import { analyzeWorldScoring, RequestSourceLoader, type SourceRow } from "./world_scoring_stage.ts";
 import {
   matchRoad, retryable, rules,
   type MatchedSection,
@@ -64,7 +65,7 @@ function logWorldStageFailure(
   }));
 }
 
-async function activateEmptyWorld(admin: SupabaseClient, publishId: string, localDriveId: string): Promise<Response> {
+async function activateEmptyWorld(admin: SupabaseClient, publishId: string, localDriveId: string, sourceSeed?: unknown): Promise<Response> {
   const { data: road, error: roadError } = await admin.from("world_validated_roads")
     .select("id,valid_distance_meters,section_count,processing_version,direction_key")
     .eq("publish_id", publishId).maybeSingle();
@@ -121,10 +122,33 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
   }
   if (overlapStage.state === "ownership_processing_not_implemented") {
     logWorldStage("active_world_overlap_completed", publishId);
+    const loader = new RequestSourceLoader({
+      async metadata(ids) {
+        const { data, error: lookupError } = await admin.from("world_publishes")
+          .select(publishColumns).in("id", ids);
+        if (lookupError || !data) throw new Error("lookup");
+        return data as unknown as SourceRow[];
+      },
+      async download(path) {
+        const { data, error: storageError } = await admin.storage.from(bucket).download(path);
+        if (storageError || !data) throw new Error("download");
+        return JSON.parse(await data.text());
+      },
+    }, sourceSeed === undefined ? new Map() : new Map([[publishId, sourceSeed]]));
+    const scoring = await analyzeWorldScoring(publishId,
+      { id: String(road.id), driveId: localDriveId, sections },
+      overlapStage.snapshot.roads, overlapStage.overlaps, loader);
+    if (scoring.state === "failure") {
+      logWorldStageFailure("active_world_scoring", publishId, scoring.errorCode);
+      return error(scoring.errorCode, 503);
+    }
+    logWorldStage("active_world_scoring_completed", publishId);
     // Do not send owners, geometry or spans back to the mobile client.
-    return json({ ok: false, error_code: "world_ownership_processing_not_implemented",
-      active_world: { state: overlapStage.state, generation: overlapStage.snapshot.generation,
-        candidate_count: overlapStage.snapshot.candidates.length, overlap_count: overlapStage.overlaps.length } }, 409);
+    return json({ ok: false, error_code: scoring.state,
+      active_world: { state: scoring.state, generation: overlapStage.snapshot.generation,
+        candidate_count: overlapStage.snapshot.candidates.length, overlap_count: overlapStage.overlaps.length,
+        scored_overlap_count: scoring.inputs.filter((i) => i.scoring.status === "success").length,
+        winning_region_count: scoring.inputs.reduce((n, i) => n + i.scoring.winningRegions.length, 0) } }, 409);
   }
   const plan = planEmptyWorld({
     generation: 0,
@@ -340,11 +364,11 @@ Deno.serve(async (request) => {
       const { data: committed } = await admin.from("world_validated_roads")
         .select("id,valid_distance_meters,section_count")
         .eq("publish_id", publishId).maybeSingle();
-      if (committed) return activateEmptyWorld(admin, publishId, publish.local_drive_id);
+      if (committed) return activateEmptyWorld(admin, publishId, publish.local_drive_id, source);
       return await fail("validation_persist_failed", true, 503);
     }
     if (persisted.state === "created" || persisted.state === "exists") {
-      return activateEmptyWorld(admin, publishId, publish.local_drive_id);
+      return activateEmptyWorld(admin, publishId, publish.local_drive_id, source);
     }
     return error("validation_claim_expired", 409);
   } catch {

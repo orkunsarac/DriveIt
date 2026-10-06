@@ -1,4 +1,11 @@
-import type { Coordinate, TelemetryPoint } from "./world_validation.ts";
+import type { Coordinate } from "./world_validation.ts";
+
+export type CanonicalSourcePoint = Coordinate & {
+  timestamp: string; speed_mps: number; heading_degrees: number;
+  altitude_meters: number; accuracy_meters: number;
+  distance_from_previous_meters: number; acceleration_mps2: number;
+};
+export type PublishedSource = { raw_route: Coordinate[]; canonical_telemetry: CanonicalSourcePoint[] };
 
 export type PublishSourceMetadata = {
   id: string;
@@ -11,10 +18,7 @@ export type PublishSourceMetadata = {
   telemetry_point_count: number | null;
 };
 
-export function sourceMatches(source: unknown, publish: PublishSourceMetadata): source is {
-  raw_route: Coordinate[];
-  canonical_telemetry: TelemetryPoint[];
-} {
+export function sourceMatches(source: unknown, publish: PublishSourceMetadata): source is PublishedSource {
   if (!source || typeof source !== "object" || Array.isArray(source)) return false;
   const value = source as Record<string, unknown>;
   if (value.publish_id !== publish.id ||

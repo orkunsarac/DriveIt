@@ -56,6 +56,15 @@ Map<String, dynamic> _row({String status = 'pending', bool ready = true}) => {
 };
 
 void main() {
+  test('stale generation conflict is retryable without changing publish/source', () async {
+    final gateway = _Gateway()..failure = FunctionException(status: 409,
+      details: {'ok': false, 'error_code': 'stale_generation'}, reasonPhrase: 'Conflict');
+    final result = await WorldPublishProcessingService(gateway: gateway)
+      .process(WorldPublish.fromRow(_row(status: 'processing')));
+    expect(result.status, WorldPublishProcessingStatus.retryableFailure);
+    expect(result.errorCode, 'stale_generation');
+    expect(gateway.calls.single.$2, {'publish_id': 'publish-1'});
+  });
   test('uses authenticated function invoke with only publish id', () async {
     final gateway = _Gateway();
     final result = await WorldPublishProcessingService(

@@ -125,7 +125,7 @@ test("exact candidate sources only, one metadata batch and single download per s
     async download(path){downloads.push(path);return path===r1.source_path?source(r1):source(r2,fixture.secondTelemetry);}});
   const result=await analyzeWorldScoring('challenger',fixture.secondRoad,[fixture.firstRoad],
     [coverage('a'),coverage('b')],loader);
-  assert.equal(result.state,'world_ownership_mutation_not_implemented');assert.equal(batches,1);
+  assert.equal(result.state,'scoring_completed');assert.equal(batches,1);
   assert.deepEqual(downloads,['owner/incumbent.json','owner/challenger.json']);
   assert.equal(result.inputs.length,2);
 });

@@ -4,7 +4,7 @@
 import { clipActiveCoverage } from "./world_scoring.ts";
 export type Point = { latitude: number; longitude: number };
 export type Section = { id: string; distanceMeters: number; geometry: Point[] };
-export type Road = { id: string; driveId: string; sections: Section[] };
+export type Road = { id: string; driveId: string; sections: Section[]; directionKey?: string; processingVersion?: number };
 export const overlapRules = Object.freeze({
   resample: 25, tolerance: 15, maxDirection: 30, minConfidence: .65,
   minReported: 100, comparison: 3000, maxRelativeDifference: .2,
@@ -165,6 +165,8 @@ export type Trace = {
   matchedSectionId: string; startOffsetMeters: number; endOffsetMeters: number;
   directionKey: string; activeFromGeneration: string; activeToGeneration: string | null;
   processingVersion: number;
+  minLatitude?: number; maxLatitude?: number; minLongitude?: number; maxLongitude?: number;
+  createdAt?: string; updatedAt?: string;
 };
 export type Coverage = {
   trace: Trace; match: Match;

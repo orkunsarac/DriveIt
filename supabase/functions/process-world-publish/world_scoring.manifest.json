@@ -1,7 +1,7 @@
 {
   "compiler": "Dart SDK version: 3.12.2 (stable) (Tue Jun 9 01:11:39 2026 -0700) on \"windows_x64\"",
-  "artifact_sha256": "e9df31584969365ea8f7526ae9652fc794e82c4e0b1bf722e09e06a9a38da062",
-  "boundary_artifact_sha256": "2f2d123512df3d63d92efd2d7498e0f7cdfe00198fc1a409a9044ee8f4402f4d",
+  "artifact_sha256": "6ce74ef082e35fa8589904dc8620a14a4eec3545c585152aad3a5e4eba76d601",
+  "boundary_artifact_sha256": "630b88dc9d090f061ae794ed2416477433480d88b3309130013e71f807d544d4",
   "sources": {
     "lib/features/drive_score/config/acceleration_performance_calibration.dart": "70bdbe51bfb4e1b7111be43b90ab55a9fdc64c8f2d1e86bc0086625b2c13bd25",
     "lib/features/drive_score/config/braking_score_calibration.dart": "e893641be1bc5963a49b2a639c3168893c35b8d54d9f20ceaea6857efc64a514",
@@ -40,16 +40,21 @@
     "lib/features/my_world/models/matched_road_point.dart": "564bb6fd5674e3d020b0e84bd19cdcfac89608e20f56af771433a6e07bd701e6",
     "lib/features/my_world/models/matched_road_section.dart": "5c74831f095198f2fce0b25b5617959a5b864fc3424e7c1566b97f94e94157a0",
     "lib/features/my_world/models/validated_road.dart": "e48c30b275a7866e1ecb75d5f0b4adf51bd628aaa373350633a81b84546a57e6",
+    "lib/features/my_world/models/world_index_mutation_plan.dart": "3a3121bf1094889f2fcc539674dcddceedc71c65535097a8775d1fba8ed92633",
+    "lib/features/my_world/models/world_index_snapshot.dart": "b70f709b3e68fc04ec5e993d921910ef732a47a9f2bb77545471d0c3177db6db",
+    "lib/features/my_world/models/world_trace_overlap_analysis.dart": "9652f2328b4c05a905692c85f50ea04291313663a3477ad5557427798ca12011",
     "lib/features/my_world/services/active_world_coverage.dart": "5bee1c9b4d395ee73b36559fc18d86c131d0102da9e3071d3c2fda227829efd1",
     "lib/features/my_world/services/common_road_local_score_service.dart": "3aa59eb979bcfc442e02874a609e479dcf28e1e728223263fcfc0990261e085e",
-    "lib/features/my_world/services/common_road_telemetry_extractor.dart": "8d29f1ac4acd81dd1e15dce4a456d3c73493805f45e05155e4aec51020773b5b",
+    "lib/features/my_world/services/common_road_telemetry_extractor.dart": "75ee9a53ff967d9b32d68747fe464e7fcbfab59140ba3271a91bba2800620fbc",
     "lib/features/my_world/services/geo_distance.dart": "57b3e35247b4128937cbbc0542ac9761100ccabcac63afe4dcacae449426cdfe",
     "lib/features/my_world/services/local_winning_road_region_service.dart": "8499fefda0b9cde50cb6860474eef9195d52966c70a31235a22d6c2a67c032dc",
+    "lib/features/my_world/services/world_index_mutation_planner.dart": "cddfc5d67a1bbad1e8ef2bec4e417f80d630cef6e3aaca26df4fdeab3cf812b2",
     "lib/features/my_world/services/world_section_offset_mapper.dart": "dcd7dd41d3a54a066c0113533acd96e8c56150fbddd13cf4692af46a555c270f",
     "lib/models/canonical_telemetry_point.dart": "8819c686a63f12ce012692f49fd362ec696b477fcda475320dcbce29bbc5dcce",
-    "tool/world_scoring_adapter.dart": "231d1e70fe7d49d930951bec3f29e25b978d773b9da7d0b9a3f2da31d7be3ec2",
+    "tool/world_mutation_adapter.dart": "4640bdf7400f723ee8d6b99d4376e51d7081fd7518496f8d560549468afd1afb",
+    "tool/world_scoring_adapter.dart": "15ba6b33d8593a71f62ecdea5ca764b9fcdae30f29f7aedef1b8cc6e92da7c34",
     "tool/world_scoring_boundary_adapter.dart": "266d45bf2822864588e6037ad1e20226993e1fe8789d5004f74efd473bfa7eb9",
     "tool/world_scoring_boundary_js.dart": "644aa622f3b0dc226b00c659d8abe191632bf3c55d4de47075cfc5e4c8045d00",
-    "tool/world_scoring_js.dart": "522a40b22b068fd29686372501c0528b8a1987a0853b4f4df86555fb836faee7"
+    "tool/world_scoring_js.dart": "b564716abe812553e6cbaea097c16578ab5cb467b0bef5af95e8129cc87eee10"
   }
 }

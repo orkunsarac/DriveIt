@@ -241,6 +241,7 @@ class WorldPublishProcessingService {
         'validation_persist_failed' ||
         'state_update_failed' ||
         'validation_retryable' ||
+        'stale_generation' ||
         'mapbox_missingaccesstoken' ||
         'mapbox_network' ||
         'mapbox_timeout' ||

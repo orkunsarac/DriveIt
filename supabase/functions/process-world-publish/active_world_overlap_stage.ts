@@ -27,7 +27,11 @@ export function parseCandidateSnapshot(value: unknown): CandidateSnapshot {
       sourceDriveId: t.source_drive_id as string, validatedRoadId: t.validated_road_id as string,
       matchedSectionId: t.matched_section_id as string, directionKey: t.direction_key as string,
       startOffsetMeters: start, endOffsetMeters: end, activeFromGeneration: t.active_from_generation,
-      activeToGeneration: t.active_to_generation as string | null, processingVersion: t.processing_version as number };
+      activeToGeneration: t.active_to_generation as string | null, processingVersion: t.processing_version as number,
+      ...(t.created_at === undefined ? {} : {
+        createdAt:String(t.created_at),updatedAt:String(t.updated_at),
+        minLatitude:Number(t.min_latitude),maxLatitude:Number(t.max_latitude),
+        minLongitude:Number(t.min_longitude),maxLongitude:Number(t.max_longitude) }) };
   });
   if (new Set(candidates.map((t) => t.id)).size !== candidates.length || (value.is_empty && candidates.length)) {
     throw new Error("candidate_snapshot_invalid");
@@ -35,7 +39,8 @@ export function parseCandidateSnapshot(value: unknown): CandidateSnapshot {
   const roads = value.roads.map((r): Road => {
     if (!object(r) || !text(r.id) || !text(r.drive_id) || !Array.isArray(r.sections)) throw new Error("candidate_snapshot_invalid");
     let lastOrder = -1;
-    return { id: r.id, driveId: r.drive_id, sections: r.sections.map((s) => {
+    return { id: r.id, driveId: r.drive_id, directionKey:r.direction_key as string | undefined,
+      processingVersion:r.processing_version as number | undefined, sections: r.sections.map((s) => {
       if (!object(s) || !text(s.section_key) || !Number.isInteger(s.section_order) || (s.section_order as number) <= lastOrder) {
         throw new Error("candidate_snapshot_invalid");
       }
@@ -54,12 +59,12 @@ export function parseCandidateSnapshot(value: unknown): CandidateSnapshot {
   return { generation: value.generation, isEmpty: value.is_empty, candidates, roads };
 }
 export type OverlapStageResult = {
-  state: "empty_world" | "ownership_processing_not_implemented";
+  state: "empty_world" | "overlaps_ready";
   snapshot: CandidateSnapshot; overlaps: Coverage[];
 };
 // Read-only intermediate stage. No commit, score, telemetry, Storage or Mapbox.
 export function evaluateCandidateSnapshot(challenger: Road, raw: unknown): OverlapStageResult {
   const snapshot = parseCandidateSnapshot(raw);
-  return { state: snapshot.isEmpty ? "empty_world" : "ownership_processing_not_implemented", snapshot,
+  return { state: snapshot.isEmpty ? "empty_world" : "overlaps_ready", snapshot,
     overlaps: snapshot.isEmpty ? [] : analyzeActiveCandidates(challenger, snapshot.candidates, snapshot.roads) };
 }

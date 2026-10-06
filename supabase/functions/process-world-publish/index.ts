@@ -5,6 +5,7 @@ import { planEmptyWorld } from "./active_world_empty_planner.ts";
 import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_geojson.ts";
 import { evaluateCandidateSnapshot } from "./active_world_overlap_stage.ts";
 import { analyzeWorldScoring, RequestSourceLoader, type SourceRow } from "./world_scoring_stage.ts";
+import { planWorldMutation, commitWorldMutation } from "./world_mutation.ts";
 import {
   matchRoad, retryable, rules,
   type MatchedSection,
@@ -107,7 +108,7 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
   // One read-only snapshot prevents mixing temporal generations. Even when
   // spatial candidates are empty a non-empty world must not run Stage 1.
   const { data: candidateSnapshot, error: candidateError } = await admin.rpc(
-    "get_active_world_overlap_candidates", { p_challenger_road_id: road.id },
+    "get_active_world_mutation_snapshot", { p_challenger_road_id: road.id },
   );
   if (candidateError || !candidateSnapshot) {
     logWorldStageFailure("active_world_candidates", publishId, "active_world_candidates_failed", candidateError);
@@ -120,7 +121,7 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
     logWorldStageFailure("active_world_overlap", publishId, "active_world_overlap_invalid");
     return error("active_world_overlap_invalid", 503);
   }
-  if (overlapStage.state === "ownership_processing_not_implemented") {
+  if (overlapStage.state === "overlaps_ready" || overlapStage.snapshot.generation !== "0") {
     logWorldStage("active_world_overlap_completed", publishId);
     const loader = new RequestSourceLoader({
       async metadata(ids) {
@@ -143,12 +144,23 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
       return error(scoring.errorCode, 503);
     }
     logWorldStage("active_world_scoring_completed", publishId);
-    // Do not send owners, geometry or spans back to the mobile client.
-    return json({ ok: false, error_code: scoring.state,
-      active_world: { state: scoring.state, generation: overlapStage.snapshot.generation,
-        candidate_count: overlapStage.snapshot.candidates.length, overlap_count: overlapStage.overlaps.length,
-        scored_overlap_count: scoring.inputs.filter((i) => i.scoring.status === "success").length,
-        winning_region_count: scoring.inputs.reduce((n, i) => n + i.scoring.winningRegions.length, 0) } }, 409);
+    let committed;
+    try {
+      const plan = planWorldMutation(overlapStage.snapshot,
+        {id:String(road.id),driveId:localDriveId,sections,directionKey:String(road.direction_key),
+          processingVersion:Number(road.processing_version)}, publishId, scoring.inputs, new Date().toISOString());
+      logWorldStage("active_world_mutation_planned", publishId);
+      committed = await commitWorldMutation(plan,publishId,async(name,args)=>admin.rpc(name,args));
+    } catch {
+      logWorldStageFailure("active_world_mutation",publishId,"active_world_commit_failed");
+      return error("active_world_commit_failed",503);
+    }
+    if(committed.state === "stale_generation") return error("stale_generation",409);
+    if(committed.state !== "committed" && committed.state !== "already_processed") return error("active_world_commit_failed",503);
+    logWorldStage("completed",publishId);
+    return json({ok:true,publish_id:publishId,
+      validation:{validated_road_id:road.id,valid_distance_meters:Number(road.valid_distance_meters),
+        eligible_for_world:true,section_count:Number(road.section_count)},active_world:committed});
   }
   const plan = planEmptyWorld({
     generation: 0,

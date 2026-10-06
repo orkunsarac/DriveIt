@@ -60,7 +60,7 @@ export type RegionInput = WinningRegion & { winnerDriveId: string; comparisonEli
     improvementRatio: number | null; state: string }[] };
 export type MutationInput = { traceId: string; sourcePublishId: string;
   coverage: Coverage; scoring: ScoringResult; regions: RegionInput[] };
-export type ScoringStage = { state: "world_ownership_mutation_not_implemented";
+export type ScoringStage = { state: "scoring_completed";
   inputs: MutationInput[] } | { state: "failure"; errorCode: SourceFailure | "world_scoring_failed" };
 export async function analyzeWorldScoring(challengerPublishId: string, challenger: Road,
   roads: Road[], overlaps: Coverage[], loader: RequestSourceLoader): Promise<ScoringStage> {
@@ -105,7 +105,7 @@ export async function analyzeWorldScoring(challengerPublishId: string, challenge
       inputs.push({ traceId: coverage.trace.id, sourcePublishId: coverage.trace.sourcePublishId, coverage, scoring, regions });
     }
     // Intentionally no DB mutation, final publish state, ownership split or CAS.
-    return { state: "world_ownership_mutation_not_implemented", inputs };
+    return { state: "scoring_completed", inputs };
   } catch (e) {
     return { state: "failure", errorCode: e instanceof ScoringSourceError ? e.code : "world_scoring_failed" };
   }

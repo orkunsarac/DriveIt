@@ -60,9 +60,9 @@ test("current-only snapshot rejects closed and future temporal versions",()=>{
 });
 test("read-only intermediate stage never implies ownership/published; empty spatial candidates still non-empty world",()=>{
   const c=fixtureRoad("second",fixture.cases[0].second);
-  assert.equal(evaluateCandidateSnapshot(c,raw()).state,"ownership_processing_not_implemented");
+  assert.equal(evaluateCandidateSnapshot(c,raw()).state,"overlaps_ready");
   const no=raw();no.candidates=[];no.roads=[];
-  assert.equal(evaluateCandidateSnapshot(c,no).state,"ownership_processing_not_implemented");
+  assert.equal(evaluateCandidateSnapshot(c,no).state,"overlaps_ready");
   assert.equal(evaluateCandidateSnapshot(c,{...no,is_empty:true,generation:"0"}).state,"empty_world");
 });
 test("candidate SQL uses current temporal snapshot, spatial index and server-only privileges",()=>{
@@ -94,13 +94,13 @@ const oracle=JSON.parse(readFileSync(new URL("../../../test/fixtures/active_worl
 for(const c of fixture.cases) test(`Dart/server exact overlap parity: ${c.name}`,()=>{
   compareParity(findCommonRoads(fixtureRoad("first",c.first),fixtureRoad("second",c.second)),oracle[c.name]);
 });
-test("pipeline duplicate short-circuits; non-empty intermediate path cannot commit",()=>{
+test("pipeline duplicate short-circuits; non-empty path commits after scoring without validation repeat",()=>{
   const source=readFileSync(new URL("./index.ts",import.meta.url),"utf8");
-  assert.ok(source.indexOf('if (completed) return json') < source.indexOf('get_active_world_overlap_candidates'));
+  assert.ok(source.indexOf('if (completed) return json') < source.indexOf('get_active_world_mutation_snapshot'));
   const guard=source.slice(source.indexOf('if (overlapStage.state ==='),source.indexOf('const plan = planEmptyWorld'));
   assert.match(guard,/analyzeWorldScoring/);
-  assert.match(guard,/error_code: scoring.state/);
+  assert.match(guard,/planWorldMutation/);assert.match(guard,/commitWorldMutation/);
   const scoring=readFileSync(new URL('./world_scoring_stage.ts',import.meta.url),'utf8');
-  assert.match(scoring,/world_ownership_mutation_not_implemented/);
-  assert.doesNotMatch(guard,/admin.rpc|activate_empty_world_publish|upload|matchRoad/);
+  assert.match(scoring,/scoring_completed/);
+  assert.doesNotMatch(guard,/activate_empty_world_publish|upload|matchRoad/);
 });

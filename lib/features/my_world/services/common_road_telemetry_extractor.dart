@@ -107,6 +107,44 @@ class CommonRoadTelemetryExtractor {
       );
     }
 
+    // Request-local immutable segment metadata. Recomputing geodesic length
+    // and bearing for every telemetry point/window dominates hosted CPU.
+    // This does not spatially approximate or alter range/heading selection.
+    final segments = <_ProjectionSegment>[];
+    var segmentOffset = 0.0;
+    for (var i = 0; i < section.geometry.length - 1; i++) {
+      final start = section.geometry[i], end = section.geometry[i + 1];
+      final length = GeoDistance.between(
+        start.latitude,
+        start.longitude,
+        end.latitude,
+        end.longitude,
+      );
+      if (length <= 0) continue;
+      final canonicalStart =
+          sectionStart +
+          WorldSectionOffsetMapper.normalize(
+            geometryOffsetMeters: segmentOffset,
+            geometryLengthMeters: geometryLength,
+            sectionLengthMeters: canonicalLength,
+          );
+      final canonicalEnd =
+          sectionStart +
+          WorldSectionOffsetMapper.normalize(
+            geometryOffsetMeters: segmentOffset + length,
+            geometryLengthMeters: geometryLength,
+            sectionLengthMeters: canonicalLength,
+          );
+      // Exact monotone interval exclusion, not a spatial approximation. A
+      // projection on this segment cannot be accepted outside this range.
+      // Boundary-equal segments remain; self-intersections within the requested
+      // offset range still undergo the unchanged distance/heading selection.
+      if (canonicalEnd >= startOffsetMeters - offsetBoundaryToleranceMeters &&
+          canonicalStart <= endOffsetMeters + offsetBoundaryToleranceMeters) {
+        segments.add(_ProjectionSegment(start, end, length, segmentOffset));
+      }
+      segmentOffset += length;
+    }
     final selected = <_ProjectedTelemetry>[];
     for (var index = 0; index < points.length; index++) {
       final point = points[index];
@@ -115,7 +153,7 @@ class CommonRoadTelemetryExtractor {
       }
       final projection = _project(
         point,
-        section.geometry,
+        segments,
         sectionStart,
         geometryLength,
         canonicalLength,
@@ -223,7 +261,7 @@ class CommonRoadTelemetryExtractor {
 
   _GeometryProjection? _project(
     CanonicalTelemetryPoint telemetry,
-    List<MatchedRoadPoint> geometry,
+    List<_ProjectionSegment> segments,
     double sectionStartOffsetMeters,
     double geometryLengthMeters,
     double canonicalLengthMeters,
@@ -233,31 +271,21 @@ class CommonRoadTelemetryExtractor {
   ) {
     _GeometryProjection? best;
     var bestIsInsideRequiredRange = false;
-    var segmentOffset = 0.0;
-    for (var index = 0; index < geometry.length - 1; index++) {
-      final start = geometry[index];
-      final end = geometry[index + 1];
-      final segmentLength = GeoDistance.between(
-        start.latitude,
-        start.longitude,
-        end.latitude,
-        end.longitude,
-      );
-      if (segmentLength <= 0) continue;
-      final projected = _projectToSegment(telemetry, start, end);
+    for (final segment in segments) {
+      final projected = _projectToSegment(telemetry, segment);
       final candidate = _GeometryProjection(
         distanceMeters: projected.distanceMeters,
         roadOffsetMeters:
             sectionStartOffsetMeters +
             WorldSectionOffsetMapper.normalize(
               geometryOffsetMeters:
-                  segmentOffset + segmentLength * projected.ratio,
+                  segment.offset + segment.length * projected.ratio,
               geometryLengthMeters: geometryLengthMeters,
               sectionLengthMeters: canonicalLengthMeters,
             ),
         headingDifferenceDegrees: _headingDifference(
           telemetry.headingDegrees,
-          _bearingDegrees(start, end),
+          segment.bearing,
         ),
       );
       final isInsideRequiredRange =
@@ -277,22 +305,20 @@ class CommonRoadTelemetryExtractor {
         best = candidate;
         bestIsInsideRequiredRange = isInsideRequiredRange;
       }
-      segmentOffset += segmentLength;
     }
     return best;
   }
 
   _ProjectionOnSegment _projectToSegment(
     CanonicalTelemetryPoint point,
-    MatchedRoadPoint start,
-    MatchedRoadPoint end,
+    _ProjectionSegment segment,
   ) {
     final latitudeScale = 111320.0;
-    final longitudeScale = 111320 * math.cos(_radians(start.latitude));
-    final x = (point.longitude - start.longitude) * longitudeScale;
-    final y = (point.latitude - start.latitude) * latitudeScale;
-    final endX = (end.longitude - start.longitude) * longitudeScale;
-    final endY = (end.latitude - start.latitude) * latitudeScale;
+    final x =
+        (point.longitude - segment.start.longitude) * segment.longitudeScale;
+    final y = (point.latitude - segment.start.latitude) * latitudeScale;
+    final endX = segment.endX;
+    final endY = segment.endY;
     final squaredLength = endX * endX + endY * endY;
     final ratio = squaredLength <= 0
         ? 0.0
@@ -307,6 +333,18 @@ class CommonRoadTelemetryExtractor {
       ),
     );
   }
+}
+
+class _ProjectionSegment {
+  _ProjectionSegment(this.start, MatchedRoadPoint end, this.length, this.offset)
+    : longitudeScale = 111320 * math.cos(_radians(start.latitude)),
+      bearing = _bearingDegrees(start, end) {
+    endX = (end.longitude - start.longitude) * longitudeScale;
+    endY = (end.latitude - start.latitude) * 111320;
+  }
+  final MatchedRoadPoint start;
+  final double length, offset, longitudeScale, bearing;
+  late final double endX, endY;
 }
 
 class _ProjectedTelemetry {

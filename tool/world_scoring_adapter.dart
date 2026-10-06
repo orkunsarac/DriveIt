@@ -66,8 +66,9 @@ ValidatedRoad road(Json r) {
     validatedAt: null,
     providerId: 'mapbox',
     confidence: null,
-    processingVersion: MyWorldRules.validatedRoadProcessingVersion,
-    directionKey: '',
+    processingVersion:
+        r['processingVersion'] ?? MyWorldRules.validatedRoadProcessingVersion,
+    directionKey: r['directionKey'] ?? '',
     averageHeadingDegrees: null,
     createdAt: epoch,
     updatedAt: epoch,

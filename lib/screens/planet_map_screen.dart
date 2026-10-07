@@ -7,9 +7,17 @@ import '../features/planet/services/planet_map_repository.dart';
 import '../features/planet/services/planet_map_presentation.dart';
 import '../features/planet/models/planet_viewport.dart';
 import '../theme/drive_map_visuals.dart';
+import '../features/planet/services/planet_trace_detail_repository.dart';
+import 'planet_trace_detail_screen.dart';
 
 class PlanetMapScreen extends StatefulWidget {
-  const PlanetMapScreen({super.key, this.repository, this.mapBuilder});
+  const PlanetMapScreen({
+    super.key,
+    this.repository,
+    this.mapBuilder,
+    this.detailRepository,
+  });
+  final PlanetTraceDetailRepository? detailRepository;
   final PlanetMapRepository? repository;
   // Platform map boundary for widget tests; production always uses GoogleMap.
   final Widget Function(PlanetMapDrawing drawing)? mapBuilder;
@@ -21,6 +29,8 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
     with WidgetsBindingObserver {
   late final PlanetMapController _data;
   GoogleMapController? _map;
+  late final PlanetTraceDetailRepository _details;
+  bool _detailOpen = false;
   CameraPosition _camera = const CameraPosition(
     target: LatLng(39, 35),
     zoom: 11,
@@ -32,6 +42,7 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
   @override
   void initState() {
     super.initState();
+    _details = widget.detailRepository ?? SupabasePlanetTraceDetailRepository();
     WidgetsBinding.instance.addObserver(this);
     _data = PlanetMapController(
       widget.repository ?? SupabasePlanetMapRepository(),
@@ -43,6 +54,26 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
 
   void _changed() {
     if (mounted) setState(() {});
+  }
+
+  Future<void> _openTrace(PlanetTrace trace) async {
+    final snapshot = _data.snapshot;
+    if (_detailOpen || snapshot == null) return;
+    _detailOpen = true;
+    try {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => PlanetTraceDetailScreen(
+            trace: trace,
+            generation: snapshot.generation,
+            repository: _details,
+            mapBuilder: widget.mapBuilder,
+          ),
+        ),
+      );
+    } finally {
+      _detailOpen = false;
+    }
   }
 
   @override
@@ -109,7 +140,11 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
       _drawnZoom = _camera.zoom;
       _drawing = snapshot == null
           ? const PlanetMapDrawing({}, {})
-          : PlanetMapPresentation.draw(snapshot, _camera.zoom);
+          : PlanetMapPresentation.draw(
+              snapshot,
+              _camera.zoom,
+              onTraceTap: (trace) => unawaited(_openTrace(trace)),
+            );
     }
     final message =
         _data.error ??

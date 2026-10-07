@@ -1,2 +1,5 @@
 [functions.process-world-publish]
 verify_jwt = true
+
+[functions.planet-trace-detail]
+verify_jwt = true

@@ -156,7 +156,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 301));
     repo.requests.last.complete(data(2));
     await tester.pump();
-    expect(find.text('lines:2'), findsOneWidget);
+    expect(
+      find.text('lines:3'),
+      findsOneWidget,
+    ); // two visible + transparent hit layer
     await tester.tap(find.byTooltip('Yenile'));
     await tester.pump(const Duration(milliseconds: 301));
     repo.requests.last.completeError(const PlanetReadFailure('Test error'));

@@ -24,7 +24,11 @@ class PlanetMapPresentation {
   ];
   static const presentation = WorldTracePresentationService();
   static const visibility = WorldTraceVisibilityPolicy();
-  static PlanetMapDrawing draw(PlanetSnapshot snapshot, double zoom) {
+  static PlanetMapDrawing draw(
+    PlanetSnapshot snapshot,
+    double zoom, {
+    void Function(PlanetTrace)? onTraceTap,
+  }) {
     if (zoom < minimumDisplayZoom) return const PlanetMapDrawing({}, {});
     final partners = <String, PlanetTrace>{};
     final traces = snapshot.traces;
@@ -68,6 +72,8 @@ class PlanetMapPresentation {
           width: 3,
           zIndex: 1,
           geodesic: true,
+          consumeTapEvents: onTraceTap != null,
+          onTap: onTraceTap == null ? null : () => onTraceTap(trace),
         ),
       );
       lines.add(
@@ -78,8 +84,24 @@ class PlanetMapPresentation {
           width: 2,
           zIndex: 2,
           geodesic: true,
+          consumeTapEvents: onTraceTap != null,
+          onTap: onTraceTap == null ? null : () => onTraceTap(trace),
         ),
       );
+      if (onTraceTap != null) {
+        lines.add(
+          Polyline(
+            polylineId: PolylineId('planet_hit:${trace.id}'),
+            points: points,
+            color: Colors.transparent,
+            width: 16,
+            zIndex: 0,
+            geodesic: true,
+            consumeTapEvents: true,
+            onTap: () => onTraceTap(trace),
+          ),
+        );
+      }
       if (visibility.areMarkersVisible(zoom)) {
         final radius = visibility.markerRadiusMeters(
           zoom: zoom,

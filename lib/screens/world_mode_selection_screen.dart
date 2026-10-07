@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../features/my_world/models/world_map_read_model.dart';
 import '../features/my_world/services/my_world_runtime.dart';
 import 'my_world_map_screen.dart';
+import 'planet_map_screen.dart';
 
 typedef MyWorldDataLoader = Future<MyWorldMapData> Function();
 
@@ -13,10 +14,12 @@ class WorldModeSelectionScreen extends StatefulWidget {
     super.key,
     this.loadData,
     this.myWorldBuilder,
+    this.planetBuilder,
   });
 
   final MyWorldDataLoader? loadData;
   final WidgetBuilder? myWorldBuilder;
+  final WidgetBuilder? planetBuilder;
 
   @override
   State<WorldModeSelectionScreen> createState() =>
@@ -78,7 +81,7 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
             ),
             const SizedBox(height: 6),
             const Text(
-              'Kendi izlerini keşfet, geleceğin DriveIt gezegenine hazırlan.',
+              'Kendi izlerini ve DriveIt gezegenindeki yolları keşfet.',
               style: TextStyle(color: Color(0xff9babc2), fontSize: 13),
             ),
             const SizedBox(height: 22),
@@ -150,13 +153,19 @@ class _WorldModeSelectionScreenState extends State<WorldModeSelectionScreen> {
                 subtitle: 'DriveIt sürücülerinin küresel yol ağı.',
                 accent: const Color(0xff9d5cff),
                 artworkAsset: 'assets/images/driveit_planet_card_art.png',
-                locked: true,
-                onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('DriveIt Gezegeni yakında.')),
+                locked: false,
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder:
+                        widget.planetBuilder ?? (_) => const PlanetMapScreen(),
+                  ),
                 ),
                 footer: const Align(
                   alignment: Alignment.centerLeft,
-                  child: _ComingSoonBadge(),
+                  child: Text(
+                    'Gezegeni keşfet',
+                    style: TextStyle(color: Color(0xff9d5cff), fontSize: 12),
+                  ),
                 ),
               ),
             ),
@@ -322,28 +331,5 @@ class _WorldStat extends StatelessWidget {
         style: const TextStyle(color: Color(0xff8fa1ba), fontSize: 11),
       ),
     ],
-  );
-}
-
-class _ComingSoonBadge extends StatelessWidget {
-  const _ComingSoonBadge();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-    decoration: BoxDecoration(
-      color: Colors.white.withAlpha(10),
-      borderRadius: BorderRadius.circular(18),
-      border: Border.all(color: Colors.white24),
-    ),
-    child: const Text(
-      'YAKINDA',
-      style: TextStyle(
-        color: Colors.white60,
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
-        letterSpacing: 1,
-      ),
-    ),
   );
 }

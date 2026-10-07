@@ -224,7 +224,7 @@ void main() {
     });
   });
 
-  testWidgets('selection screen exposes active and locked World modes', (
+  testWidgets('selection screen opens local World and real Planet modes', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -241,19 +241,24 @@ void main() {
           ),
           myWorldBuilder: (_) =>
               const Scaffold(key: Key('my_world_destination')),
+          planetBuilder: (_) => const Scaffold(key: Key('planet_destination')),
         ),
       ),
     );
     await tester.pumpAndSettle();
     expect(find.text('BENİM DÜNYAM'), findsOneWidget);
     expect(find.text('DRIVEIT GEZEGENİ'), findsOneWidget);
-    expect(find.text('YAKINDA'), findsOneWidget);
+    expect(find.text('Gezegeni keşfet'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('driveit_planet_card')));
-    await tester.pump();
-    expect(find.text('DriveIt Gezegeni yakında.'), findsOneWidget);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('planet_destination')), findsOneWidget);
     expect(find.byKey(const Key('my_world_destination')), findsNothing);
 
+    Navigator.of(
+      tester.element(find.byKey(const Key('planet_destination'))),
+    ).pop();
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('my_world_card')));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('my_world_destination')), findsOneWidget);

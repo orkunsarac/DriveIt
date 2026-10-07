@@ -48,18 +48,35 @@ class WorldTracePresentationService {
     required bool separateOpposite,
     required double zoom,
     ResolvedWorldTrace? oppositePartner,
+  }) => renderPoints(
+    id: trace.trace.id,
+    points: _sourceLatLng(trace),
+    separateOpposite: separateOpposite,
+    zoom: zoom,
+    partnerId: oppositePartner?.trace.id,
+    partnerPoints: oppositePartner == null
+        ? null
+        : _sourceLatLng(oppositePartner),
+  );
+
+  /// Geometry-only adapter shared with the server-backed Planet map. No local
+  /// ownership/model fabrication or telemetry is needed for presentation.
+  List<LatLng> renderPoints({
+    required String id,
+    required List<LatLng> points,
+    required bool separateOpposite,
+    required double zoom,
+    String? partnerId,
+    List<LatLng>? partnerPoints,
   }) {
-    if (!separateOpposite || trace.geometry.length < 2 || zoom < 6) {
-      return _sourceLatLng(trace);
+    if (!separateOpposite || points.length < 2 || zoom < 6) {
+      return points;
     }
     final requestedOffset = MyWorldRules.oppositeTraceVisualOffsetMeters;
-    final side = _sideFor(trace, oppositePartner);
-    final points = trace.geometry;
-    final referencePoints = oppositePartner == null
+    final side = partnerId == null || id.compareTo(partnerId) < 0 ? 1.0 : -1.0;
+    final referencePoints = partnerPoints == null
         ? points
-        : (trace.trace.id.compareTo(oppositePartner.trace.id) <= 0
-              ? points
-              : oppositePartner.geometry);
+        : (id.compareTo(partnerId!) <= 0 ? points : partnerPoints);
     final referenceTangents = _tangentField(referencePoints);
     return points
         .asMap()
@@ -67,22 +84,12 @@ class WorldTracePresentationService {
         .map((entry) {
           final index = entry.key;
           final point = entry.value;
-          final referenceIndex = oppositePartner == null
+          final referenceIndex = partnerPoints == null
               ? index
               : _nearestIndex(point, referencePoints);
           final tangent = referenceTangents[referenceIndex];
           final turnScale = _cornerOffsetScale(referencePoints, referenceIndex);
           final metres = requestedOffset * turnScale;
-          if (kDebugMode && index == 0 && oppositePartner != null) {
-            debugPrint(
-              '[WORLD_OPPOSITE_RENDER] trace=${trace.trace.id} '
-              'partner=${oppositePartner.trace.id} '
-              'direction=${trace.travelDirection.name} '
-              'partnerDirection=${oppositePartner.travelDirection.name} '
-              'offsetSign=${side.toInt()} offsetMeters=${metres.toStringAsFixed(2)} '
-              'tangent=${tangent.toStringAsFixed(1)}',
-            );
-          }
           final angle = (tangent + 90 * side) * math.pi / 180;
           final latOffset = metres * math.cos(angle) / 111320;
           final lonScale = 111320 * math.cos(point.latitude * math.pi / 180);
@@ -117,10 +124,24 @@ class WorldTracePresentationService {
       .map((point) => LatLng(point.latitude, point.longitude))
       .toList(growable: false);
 
-  double _sideFor(ResolvedWorldTrace trace, ResolvedWorldTrace? partner) {
-    return partner == null || trace.trace.id.compareTo(partner.trace.id) < 0
-        ? 1
-        : -1;
+  bool oppositeGeometry(List<LatLng> a, List<LatLng> b) {
+    if (a.length < 2 || b.length < 2) return false;
+    double low(List<LatLng> p, bool lat) =>
+        p.map((v) => lat ? v.latitude : v.longitude).reduce(math.min);
+    double high(List<LatLng> p, bool lat) =>
+        p.map((v) => lat ? v.latitude : v.longitude).reduce(math.max);
+    if (low(a, true) > high(b, true) ||
+        high(a, true) < low(b, true) ||
+        low(a, false) > high(b, false) ||
+        high(a, false) < low(b, false)) {
+      return false;
+    }
+    final index = a.length ~/ 2;
+    return _angleDifference(
+          _stableLocalBearing(a, index),
+          _stableLocalBearing(b, _nearestIndex(a[index], b)),
+        ).abs() >=
+        150;
   }
 
   double _stableLocalBearing(List<dynamic> points, int index) {

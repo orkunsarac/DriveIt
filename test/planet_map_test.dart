@@ -47,7 +47,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 301));
     repo.requests.last.complete(data(2));
     await tester.pump();
-    expect(controller.snapshot, isNull);
+    expect(controller.snapshot!.generation, BigInt.from(3));
     expect(controller.error, isNotNull);
     controller.dispose();
   });
@@ -164,7 +164,7 @@ void main() {
     expect(find.text('Tekrar Dene'), findsOneWidget);
     await tester.tap(find.text('Tekrar Dene'));
     await tester.pump(const Duration(milliseconds: 301));
-    repo.requests.last.complete(data(2, empty: true));
+    repo.requests.last.complete(data(3, empty: true));
     await tester.pump();
     expect(find.text('Bu bölgede henüz gezegen izi yok.'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());

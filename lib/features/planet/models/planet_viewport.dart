@@ -11,6 +11,35 @@ class PlanetViewport {
     'p_zoom': zoom,
   };
   String get key => '$south:$north:$west:$east:$zoom';
+  double get longitudeSpan => (east - west + 360) % 360;
+  bool get canFetch =>
+      zoom >= 10 &&
+      north - south <= 1 &&
+      longitudeSpan > 0 &&
+      longitudeSpan <= 1;
+  bool contains(PlanetViewport other) {
+    final offset = (other.west - west + 360) % 360;
+    return south <= other.south &&
+        north >= other.north &&
+        offset + other.longitudeSpan <= longitudeSpan + 1e-10;
+  }
+
+  /// 20% each side, bounded by the unchanged server one-degree guard.
+  PlanetViewport buffered() {
+    final latMargin = ((north - south) * .2).clamp(
+      0.0,
+      (1 - (north - south)) / 2,
+    );
+    final lonMargin = (longitudeSpan * .2).clamp(0.0, (1 - longitudeSpan) / 2);
+    double wrap(double longitude) => (longitude + 180) % 360 - 180;
+    return PlanetViewport(
+      (south - latMargin).clamp(-85.0, 85.0),
+      (north + latMargin).clamp(-85.0, 85.0),
+      wrap(west - lonMargin),
+      wrap(east + lonMargin),
+      zoom,
+    );
+  }
 }
 
 class PlanetTrace {

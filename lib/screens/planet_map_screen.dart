@@ -113,7 +113,7 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
     }
     final message =
         _data.error ??
-        (snapshot?.zoomIn == true
+        (_data.zoomIn
             ? 'Yolları görmek için haritaya yakınlaş.'
             : snapshot != null && snapshot.traces.isEmpty
             ? 'Bu bölgede henüz gezegen izi yok.'
@@ -182,7 +182,7 @@ class _PlanetMapScreenState extends State<PlanetMapScreen>
                       ),
                     ),
                   const Spacer(),
-                  if (_data.loading)
+                  if (_data.initialLoading)
                     const Padding(
                       padding: EdgeInsets.all(12),
                       child: CircularProgressIndicator(strokeWidth: 2),

@@ -11,6 +11,7 @@ class PlanetMapDrawing {
 }
 
 class PlanetMapPresentation {
+  static const minimumDisplayZoom = 9.0;
   static const palette = [
     Color(0xff53d7ff),
     Color(0xff3b93ff),
@@ -24,6 +25,7 @@ class PlanetMapPresentation {
   static const presentation = WorldTracePresentationService();
   static const visibility = WorldTraceVisibilityPolicy();
   static PlanetMapDrawing draw(PlanetSnapshot snapshot, double zoom) {
+    if (zoom < minimumDisplayZoom) return const PlanetMapDrawing({}, {});
     final partners = <String, PlanetTrace>{};
     final traces = snapshot.traces;
     for (var i = 0; i < traces.length; i++) {

@@ -6,13 +6,12 @@ import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_g
 import { evaluateCandidateSnapshot } from "./active_world_overlap_stage.ts";
 import { analyzeWorldScoring, RequestSourceLoader, type SourceRow } from "./world_scoring_stage.ts";
 import { planWorldMutation, commitWorldMutation } from "./world_mutation.ts";
+import { roadPayload } from "./validation_payload.ts";
 import {
   matchRoad, retryable, rules,
-  type MatchedSection,
 } from "./world_validation.ts";
 
 const bucket = "world-drive-sources";
-const providerId = "mapbox-map-matching-v5-driving";
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -208,38 +207,6 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
   return error(state && /^[a-z0-9_]{1,64}$/.test(state) ? state : "active_world_commit_failed", 503);
 }
 
-function roadPayload(sections: MatchedSection[], result: Awaited<ReturnType<typeof matchRoad>>) {
-  const line = (section: MatchedSection) => section.geometry.map(
-    (point) => [point.longitude, point.latitude],
-  );
-  return {
-    road: {
-      provider_id: providerId,
-      processing_version: rules.validatedRoadProcessingVersion,
-      valid_distance_meters: result.validDistanceMeters,
-      validation_status: result.status,
-      confidence: result.confidence === null ? null
-        : Math.min(1, Math.max(0, result.confidence)),
-      direction_key: result.directionKey,
-      average_heading_degrees: result.averageHeadingDegrees,
-      section_count: sections.length,
-      geometry: {
-        type: "MultiLineString",
-        coordinates: sections.map(line),
-      },
-    },
-    sections: sections.map((section, order) => ({
-      section_key: section.id,
-      section_order: order,
-      distance_meters: section.distanceMeters,
-      confidence: section.confidence,
-      source_trace_index: section.sourceTraceIndex,
-      source_chunk_index: section.sourceChunkIndex,
-      geometry: { type: "LineString", coordinates: line(section) },
-    })),
-  };
-}
-
 Deno.serve(async (request) => {
   if (request.method !== "POST") return error("method_not_allowed", 405);
   const authHeader = request.headers.get("authorization") ?? "";
@@ -362,7 +329,12 @@ Deno.serve(async (request) => {
     if (!result.sections.length) {
       return await fail("validation_" + result.failureKind.toLowerCase(), false, 422);
     }
-    const payload = roadPayload(result.sections, result);
+    let payload;
+    try {
+      payload = roadPayload(result);
+    } catch {
+      return await fail("validation_status_invalid", false, 422);
+    }
     const { data: persisted, error: persistError } = await admin.rpc(
       "finish_world_publish_validation",
       {

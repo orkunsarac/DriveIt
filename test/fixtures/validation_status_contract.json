@@ -1,0 +1,4 @@
+[
+  {"internal":"validated","persisted":"validated","route":[[40,29],[40,29.001]],"matchings":[[[29,40],[29.08,40]]]},
+  {"internal":"partiallyValidated","persisted":"partially_validated","route":[[40,29],[40,29.001]],"matchings":[[[29,40],[29.08,40]],[[29.1,40],[29.18,40]]]}
+]

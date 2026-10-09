@@ -12,24 +12,30 @@ import 'poster_canvas.dart';
 /// points every frame.
 class DriveRouteThumbnail extends StatelessWidget {
   DriveRouteThumbnail({super.key, required List<RoutePoint> route})
-    : _projected = _project(route);
+    : _projected = _project(route),
+      _breaks = {
+        for (var i = 0; i < route.length; i++)
+          if (route[i].breakBefore) i,
+      };
 
   final List<Offset> _projected;
+  final Set<int> _breaks;
 
   static List<Offset> _project(List<RoutePoint> route) =>
       List<Offset>.unmodifiable(projectPosterRoute(route));
 
   @override
   Widget build(BuildContext context) => CustomPaint(
-    painter: _DriveRouteThumbnailPainter(_projected),
+    painter: _DriveRouteThumbnailPainter(_projected, _breaks),
     child: const SizedBox.expand(),
   );
 }
 
 class _DriveRouteThumbnailPainter extends CustomPainter {
-  const _DriveRouteThumbnailPainter(this.points);
+  const _DriveRouteThumbnailPainter(this.points, this.breaks);
 
   final List<Offset> points;
+  final Set<int> breaks;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -63,16 +69,19 @@ class _DriveRouteThumbnailPainter extends CustomPainter {
     final top = (size.height - drawHeight) / 2;
     final fitted = points
         .map(
-          (p) => Offset(
-            left + (p.dx - minX) * scale,
-            top + (p.dy - minY) * scale,
-          ),
+          (p) =>
+              Offset(left + (p.dx - minX) * scale, top + (p.dy - minY) * scale),
         )
         .toList(growable: false);
 
     final path = Path()..moveTo(fitted.first.dx, fitted.first.dy);
-    for (final point in fitted.skip(1)) {
-      path.lineTo(point.dx, point.dy);
+    for (var i = 1; i < fitted.length; i++) {
+      final point = fitted[i];
+      if (breaks.contains(i)) {
+        path.moveTo(point.dx, point.dy);
+      } else {
+        path.lineTo(point.dx, point.dy);
+      }
     }
     canvas
       ..drawPath(

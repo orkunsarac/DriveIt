@@ -1,4 +1,5 @@
-// GENERATED CODE - DO NOT MODIFY BY HAND
+// Compatibility adapter: preserve legacy fields. Do not replace with generated
+// output unless the legacy pass-through and transitional field-2 tests pass.
 
 part of 'route_point.dart';
 
@@ -19,17 +20,33 @@ class RoutePointAdapter extends TypeAdapter<RoutePoint> {
     return RoutePoint(
       latitude: fields[0] as double,
       longitude: fields[1] as double,
+      breakBefore: fields.containsKey(254)
+          ? fields[254] as bool
+          : fields[2] is bool
+          ? fields[2] as bool
+          : false,
+      legacyHiveFields: Map<int, dynamic>.from(fields)
+        ..remove(0)
+        ..remove(1)
+        ..remove(254),
     );
   }
 
   @override
   void write(BinaryWriter writer, RoutePoint obj) {
     writer
-      ..writeByte(2)
+      ..writeByte(3 + obj.legacyHiveFields.length)
       ..writeByte(0)
       ..write(obj.latitude)
       ..writeByte(1)
-      ..write(obj.longitude);
+      ..write(obj.longitude)
+      ..writeByte(254)
+      ..write(obj.breakBefore);
+    for (final field in obj.legacyHiveFields.entries) {
+      writer
+        ..writeByte(field.key)
+        ..write(field.value);
+    }
   }
 
   @override

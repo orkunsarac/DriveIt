@@ -14,6 +14,12 @@ class CanonicalTelemetryPoint {
   final double accuracyMeters;
   final double distanceFromPreviousMeters;
   final double accelerationMps2;
+  final bool breakBefore;
+  final int gapDurationMicros;
+
+  /// Acquisition provenance, not a scoring rule. 'legacy' means not recorded.
+  final String speedSource;
+  final bool accelerationReliable;
 
   const CanonicalTelemetryPoint({
     required this.latitude,
@@ -25,6 +31,10 @@ class CanonicalTelemetryPoint {
     required this.accuracyMeters,
     required this.distanceFromPreviousMeters,
     required this.accelerationMps2,
+    this.breakBefore = false,
+    this.gapDurationMicros = 0,
+    this.speedSource = 'legacy',
+    this.accelerationReliable = true,
   });
 
   Map<String, dynamic> toMap() => {
@@ -37,6 +47,10 @@ class CanonicalTelemetryPoint {
     'accuracy': accuracyMeters,
     'distance': distanceFromPreviousMeters,
     'acceleration': accelerationMps2,
+    if (speedSource != 'legacy') 'speedSource': speedSource,
+    if (!accelerationReliable) 'accelerationReliable': false,
+    if (breakBefore) 'breakBefore': true,
+    if (gapDurationMicros > 0) 'gapDurationMicros': gapDurationMicros,
     'telemetryVersion': DriveTelemetryRecord.currentDataVersion,
   };
 
@@ -56,13 +70,22 @@ class CanonicalTelemetryPoint {
     final point = CanonicalTelemetryPoint(
       latitude: latitude.toDouble(),
       longitude: longitude.toDouble(),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(timestamp.toInt()),
+      timestamp: value['timeMicros'] is int
+          ? DateTime.fromMicrosecondsSinceEpoch(
+              value['timeMicros'] as int,
+              isUtc: value['timeIsUtc'] == true,
+            )
+          : DateTime.fromMillisecondsSinceEpoch(timestamp.toInt()),
       speedMps: math.max(0, number('speed')),
       headingDegrees: number('heading', -1),
       altitudeMeters: number('altitude'),
       accuracyMeters: math.max(0, number('accuracy', 999)),
       distanceFromPreviousMeters: math.max(0, number('distance')),
       accelerationMps2: number('acceleration'),
+      breakBefore: value['breakBefore'] == true,
+      gapDurationMicros: (value['gapDurationMicros'] as num?)?.toInt() ?? 0,
+      speedSource: value['speedSource'] as String? ?? 'legacy',
+      accelerationReliable: value['accelerationReliable'] != false,
     );
     if (!point.hasValidCoordinate) return null;
     return point;
@@ -73,6 +96,9 @@ class CanonicalTelemetryPoint {
       longitude.isFinite &&
       latitude.abs() <= 90 &&
       longitude.abs() <= 180;
+
+  bool get hasSpeedEvidence =>
+      speedSource != 'unavailable' && speedSource != 'held_estimate';
 }
 
 /// One persisted canonical timeline, addressed deterministically by drive ID.
@@ -83,11 +109,13 @@ class DriveTelemetryRecord {
   final int dataVersion;
   final DateTime createdAt;
   final List<CanonicalTelemetryPoint> points;
+  final Map<String, dynamic> acquisitionMetadata;
 
   const DriveTelemetryRecord({
     required this.driveSessionId,
     required this.dataVersion,
     required this.createdAt,
     required this.points,
+    this.acquisitionMetadata = const {},
   });
 }

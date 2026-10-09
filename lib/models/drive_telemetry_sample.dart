@@ -11,6 +11,9 @@ class DriveTelemetrySample {
   final double heading;
   final double altitudeMeters;
   final DateTime timestamp;
+  final double? canonicalAccelerationMps2;
+  final bool accelerationReliable;
+  final bool breakBefore;
 
   const DriveTelemetrySample({
     required this.latitude,
@@ -20,5 +23,8 @@ class DriveTelemetrySample {
     required this.heading,
     required this.altitudeMeters,
     required this.timestamp,
+    this.canonicalAccelerationMps2,
+    this.accelerationReliable = true,
+    this.breakBefore = false,
   });
 }

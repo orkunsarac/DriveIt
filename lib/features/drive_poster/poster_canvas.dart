@@ -516,6 +516,10 @@ class PosterCanvas extends StatelessWidget {
                                 painter: PosterRoutePainter(
                                   route,
                                   theme: theme,
+                                  breakIndices: {
+                                    for (var i = 0; i < drive.route.length; i++)
+                                      if (drive.route[i].breakBefore) i,
+                                  },
                                 ),
                               ),
                             ],
@@ -691,8 +695,13 @@ class _PosterPinPainter extends CustomPainter {
 }
 
 class PosterRoutePainter extends CustomPainter {
-  const PosterRoutePainter(this.points, {this.theme = PosterThemeData.classic});
+  const PosterRoutePainter(
+    this.points, {
+    this.theme = PosterThemeData.classic,
+    this.breakIndices = const {},
+  });
   final List<Offset> points;
+  final Set<int> breakIndices;
   final PosterThemeData theme;
 
   @override
@@ -700,7 +709,11 @@ class PosterRoutePainter extends CustomPainter {
     if (points.length < 2) return;
     final path = Path()..moveTo(points.first.dx, points.first.dy);
     for (var index = 1; index < points.length; index++) {
-      path.lineTo(points[index].dx, points[index].dy);
+      if (breakIndices.contains(index)) {
+        path.moveTo(points[index].dx, points[index].dy);
+      } else {
+        path.lineTo(points[index].dx, points[index].dy);
+      }
     }
     if (theme.routeGlowIntensity > 0) {
       canvas.drawPath(
@@ -753,7 +766,9 @@ class PosterRoutePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PosterRoutePainter oldDelegate) =>
-      oldDelegate.points != points || oldDelegate.theme != theme;
+      oldDelegate.points != points ||
+      oldDelegate.theme != theme ||
+      oldDelegate.breakIndices != breakIndices;
 }
 
 PosterLayout automaticPosterLayout(List<Offset> points) {

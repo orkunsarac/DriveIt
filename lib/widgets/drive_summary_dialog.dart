@@ -20,7 +20,11 @@ class DriveSummaryDialog {
     int stoppedSeconds = 0,
     required DriveMetrics metrics,
     required List<CanonicalTelemetryPoint> telemetry,
+    String? driveSessionId,
+    Map<String, dynamic> acquisitionMetadata = const {},
+    Future<void> Function(String driveId)? onSaved,
   }) {
+    var saving = false;
     return showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -133,40 +137,68 @@ class DriveSummaryDialog {
 
           ElevatedButton.icon(
             onPressed: () async {
-              final drive = DriveSession(
-                id: DateTime.now().millisecondsSinceEpoch.toString(),
-                date: DateTime.now(),
-                distance: totalDistance,
-                durationSeconds: driveDuration.inSeconds,
-                averageSpeed: averageSpeed,
-                maxSpeed: maxSpeed,
-                mapImagePath: mapImagePath,
-                route: route,
-                stopCount: stopCount,
-                stoppedSeconds: stoppedSeconds,
-                hardBrakeCount: metrics.hardBrakeCount,
-                hardAccelerationCount: metrics.hardAccelerationCount,
-                sharpTurnCount: metrics.sharpTurnCount,
-                maxAccelerationG: metrics.maxAccelerationG,
-                maxBrakingG: metrics.maxBrakingG,
-                maxCorneringSpeed: metrics.maxCorneringSpeed,
-                cornerCount: metrics.cornerCount,
-                maxAltitude: metrics.maxAltitude,
-                altitudeGain: metrics.altitudeGain,
-                altitudeLoss: metrics.altitudeLoss,
-                bestZeroToHundredSeconds: metrics.bestZeroToHundredSeconds,
-                bestSixtyToHundredSeconds: metrics.bestSixtyToHundredSeconds,
-              );
-
-              await DriveStorageService.saveDrive(drive, telemetry: telemetry);
-
-              if (context.mounted) {
-                Navigator.pop(context);
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("✅ Sürüş başarıyla kaydedildi")),
+              if (saving) return;
+              saving = true;
+              try {
+                final drive = DriveSession(
+                  id:
+                      driveSessionId ??
+                      DateTime.now().millisecondsSinceEpoch.toString(),
+                  date: DateTime.now(),
+                  distance: totalDistance,
+                  durationSeconds: driveDuration.inSeconds,
+                  averageSpeed: averageSpeed,
+                  maxSpeed: maxSpeed,
+                  mapImagePath: mapImagePath,
+                  route: route,
+                  stopCount: stopCount,
+                  stoppedSeconds: stoppedSeconds,
+                  hardBrakeCount: metrics.hardBrakeCount,
+                  hardAccelerationCount: metrics.hardAccelerationCount,
+                  sharpTurnCount: metrics.sharpTurnCount,
+                  maxAccelerationG: metrics.maxAccelerationG,
+                  maxBrakingG: metrics.maxBrakingG,
+                  maxCorneringSpeed: metrics.maxCorneringSpeed,
+                  cornerCount: metrics.cornerCount,
+                  maxAltitude: metrics.maxAltitude,
+                  altitudeGain: metrics.altitudeGain,
+                  altitudeLoss: metrics.altitudeLoss,
+                  bestZeroToHundredSeconds: metrics.bestZeroToHundredSeconds,
+                  bestSixtyToHundredSeconds: metrics.bestSixtyToHundredSeconds,
                 );
-                await offerDrivePoster(context, drive);
+
+                await DriveStorageService.saveDrive(
+                  drive,
+                  telemetry: telemetry,
+                  acquisitionMetadata: acquisitionMetadata,
+                );
+                if (onSaved != null) await onSaved(drive.id);
+
+                if (context.mounted) {
+                  Navigator.pop(context);
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("✅ Sürüş başarıyla kaydedildi"),
+                    ),
+                  );
+                  await offerDrivePoster(
+                    context,
+                    DriveStorageService.getDrive(drive.id) ?? drive,
+                  );
+                }
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text(
+                        'Kayıt tamamlanamadı. GPS oturumu kurtarma için korunuyor.',
+                      ),
+                    ),
+                  );
+                }
+              } finally {
+                saving = false;
               }
             },
             icon: const Icon(Icons.save),

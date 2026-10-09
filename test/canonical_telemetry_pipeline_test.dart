@@ -83,7 +83,9 @@ void main() {
 
     expect(second, isNotNull);
     expect(third, isNotNull);
-    expect(second!.accelerationMps2, closeTo(1, .05));
+    // First speed was unavailable: no measured derivative is invented.
+    expect(second!.accelerationMps2, 0);
+    expect(second.accelerationReliable, isFalse);
     expect(third!.accelerationMps2, closeTo(1, .05));
   });
 

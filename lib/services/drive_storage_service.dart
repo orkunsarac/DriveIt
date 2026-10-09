@@ -10,6 +10,9 @@ import '../features/my_world/persistence/my_world_hive.dart';
 import '../features/drive_score/services/drive_score_persistence_coordinator.dart';
 import 'drive_score_storage_service.dart';
 import 'drive_telemetry_storage_service.dart';
+import 'gps_session_runtime.dart';
+import 'gps_session_transfer.dart';
+import 'gps_hive_transfer_sink.dart';
 
 class DriveStorageService {
   static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
@@ -21,40 +24,48 @@ class DriveStorageService {
   static Future<void> saveDrive(
     DriveSession drive, {
     List<CanonicalTelemetryPoint>? telemetry,
+    Map<String, dynamic> acquisitionMetadata = const {},
   }) async {
-    var telemetryWritten = false;
+    final sessionId = acquisitionMetadata['sessionId'];
+    if (sessionId is String) {
+      final store = await openGpsJournal();
+      try {
+        final manifest = await GpsSessionTransfer(
+          store,
+          GpsHiveTransferSink(),
+        ).save(sessionId, driveTransferManifest(drive));
+        drive = driveFromTransferManifest(manifest);
+      } finally {
+        await store.close();
+      }
+    }
     try {
-      if (telemetry != null && telemetry.isNotEmpty) {
+      if (sessionId == null && telemetry != null && telemetry.isNotEmpty) {
         await DriveTelemetryStorageService.save(
           driveSessionId: drive.id,
           points: telemetry,
+          acquisitionMetadata: acquisitionMetadata,
         );
-        telemetryWritten = true;
       }
       await _ensureCareerTotals();
       final counted = List<String>.from(
-        _careerBox.get('countedIds', defaultValue: <String>[]),
+        (_careerBox.get('atomicTotals') as Map?)?['countedIds'] ??
+            _careerBox.get('countedIds', defaultValue: <String>[]),
       );
       if (!counted.contains(drive.id)) {
-        await _careerBox.put(
-          'totalDistance',
-          (_careerBox.get('totalDistance', defaultValue: 0.0) as num)
-                  .toDouble() +
-              drive.distance,
-        );
-        await _careerBox.put(
-          'totalDuration',
-          (_careerBox.get('totalDuration', defaultValue: 0) as num).toInt() +
-              drive.durationSeconds,
-        );
+        final distance = getCareerDistance() + drive.distance;
+        final duration = getCareerDurationSeconds() + drive.durationSeconds;
         counted.add(drive.id);
-        await _careerBox.put('countedIds', counted);
+        await _careerBox.put('atomicTotals', {
+          'totalDistance': distance,
+          'totalDuration': duration,
+          'countedIds': counted,
+        });
       }
-      await _box.put(drive.id, drive);
+      if (sessionId == null) await _box.put(drive.id, drive);
     } catch (_) {
-      if (telemetryWritten) {
-        await DriveTelemetryStorageService.delete(drive.id);
-      }
+      // Independent boxes may have partially committed. Never delete a durable
+      // telemetry prefix on failure; the SQLite transfer intent can retry it.
       rethrow;
     }
     try {
@@ -99,7 +110,8 @@ class DriveStorageService {
       final drives = _box.values.toList();
       return drives.fold<double>(0, (sum, d) => sum + d.distance);
     }
-    return (_careerBox.get('totalDistance', defaultValue: 0.0) as num)
+    return ((_careerBox.get('atomicTotals') as Map?)?['totalDistance'] ??
+            _careerBox.get('totalDistance', defaultValue: 0.0) as num)
         .toDouble();
   }
 
@@ -112,7 +124,9 @@ class DriveStorageService {
       final drives = _box.values.toList();
       return drives.fold<int>(0, (sum, d) => sum + d.durationSeconds);
     }
-    return (_careerBox.get('totalDuration', defaultValue: 0) as num).toInt();
+    return ((_careerBox.get('atomicTotals') as Map?)?['totalDuration'] ??
+            _careerBox.get('totalDuration', defaultValue: 0) as num)
+        .toInt();
   }
 
   static List<RoutePoint> getSymbolicRoute(List<DriveSession> drives) {

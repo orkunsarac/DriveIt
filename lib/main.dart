@@ -19,7 +19,8 @@ import 'services/supabase_account_service.dart';
 import 'features/my_world/services/my_world_runtime.dart';
 import 'features/onboarding/screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
-import 'screens/map_screen.dart';
+import 'screens/drive_recovery_screen.dart';
+import 'services/drive_recovery_status.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -55,15 +56,14 @@ void main() async {
   await initializeDateFormatting('tr_TR');
 
   await ForegroundService.init();
-  final activeDrive = await ForegroundService.isDriveActive();
-  final stopRequested = await ForegroundService.consumeStopRequest();
+  final recovery = await ForegroundService.isDriveActive();
   final profile = await ProfileStorageService.open();
   await SupabaseBootstrap.initializeIfConfigured();
   SupabaseAccountService.instance.startIdentitySync();
   final onboardingCompleted = profile.onboardingCompleted;
   runApp(
     DriveItApp(
-      resumeDrive: onboardingCompleted && (activeDrive || stopRequested),
+      recoveryStatus: onboardingCompleted ? recovery : null,
       initialScreen: onboardingCompleted
           ? const HomeScreen()
           : const OnboardingScreen(),
@@ -80,10 +80,12 @@ void main() async {
 class DriveItApp extends StatefulWidget {
   final Widget initialScreen;
   final bool resumeDrive;
+  final DriveRecoveryStatus? recoveryStatus;
   const DriveItApp({
     super.key,
     this.initialScreen = const HomeScreen(),
     this.resumeDrive = false,
+    this.recoveryStatus,
   });
 
   @override
@@ -96,7 +98,7 @@ class _DriveItAppState extends State<DriveItApp> {
   void _onTaskData(Object data) {
     if (data is Map && data['openDrive'] == true) {
       driveNavigatorKey.currentState?.push(
-        MaterialPageRoute(builder: (_) => const MapScreen(resumeDrive: true)),
+        MaterialPageRoute(builder: (_) => const DriveRecoveryScreen()),
       );
     }
   }
@@ -105,11 +107,15 @@ class _DriveItAppState extends State<DriveItApp> {
   void initState() {
     super.initState();
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
-    if (widget.resumeDrive) {
+    final recovery = widget.recoveryStatus;
+    if (widget.resumeDrive ||
+        (recovery != null && !recovery.canStartNewDrive)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         driveNavigatorKey.currentState?.push(
-          MaterialPageRoute(builder: (_) => const MapScreen(resumeDrive: true)),
+          MaterialPageRoute(
+            builder: (_) => DriveRecoveryScreen(initialStatus: recovery),
+          ),
         );
       });
     }

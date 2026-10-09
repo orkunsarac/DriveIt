@@ -6,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class RouteService {
   final List<LatLng> _routePoints = [];
+  final Set<int> _breaks = {};
   double _totalDistance = 0;
 
   double _lastSegmentDistance = 0;
@@ -16,6 +17,7 @@ class RouteService {
 
   void reset() {
     _routePoints.clear();
+    _breaks.clear();
     _totalDistance = 0;
     _lastSegmentDistance = 0;
   }
@@ -67,6 +69,11 @@ class RouteService {
       _routePoints.add(coordinate);
       return true;
     }
+    if (point.breakBefore) {
+      _breaks.add(_routePoints.length);
+      _routePoints.add(coordinate);
+      return true;
+    }
     if (point.distanceFromPreviousMeters <= 0) return false;
     _lastSegmentDistance = point.distanceFromPreviousMeters;
     _totalDistance += point.distanceFromPreviousMeters;
@@ -75,23 +82,35 @@ class RouteService {
   }
 
   Set<Polyline> buildPolylines() {
+    final segments = <List<LatLng>>[];
+    for (var i = 0; i < _routePoints.length; i++) {
+      if (segments.isEmpty || _breaks.contains(i)) segments.add([]);
+      segments.last.add(_routePoints[i]);
+    }
     return {
-      Polyline(
-        polylineId: const PolylineId('drive_route'),
-        points: _routePoints,
-        color: const Color(0xFF2196F3),
-        width: 6,
-        jointType: JointType.round,
-        startCap: Cap.roundCap,
-        endCap: Cap.roundCap,
-      ),
+      for (var i = 0; i < segments.length; i++)
+        if (segments[i].length >= 2)
+          Polyline(
+            polylineId: PolylineId('drive_route_$i'),
+            points: segments[i],
+            color: const Color(0xFF2196F3),
+            width: 6,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
     };
   }
 
   List<RoutePoint> getRouteForSave() {
-    return _routePoints
-        .map((p) => RoutePoint(latitude: p.latitude, longitude: p.longitude))
-        .toList();
+    return [
+      for (var i = 0; i < _routePoints.length; i++)
+        RoutePoint(
+          latitude: _routePoints[i].latitude,
+          longitude: _routePoints[i].longitude,
+          breakBefore: _breaks.contains(i),
+        ),
+    ];
   }
 
   Set<Polyline> get polylines => buildPolylines();

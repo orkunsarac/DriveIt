@@ -70,6 +70,23 @@ class DriveTelemetryAnalyzer {
 
     for (var index = 0; index < samples.length; index++) {
       final sample = samples[index];
+      if (sample.breakBefore || !sample.accelerationReliable) {
+        speedWindow.clear();
+        previousSpeed = null;
+        previousTime = null;
+        accelerationEvent = false;
+        brakeEvent = false;
+        zeroStart = null;
+        sixtyStart = null;
+        pendingZeroFinish = null;
+        pendingSixtyFinish = null;
+        previousAltitude = null;
+        turnDegrees = 0;
+        turnSamples = 0;
+        quietTurnSamples = 0;
+        cornerCounted = false;
+        sharpCounted = false;
+      }
       speedWindow.add(sample.speedMps);
       if (speedWindow.length > 3) speedWindow.removeAt(0);
       final speed = _median(speedWindow);
@@ -95,7 +112,8 @@ class DriveTelemetryAnalyzer {
 
       if (previousSpeed != null && previousTime != null) {
         final dt = _secondsBetween(previousTime, sample.timestamp);
-        final acceleration = (speed - previousSpeed) / dt;
+        final acceleration =
+            sample.canonicalAccelerationMps2 ?? (speed - previousSpeed) / dt;
         if (acceleration.abs() <=
             DriveAnalysisRules.maximumPlausibleAccelerationMps2) {
           maxAcceleration = math.max(maxAcceleration, acceleration);
@@ -246,6 +264,9 @@ class DriveTelemetryAnalyzer {
               heading: rawSample.heading,
               altitudeMeters: rawSample.altitudeMeters,
               timestamp: rawSample.timestamp,
+              canonicalAccelerationMps2: rawSample.canonicalAccelerationMps2,
+              accelerationReliable: rawSample.accelerationReliable,
+              breakBefore: rawSample.breakBefore,
             )
           : rawSample;
       if (accepted.isEmpty) {
@@ -254,6 +275,14 @@ class DriveTelemetryAnalyzer {
       }
       final previous = accepted.last;
       final dt = _secondsBetween(previous.timestamp, sample.timestamp);
+      if (sample.canonicalAccelerationMps2 != null) {
+        // Already qualified by the single canonical acquisition pipeline.
+        // Do not infer a second acceleration across rebaselines or GPS gaps.
+        if (dt >= DriveAnalysisRules.minimumSampleIntervalSeconds) {
+          accepted.add(sample);
+        }
+        continue;
+      }
       if (dt < DriveAnalysisRules.minimumSampleIntervalSeconds ||
           dt > DriveAnalysisRules.maximumSampleIntervalSeconds) {
         continue;

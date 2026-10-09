@@ -13,6 +13,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import '../services/gps_failure.dart';
+import '../services/drive_recovery_status.dart';
+import '../widgets/gps_recovery_notice.dart';
 
 class MapScreen extends StatefulWidget {
   final bool resumeDrive;
@@ -49,7 +53,15 @@ class _MapScreenState extends State<MapScreen> {
   int stoppedSeconds = 0;
   Timer? elapsedTimer;
   Timer? backgroundSyncTimer;
-  int _backgroundRouteIndex = 0;
+  String? _gpsSessionId;
+  DateTime? _gpsStoppedAt;
+  int _lastGpsSequence = 0;
+  bool _syncBusy = false;
+  bool _stopping = false;
+  String? _gpsWarning;
+  bool _gpsWaiting = false;
+  GpsFailure? _recoveryFailure;
+  bool _recovering = false;
   final List<DriveTelemetrySample> _telemetrySamples = [];
   final List<CanonicalTelemetryPoint> _canonicalTelemetry = [];
 
@@ -67,6 +79,87 @@ class _MapScreenState extends State<MapScreen> {
   bool _isCanonicalMoving = false;
 
   void _syncRouteOverlay() => visiblePolylines = routeService.polylines;
+  void _onGpsTaskData(Object data) {
+    if (data is Map && data['gpsRecordingError'] == false && mounted) {
+      setState(() {
+        _gpsWarning = null;
+        _gpsWaiting = false;
+      });
+    }
+    if (data is Map &&
+        data['gpsRecordingError'] == true &&
+        data['gpsErrorCode'] is String) {
+      _warnGps(GpsFailure.fromId(data['gpsErrorCode'] as String));
+    }
+  }
+
+  void _warnGps([
+    Object? error,
+    GpsErrorCode fallback = GpsErrorCode.recovery,
+  ]) {
+    if (!mounted) return;
+    final failure = error == null
+        ? GpsFailure(fallback)
+        : GpsFailure.from(error, fallback);
+    failure.report('map_ui');
+    setState(() {
+      _gpsWarning = '${failure.id}: ${failure.description}';
+      _gpsWaiting = failure.code == GpsErrorCode.gpsUnavailable;
+      if (_gpsWaiting) currentSpeed = 0;
+    });
+  }
+
+  Future<void> _syncGps({bool finishing = false}) async {
+    if (_syncBusy) return;
+    _syncBusy = true;
+    try {
+      final id = _gpsSessionId;
+      if (id == null) throw GpsFailure(GpsErrorCode.recovery);
+      final saved = await ForegroundService.readPoints(id, _lastGpsSequence);
+      if (!mounted) return;
+      final session = await ForegroundService.activeSession();
+      if (!mounted) return;
+      setState(() {
+        if (session?.error != null) {
+          final failure = GpsFailure.fromId(session!.error!);
+          _gpsWarning = '${failure.id}: ${failure.description}';
+          _gpsWaiting = failure.code == GpsErrorCode.gpsUnavailable;
+        } else if (saved.isNotEmpty) {
+          _gpsWarning = null;
+        }
+        for (final value in saved) {
+          if (value['sessionId'] != id) {
+            throw StateError('GPS session mismatch');
+          }
+          final seq = value['sequence'] as int;
+          if (seq != _lastGpsSequence + 1) throw StateError('GPS sequence gap');
+          final point = _recordBackgroundTelemetry(value);
+          if (point == null) throw StateError('GPS journal point invalid');
+          _consumeCanonicalPoint(point);
+          _lastGpsSequence = seq;
+          _driveOrigin ??= LatLng(point.latitude, point.longitude);
+          _updateLocationMarker(
+            point.latitude,
+            point.longitude,
+            heading: point.headingDegrees,
+          );
+        }
+      });
+    } catch (error) {
+      _warnGps(error, GpsErrorCode.sqliteRead);
+      if (mounted) {
+        setState(
+          () => _recoveryFailure = GpsFailure.from(
+            error,
+            GpsErrorCode.sqliteRead,
+          ),
+        );
+      }
+      if (finishing) rethrow;
+    } finally {
+      _syncBusy = false;
+    }
+  }
 
   CanonicalTelemetryPoint? _recordBackgroundTelemetry(
     Map<String, dynamic> value,
@@ -87,6 +180,9 @@ class _MapScreenState extends State<MapScreen> {
         heading: point.headingDegrees,
         altitudeMeters: point.altitudeMeters,
         timestamp: point.timestamp,
+        canonicalAccelerationMps2: point.accelerationMps2,
+        accelerationReliable: point.accelerationReliable,
+        breakBefore: point.breakBefore,
       ),
     );
     return point;
@@ -221,6 +317,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<bool> _handleBack() async {
+    if (_recoveryFailure != null) return true; // Leaving never stops service.
     if (isCountingDown) return false;
     if (!isDriving) return true;
     if (!mounted) return false;
@@ -377,7 +474,7 @@ class _MapScreenState extends State<MapScreen> {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
 
     if (!serviceEnabled) {
-      return;
+      throw GpsFailure(GpsErrorCode.gpsUnavailable);
     }
 
     LocationPermission permission = await Geolocator.checkPermission();
@@ -387,10 +484,14 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      return;
+      throw GpsFailure(GpsErrorCode.gpsUnavailable);
     }
 
-    currentPosition = await Geolocator.getCurrentPosition();
+    currentPosition = await Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        timeLimit: Duration(seconds: 15),
+      ),
+    );
     if (mounted) {
       setState(
         () => _updateLocationMarker(
@@ -409,7 +510,16 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> startDriving() async {
-    if (isDriving || isCountingDown) return;
+    if (isDriving || isCountingDown || _recovering) return;
+    final status = await ForegroundService.inspectRecovery();
+    if (!mounted) return;
+    if (!status.canStartNewDrive) {
+      setState(
+        () => _recoveryFailure =
+            status.failure ?? GpsFailure(GpsErrorCode.recovery),
+      );
+      return;
+    }
     setState(() {
       isCountingDown = true;
       countdownValue = 3;
@@ -424,18 +534,31 @@ class _MapScreenState extends State<MapScreen> {
       isCountingDown = false;
       countdownValue = 0;
     });
-    await _startDrivingSession();
+    try {
+      await _startDrivingSession();
+    } catch (error) {
+      _warnGps(error);
+      if (mounted) {
+        setState(
+          () =>
+              _recoveryFailure = GpsFailure.from(error, GpsErrorCode.recovery),
+        );
+      }
+    }
   }
 
   Future<void> _startDrivingSession() async {
     if (isDriving) return;
 
-    await ForegroundService.start();
+    final session = await ForegroundService.start();
 
     setState(() {
       routeService.reset();
       visiblePolylines = {};
-      _backgroundRouteIndex = 0;
+      _gpsSessionId = session.id;
+      _gpsStoppedAt = null;
+      _lastGpsSequence = 0;
+      _gpsWarning = null;
       _telemetrySamples.clear();
       _canonicalTelemetry.clear();
       locationMarkers = locationMarkers
@@ -451,7 +574,7 @@ class _MapScreenState extends State<MapScreen> {
       averageSpeed = 0;
       maxSpeed = 0;
 
-      driveStartTime = DateTime.now();
+      driveStartTime = session.startedAt;
       _driveOrigin = null;
       elapsedSeconds = 0;
       stopCount = 0;
@@ -466,28 +589,7 @@ class _MapScreenState extends State<MapScreen> {
     backgroundSyncTimer?.cancel();
     backgroundSyncTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       if (!mounted || !isDriving) return;
-      final saved = await ForegroundService.readBackgroundRoute();
-      if (saved.isEmpty) return;
-      if (!mounted) return;
-      setState(() {
-        final newPoints = saved.skip(_backgroundRouteIndex).toList();
-        _backgroundRouteIndex = saved.length;
-        for (final value in newPoints) {
-          final point = _recordBackgroundTelemetry(value);
-          if (point != null) _consumeCanonicalPoint(point);
-        }
-        final last = saved.last;
-        final latitude = last['lat'];
-        final longitude = last['lng'];
-        final heading = last['heading'];
-        if (latitude is num && longitude is num) {
-          _updateLocationMarker(
-            latitude.toDouble(),
-            longitude.toDouble(),
-            heading: heading is num ? heading.toDouble() : null,
-          );
-        }
-      });
+      await _syncGps();
     });
 
     positionStream =
@@ -497,26 +599,51 @@ class _MapScreenState extends State<MapScreen> {
             distanceFilter: 0,
             intervalDuration: Duration(milliseconds: 500),
           ),
-        ).listen((Position position) {
-          setState(() {
-            _driveOrigin ??= LatLng(position.latitude, position.longitude);
-            _updateLocationMarker(
-              position.latitude,
-              position.longitude,
-              heading: position.heading,
-            );
-            _maybeSetStartMarker(position.latitude, position.longitude);
-          });
+        ).listen(
+          (Position position) {
+            if (!mounted) return;
+            setState(() {
+              _driveOrigin ??= LatLng(position.latitude, position.longitude);
+              _updateLocationMarker(
+                position.latitude,
+                position.longitude,
+                heading: position.heading,
+              );
+              _maybeSetStartMarker(position.latitude, position.longitude);
+            });
 
-          mapController?.animateCamera(
-            CameraUpdate.newLatLng(
-              LatLng(position.latitude, position.longitude),
-            ),
-          );
-        });
+            mapController?.animateCamera(
+              CameraUpdate.newLatLng(
+                LatLng(position.latitude, position.longitude),
+              ),
+            );
+          },
+          onError: (Object error) =>
+              _warnGps(error, GpsErrorCode.gpsUnavailable),
+        );
   }
 
   Future<void> stopDriving() async {
+    if (_stopping) return;
+    _stopping = true;
+    try {
+      await _stopDrivingSession();
+    } catch (error) {
+      _warnGps(error, GpsErrorCode.serviceStop);
+      if (mounted) {
+        setState(
+          () => _recoveryFailure = GpsFailure.from(
+            error,
+            GpsErrorCode.serviceStop,
+          ),
+        );
+      }
+    } finally {
+      _stopping = false;
+    }
+  }
+
+  Future<void> _stopDrivingSession() async {
     // Capture foreground points before stopping; service shutdown persistence
     // is asynchronous and must not race with the final session snapshot.
     final routeBeforeStop = routeService.getRouteForSave();
@@ -524,18 +651,12 @@ class _MapScreenState extends State<MapScreen> {
     elapsedTimer?.cancel();
     backgroundSyncTimer?.cancel();
 
-    await Future<void>.delayed(const Duration(milliseconds: 250));
     stopCount = await ForegroundService.readStopCount();
     stoppedSeconds = await ForegroundService.readStoppedSeconds();
-    final backgroundRoute = await ForegroundService.readBackgroundRoute();
-    final remainingBackgroundPoints = backgroundRoute.skip(
-      _backgroundRouteIndex,
-    );
-    for (final value in remainingBackgroundPoints) {
-      final point = _recordBackgroundTelemetry(value);
-      if (point != null) _consumeCanonicalPoint(point);
+    while (_syncBusy) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
     }
-    _backgroundRouteIndex = backgroundRoute.length;
+    await _syncGps(finishing: true);
     _syncRouteOverlay();
 
     await positionStream?.cancel();
@@ -544,7 +665,17 @@ class _MapScreenState extends State<MapScreen> {
       isDriving = false;
     });
 
-    driveDuration = DateTime.now().difference(driveStartTime!);
+    _gpsStoppedAt = (await ForegroundService.activeSession())?.stoppedAt;
+    final journal = await ForegroundService.journal;
+    final session = _gpsSessionId == null
+        ? null
+        : await journal.session(_gpsSessionId!);
+    final events = _gpsSessionId == null
+        ? const <Map<String, Object?>>[]
+        : await journal.events(_gpsSessionId!);
+    driveDuration = (_gpsStoppedAt ?? DateTime.now()).difference(
+      driveStartTime!,
+    );
 
     if (driveDuration.inSeconds > 0) {
       averageSpeed =
@@ -575,6 +706,17 @@ class _MapScreenState extends State<MapScreen> {
       stoppedSeconds: stoppedSeconds,
       metrics: metrics,
       telemetry: _canonicalTelemetry,
+      driveSessionId: _gpsSessionId,
+      acquisitionMetadata: {
+        'sessionId': _gpsSessionId,
+        'startedAtMicros': session?.startedAt.microsecondsSinceEpoch,
+        'stopRequestedAtMicros': session?.stoppedAt?.microsecondsSinceEpoch,
+        'finalSequence': _lastGpsSequence,
+        'events': events,
+      },
+      onSaved: _gpsSessionId == null
+          ? null
+          : (id) => ForegroundService.acknowledgeSaved(_gpsSessionId!, id),
     );
   }
 
@@ -586,88 +728,131 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-
-    if (widget.resumeDrive) {
-      isDriving = true;
-      driveStartTime = null;
-    }
-
+    FlutterForegroundTask.addTaskDataCallback(_onGpsTaskData);
+    _recovering = widget.resumeDrive;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await requestPermissions();
-      await _createArrowIcon();
-      await _createStationaryIcon();
-      await _createEndpointIcons();
-      await getCurrentLocation();
-      if (widget.resumeDrive) {
-        driveStartTime =
-            await ForegroundService.readDriveStartTime() ?? DateTime.now();
-        elapsedSeconds = DateTime.now().difference(driveStartTime!).inSeconds;
-        elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-          if (!mounted || !isDriving || driveStartTime == null) return;
-          setState(
-            () => elapsedSeconds = DateTime.now()
-                .difference(driveStartTime!)
-                .inSeconds,
-          );
-        });
-        final savedRoute = await ForegroundService.readBackgroundRoute();
-        for (final value in savedRoute) {
-          final point = _recordBackgroundTelemetry(value);
-          if (point != null) _consumeCanonicalPoint(point);
-        }
-        _backgroundRouteIndex = savedRoute.length;
-        if (savedRoute.isNotEmpty &&
-            savedRoute.first['lat'] is num &&
-            savedRoute.first['lng'] is num) {
-          _driveOrigin = LatLng(
-            (savedRoute.first['lat'] as num).toDouble(),
-            (savedRoute.first['lng'] as num).toDouble(),
-          );
-        }
-        positionStream =
-            Geolocator.getPositionStream(
-              locationSettings: AndroidSettings(
-                accuracy: LocationAccuracy.bestForNavigation,
-                distanceFilter: 0,
-                intervalDuration: Duration(milliseconds: 500),
-              ),
-            ).listen((position) {
-              if (!mounted) return;
-              setState(() {
-                _driveOrigin ??= LatLng(position.latitude, position.longitude);
-                _updateLocationMarker(
-                  position.latitude,
-                  position.longitude,
-                  heading: position.heading,
-                );
-                _maybeSetStartMarker(position.latitude, position.longitude);
-              });
-            });
-        backgroundSyncTimer = Timer.periodic(const Duration(seconds: 1), (
-          _,
-        ) async {
-          if (!mounted || !isDriving) return;
-          final saved = await ForegroundService.readBackgroundRoute();
-          if (saved.length <= _backgroundRouteIndex || !mounted) return;
-          final newPoints = saved.skip(_backgroundRouteIndex).toList();
-          _backgroundRouteIndex = saved.length;
+      try {
+        await requestPermissions();
+        await _createArrowIcon();
+        await _createStationaryIcon();
+        await _createEndpointIcons();
+        if (widget.resumeDrive) await _restoreSession();
+        if (!mounted || _recoveryFailure != null) return;
+        await getCurrentLocation();
+      } catch (error) {
+        _warnGps(error, GpsErrorCode.gpsUnavailable);
+        if (widget.resumeDrive && mounted && _recovering) {
           setState(() {
-            for (final value in newPoints) {
-              final point = _recordBackgroundTelemetry(value);
-              if (point != null) _consumeCanonicalPoint(point);
-            }
+            _recovering = false;
+            _recoveryFailure = GpsFailure.from(error, GpsErrorCode.recovery);
           });
-        });
-        if (widget.finishOnOpen) {
-          await Future<void>.delayed(const Duration(milliseconds: 350));
-          if (mounted) await stopDriving();
         }
       }
     });
   }
 
+  Future<void> _restoreSession() async {
+    if (!mounted) return;
+    setState(() {
+      _recovering = true;
+      _recoveryFailure = null;
+    });
+    try {
+      final status = await ForegroundService.inspectRecovery();
+      if (!status.hasVerifiedSession) {
+        if (status.kind == DriveRecoveryKind.none) {
+          if (mounted) {
+            setState(() {
+              isDriving = false;
+              _recovering = false;
+            });
+          }
+          return;
+        }
+        throw status.failure ?? GpsFailure(GpsErrorCode.recovery);
+      }
+      final session = status.session!;
+      elapsedTimer?.cancel();
+      backgroundSyncTimer?.cancel();
+      await positionStream?.cancel();
+      while (_syncBusy) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      if (!mounted) return;
+      // Rebuild UI only from immutable journal, never re-filter or update Hive.
+      routeService.reset();
+      _canonicalTelemetry.clear();
+      _telemetrySamples.clear();
+      maxSpeed = 0;
+      currentSpeed = 0;
+      _lastGpsSequence = 0;
+      _gpsSessionId = session.id;
+      _gpsStoppedAt = session.stoppedAt;
+      driveStartTime = session.startedAt;
+      await _syncGps(finishing: true);
+      if (!mounted) return;
+      setState(() {
+        isDriving = true; // Only after verified session AND successful replay.
+        elapsedSeconds = (_gpsStoppedAt ?? DateTime.now())
+            .difference(driveStartTime!)
+            .inSeconds;
+      });
+      await ForegroundService.resumeRecording();
+      elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted && isDriving) {
+          setState(
+            () => elapsedSeconds = (_gpsStoppedAt ?? DateTime.now())
+                .difference(driveStartTime!)
+                .inSeconds,
+          );
+        }
+      });
+      if (session.state == 'recording') {
+        positionStream =
+            Geolocator.getPositionStream(
+              locationSettings: AndroidSettings(
+                accuracy: LocationAccuracy.bestForNavigation,
+                distanceFilter: 0,
+                intervalDuration: const Duration(milliseconds: 500),
+              ),
+            ).listen(
+              (position) {
+                if (!mounted) return;
+                setState(
+                  () => _updateLocationMarker(
+                    position.latitude,
+                    position.longitude,
+                    heading: position.heading,
+                  ),
+                );
+              },
+              onError: (Object error) =>
+                  _warnGps(error, GpsErrorCode.gpsUnavailable),
+            );
+      }
+      backgroundSyncTimer = Timer.periodic(const Duration(seconds: 1), (
+        _,
+      ) async {
+        if (mounted && isDriving) await _syncGps();
+      });
+      if (mounted) setState(() => _recovering = false);
+      if (widget.finishOnOpen && mounted) await stopDriving();
+    } catch (error) {
+      final failure = GpsFailure.from(error, GpsErrorCode.recovery);
+      failure.report('restore');
+      // Do not stop a verified background recorder or alter its session.
+      if (mounted) {
+        setState(() {
+          _recovering = false;
+          _recoveryFailure = failure;
+        });
+      }
+    }
+  }
+
   @override
   void dispose() {
+    FlutterForegroundTask.removeTaskDataCallback(_onGpsTaskData);
     elapsedTimer?.cancel();
     backgroundSyncTimer?.cancel();
     positionStream?.cancel();
@@ -677,6 +862,19 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_recovering) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_recoveryFailure != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Sürüş kurtarma')),
+        body: GpsRecoveryNotice(
+          failure: _recoveryFailure!,
+          onRetry: _restoreSession,
+          onLeave: () => Navigator.maybePop(context),
+        ),
+      );
+    }
     return WillPopScope(
       onWillPop: _handleBack,
       child: Scaffold(
@@ -811,6 +1009,24 @@ class _MapScreenState extends State<MapScreen> {
             ),
             Positioned(left: 16, right: 16, bottom: 16, child: _drivePanel()),
             if (isCountingDown) _countdownOverlay(),
+            if (_gpsWarning != null)
+              Positioned(
+                top: MediaQuery.paddingOf(context).top + 12,
+                left: 16,
+                right: 16,
+                child: Material(
+                  color: _gpsWaiting
+                      ? Colors.orange.shade900
+                      : Colors.red.shade900,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      _gpsWarning!,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
         floatingActionButton: null /* FloatingActionButton.extended(

@@ -47,7 +47,11 @@ class DriveFeatureExtractor {
         0,
         double.infinity,
       );
-      smoothedAcceleration = index == 0
+      // Acquisition-quality boundary: never turn an unmeasured derivative or
+      // GPS segment boundary into a smoothed acceleration/braking event.
+      smoothedAcceleration = !point.accelerationReliable || point.breakBefore
+          ? 0
+          : index == 0
           ? point.accelerationMps2
           : smoothedAcceleration +
                 DriveDetectionCalibration.accelerationSmoothingFactor *
@@ -60,9 +64,11 @@ class DriveFeatureExtractor {
         final dt =
             point.timestamp.difference(previous.timestamp).inMicroseconds /
             1000000;
-        if (dt > 0) {
-          if (point.speedMps <=
-              DriveDetectionCalibration.stoppedSpeedMps) {
+        if (point.breakBefore || !point.accelerationReliable) {
+          stationaryDuration = 0;
+          movingDuration = 0;
+        } else if (dt > 0) {
+          if (point.speedMps <= DriveDetectionCalibration.stoppedSpeedMps) {
             stationaryDuration += dt;
             movingDuration = 0;
           } else {
@@ -71,6 +77,8 @@ class DriveFeatureExtractor {
           }
         }
         if (dt > 0 &&
+            !point.breakBefore &&
+            point.accelerationReliable &&
             point.speedMps >= DriveDetectionCalibration.cornerMinimumSpeedMps) {
           headingDelta = _shortestHeadingDelta(
             previous.headingDegrees,

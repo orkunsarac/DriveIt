@@ -49,15 +49,21 @@ class _NeonRoutePainter extends CustomPainter {
       );
       points.add(point);
     }
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (var i = 1; i < points.length - 1; i++) {
-      final mid = Offset(
-        (points[i].dx + points[i + 1].dx) / 2,
-        (points[i].dy + points[i + 1].dy) / 2,
-      );
-      path.quadraticBezierTo(points[i].dx, points[i].dy, mid.dx, mid.dy);
+    final path = Path();
+    var segmentStart = 0;
+    for (var end = 1; end <= points.length; end++) {
+      if (end < points.length && !route[end].breakBefore) continue;
+      path.moveTo(points[segmentStart].dx, points[segmentStart].dy);
+      for (var i = segmentStart + 1; i < end - 1; i++) {
+        final mid = Offset(
+          (points[i].dx + points[i + 1].dx) / 2,
+          (points[i].dy + points[i + 1].dy) / 2,
+        );
+        path.quadraticBezierTo(points[i].dx, points[i].dy, mid.dx, mid.dy);
+      }
+      path.lineTo(points[end - 1].dx, points[end - 1].dy);
+      segmentStart = end;
     }
-    path.lineTo(points.last.dx, points.last.dy);
     final glow = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 5

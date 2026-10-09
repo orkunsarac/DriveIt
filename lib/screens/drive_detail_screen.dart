@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../models/route_point.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../features/drive_replay/drive_replay_screen.dart';
@@ -10,6 +11,7 @@ import '../features/world_publish/widgets/drive_world_publish_section.dart';
 import '../features/world_publish/services/world_publish_service.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
+import '../services/drive_diagnostic_export.dart';
 import '../theme/drive_map_visuals.dart';
 import '../widgets/drive_score_summary_section.dart';
 
@@ -34,6 +36,42 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   late final Set<Polyline> _polylines;
   Set<Marker> _markers = {};
   late final TextEditingController _nameController;
+  bool _exporting = false;
+
+  Future<void> _exportDiagnostic() async {
+    if (_exporting) return;
+    setState(() => _exporting = true);
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Tanılama JSON Dışa Aktar'),
+          content: const Text(
+            'Bu dosya hassas konum ve zaman bilgileri içerir. Yalnız güvendiğin kişilerle paylaş. Sürüş kayıtları değiştirilmeyecek.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('İptal'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Dışa Aktar'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) await DriveDiagnosticExport.share(widget.drive.id);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Tanılama dosyası dışa aktarılamadı.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
+  }
 
   @override
   void initState() {
@@ -53,20 +91,21 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   void _createPolyline() {
-    final points = widget.drive.route
-        .map((point) => LatLng(point.latitude, point.longitude))
-        .toList();
+    final segments = routeSegments(widget.drive.route);
     _polylines = {
-      if (points.length > 1)
-        Polyline(
-          polylineId: const PolylineId('drive'),
-          points: points,
-          width: DriveMapVisuals.activeRouteWidth,
-          color: DriveMapVisuals.activeRouteColor,
-          jointType: JointType.round,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-        ),
+      for (var i = 0; i < segments.length; i++)
+        if (segments[i].length > 1)
+          Polyline(
+            polylineId: PolylineId('drive_$i'),
+            points: segments[i]
+                .map((p) => LatLng(p.latitude, p.longitude))
+                .toList(),
+            width: DriveMapVisuals.activeRouteWidth,
+            color: DriveMapVisuals.activeRouteColor,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
     };
   }
 
@@ -261,6 +300,22 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
         bottom: false,
         child: CustomScrollView(
           slivers: [
+            SliverToBoxAdapter(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: PopupMenuButton<String>(
+                  tooltip: 'Sürüş seçenekleri',
+                  enabled: !_exporting,
+                  onSelected: (_) => _exportDiagnostic(),
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                      value: 'diagnostic',
+                      child: Text('Tanılama JSON Dışa Aktar'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
             SliverToBoxAdapter(
               child: _Header(
                 title: _nameController.text.isEmpty

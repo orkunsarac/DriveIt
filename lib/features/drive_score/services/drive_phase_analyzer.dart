@@ -200,6 +200,23 @@ class DrivePhaseAnalyzer {
     int? lastMatching;
     for (var index = 0; index < features.length; index++) {
       final feature = features[index];
+      // Unknown acquisition values cannot bridge an event or prove a stop.
+      // Thresholds/weights are unchanged; all samples remain in the timeline.
+      if (feature.point.breakBefore || !feature.point.hasSpeedEvidence) {
+        if (start != null && lastMatching != null) {
+          _finishRun(
+            result,
+            features,
+            start,
+            lastMatching,
+            minimumDuration,
+            validate,
+          );
+        }
+        start = null;
+        lastMatching = null;
+        if (!feature.point.hasSpeedEvidence) continue;
+      }
       if (start == null) {
         if (enters(feature)) {
           start = index;
@@ -258,6 +275,12 @@ class DrivePhaseAnalyzer {
     final result = <TrafficContext>[];
     var start = 0;
     for (var end = 0; end < features.length; end++) {
+      if (!features[end].point.hasSpeedEvidence) {
+        result.add(TrafficContext.unknown);
+        start = end + 1;
+        continue;
+      }
+      if (features[end].point.breakBefore) start = end;
       final cutoff = features[end].point.timestamp.subtract(
         DriveDetectionCalibration.trafficWindow,
       );

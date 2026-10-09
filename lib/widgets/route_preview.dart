@@ -97,7 +97,11 @@ class RoutePainter extends CustomPainter {
 
     for (final point in route.skip(1)) {
       final p = convert(point);
-      path.lineTo(p.dx, p.dy);
+      if (point.breakBefore) {
+        path.moveTo(p.dx, p.dy);
+      } else {
+        path.lineTo(p.dx, p.dy);
+      }
     }
 
     final shadowPaint = Paint()

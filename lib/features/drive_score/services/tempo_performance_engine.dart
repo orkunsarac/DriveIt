@@ -187,10 +187,12 @@ class TempoPerformanceEngine {
     var bestSupportingCount = 0;
     for (var index = 0; index < features.length; index++) {
       final speed = features[index].point.speedMps;
+      if (!features[index].point.hasSpeedEvidence) continue;
       if (!speed.isFinite || speed < 0) continue;
       var supportingCount = 1;
       for (final neighbour in <int>[index - 1, index + 1]) {
         if (neighbour < 0 || neighbour >= features.length) continue;
+        if (!features[neighbour].point.hasSpeedEvidence) continue;
         final neighbourSpeed = features[neighbour].point.speedMps;
         if ((neighbourSpeed - speed).abs() <=
             TempoPerformanceCalibration.maxSpeedNeighbourToleranceMps) {

@@ -77,6 +77,24 @@ class PosterBridge(private val activity: Activity, messenger: BinaryMessenger) {
                         }
                     }
                 }
+                "shareDiagnosticJson" -> {
+                    try {
+                        val file = File(call.argument<String>("path") ?: error("Missing file")).canonicalFile
+                        val root = File(activity.cacheDir, "drive_diagnostics").canonicalPath + File.separator
+                        require(file.path.startsWith(root) && file.isFile && file.extension == "json")
+                        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.poster_files", file)
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            clipData = ClipData.newRawUri("DriveIt diagnostic", uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        activity.startActivity(Intent.createChooser(intent, "Tanılama JSON paylaş"))
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("diagnostic_share", "Tanılama dosyası paylaşılamadı.", null)
+                    }
+                }
                 "sharePng" -> {
                     val file = posterFile(call.argument<String>("path"), result) ?: return@setMethodCallHandler
                     try {

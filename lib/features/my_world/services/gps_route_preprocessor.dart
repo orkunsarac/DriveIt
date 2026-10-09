@@ -55,6 +55,9 @@ class GpsRoutePreprocessor {
 
     for (var routeIndex = 0; routeIndex < route.length; routeIndex++) {
       final point = route[routeIndex];
+      // Acquisition discontinuity is not an observed road. This only consumes
+      // explicit metadata on new recordings; old route rules stay unchanged.
+      if (point.breakBefore) closeCurrentTrace();
       if (!_isValid(point.latitude, point.longitude)) {
         invalid++;
         closeCurrentTrace();

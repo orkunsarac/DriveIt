@@ -5,6 +5,30 @@ import 'gps_session_store.dart';
 import 'gps_session_runtime.dart';
 import 'drive_recovery_status.dart';
 import 'gps_failure.dart';
+import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
+import 'local_owner_gps_bridge.dart';
+import 'owned_foreground_bootstrap.dart';
+import 'owned_drive_transfer_route.dart';
+
+@pragma('vm:entry-point')
+void ownedStartCallback() {
+  final descriptor = Future<OwnedForegroundBootstrap>(() async {
+    final value = await FlutterForegroundTask.getData<String>(
+      key: OwnedForegroundBootstrap.preferenceKey,
+    );
+    if (value == null) throw StateError('Controlled GPS descriptor missing');
+    return OwnedForegroundBootstrap.decode(value);
+  });
+  FlutterForegroundTask.setTaskHandler(
+    DriveTaskHandler(
+      openJournal: () async => (await descriptor).openJournal(databaseFactory),
+      verifySessionOwner: (id) async {
+        await (await descriptor).verify(databaseFactory, id);
+      },
+    ),
+  );
+}
 
 @pragma('vm:entry-point')
 void startCallback() {
@@ -12,12 +36,51 @@ void startCallback() {
 }
 
 class ForegroundService {
+  static LocalOwnerGpsBridge? _ownedBridge;
+  static OwnedForegroundBootstrap? _ownedDescriptor;
+  static OwnedDriveTransfer? _ownedTransfer;
+  static LocalOwnerGpsBridge? get controlledOwnerBridge => _ownedBridge;
+
+  /// Explicit synthetic bootstrap only; release cannot select this callback.
+  static void attachForTesting(
+    LocalOwnerGpsBridge bridge,
+    OwnedForegroundBootstrap descriptor,
+  ) {
+    if (!kDebugMode ||
+        !bridge.runtime.gate.enabled ||
+        _ownedBridge != null ||
+        bridge.journalId != descriptor.journalId ||
+        bridge.journal.db.path.replaceAll('\\', '/') !=
+            descriptor.journalPath.replaceAll('\\', '/') ||
+        bridge.ownership.db.path.replaceAll('\\', '/') !=
+            descriptor.sidecarPath.replaceAll('\\', '/')) {
+      throw StateError('Controlled foreground configuration invalid');
+    }
+    final transfer = bridge.transfer;
+    OwnedDriveTransferRoute.attachForTesting(bridge.runtime.gate, transfer);
+    _ownedBridge = bridge;
+    _ownedDescriptor = descriptor;
+    _ownedTransfer = transfer;
+  }
+
+  static Future<void> detachForTesting(LocalOwnerGpsBridge bridge) async {
+    if (!identical(_ownedBridge, bridge) ||
+        await FlutterForegroundTask.isRunningService) {
+      throw StateError('Controlled foreground still active');
+    }
+    _ownedBridge = null;
+    _ownedDescriptor = null;
+    OwnedDriveTransferRoute.detachForTesting(_ownedTransfer!);
+    _ownedTransfer = null;
+  }
+
   static Future<GpsSessionStore>? _journal;
-  static Future<GpsSessionStore> get journal =>
-      _journal ??= openGpsJournal().catchError((Object error) {
-        _journal = null;
-        throw error;
-      });
+  static Future<GpsSessionStore> get journal => _ownedBridge != null
+      ? Future.value(_ownedBridge!.journal)
+      : _journal ??= openGpsJournal().catchError((Object error) {
+          _journal = null;
+          throw error;
+        });
   static Future<GpsSession?> activeSession() async => (await journal).active();
   static Future<void> init() async {
     FlutterForegroundTask.initCommunicationPort();
@@ -45,14 +108,31 @@ class ForegroundService {
     if (!recovery.canStartNewDrive) {
       throw recovery.failure ?? GpsFailure(GpsErrorCode.recovery);
     }
+    final owned = _ownedBridge;
+    if (owned != null) {
+      return owned.start(
+        startNative: (session, _) async {
+          await FlutterForegroundTask.saveData(
+            key: OwnedForegroundBootstrap.preferenceKey,
+            value: _ownedDescriptor!.encode(),
+          );
+          await _resetCounters();
+          await _startNative();
+        },
+      );
+    }
     final session = await (await journal).create();
+    await _resetCounters();
+    await _startNative();
+    return session;
+  }
+
+  static Future<void> _resetCounters() async {
     await FlutterForegroundTask.saveData(key: 'driveit_stop_count', value: 0);
     await FlutterForegroundTask.saveData(
       key: 'driveit_stopped_seconds',
       value: 0,
     );
-    await _startNative();
-    return session;
   }
 
   static Future<void> _startNative() async {
@@ -62,7 +142,7 @@ class ForegroundService {
       notificationText: 'Konum ve rota arka planda kaydediliyor',
       notificationInitialRoute: '/',
       serviceTypes: const [ForegroundServiceTypes.location],
-      callback: startCallback,
+      callback: _ownedBridge == null ? startCallback : ownedStartCallback,
     );
     if (result is ServiceRequestFailure) {
       final session = await activeSession();
@@ -80,7 +160,19 @@ class ForegroundService {
     final session = await activeSession();
     if (session?.state == 'recording' &&
         !await FlutterForegroundTask.isRunningService) {
-      await _startNative();
+      final owned = _ownedBridge;
+      if (owned != null) {
+        await owned.runtime.withOwnerOperation((lease) async {
+          final binding = await owned.requireBinding(session!.id);
+          if (binding.owner.targetStore != lease.owner.targetStore) {
+            throw StateError('Recovery owner mismatch');
+          }
+          lease.requireCurrent();
+          await _startNative();
+        });
+      } else {
+        await _startNative();
+      }
     }
   }
 
@@ -200,6 +292,17 @@ class ForegroundService {
     final receipt = await (await journal).transferFor(sessionId);
     if (receipt?['drive_id'] != driveId || receipt?['verified_us'] == null) {
       throw GpsFailure(GpsErrorCode.recovery);
+    }
+    final owned = _ownedBridge;
+    if (owned != null) {
+      final binding = await owned.requireBinding(sessionId);
+      final lease = owned.runtime.lease;
+      if (lease.owner.targetStore != binding.targetStore ||
+          !await owned.ownership.verified(owned.journalId, sessionId) ||
+          lease.read('drives', driveId) == null ||
+          lease.read('drive_telemetry', driveId) == null) {
+        throw GpsFailure(GpsErrorCode.recovery);
+      }
     }
   }
 

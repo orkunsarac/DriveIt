@@ -12,6 +12,8 @@ import 'package:intl/intl.dart';
 import '../../models/drive_session.dart';
 import '../../services/drive_score_storage_service.dart';
 import '../../services/drive_storage_service.dart';
+import '../../services/local_owner_lifecycle.dart';
+import '../../widgets/local_owner_view.dart';
 import 'poster_background.dart';
 import 'poster_canvas.dart';
 import 'poster_layout.dart';
@@ -1150,14 +1152,18 @@ class _RouteEditingScrollPhysics extends AlwaysScrollableScrollPhysics {
 }
 
 class SavedPostersScreen extends StatefulWidget {
-  const SavedPostersScreen({super.key, this.store});
+  const SavedPostersScreen({super.key, this.store, this.ownerLease});
   final Future<PosterStore>? store;
+  final LocalOwnerLease? ownerLease;
   @override
   State<SavedPostersScreen> createState() => _SavedPostersScreenState();
 }
 
 class _SavedPostersScreenState extends State<SavedPostersScreen> {
-  late final Future<PosterStore> _store = widget.store ?? PosterStore.open();
+  late final LocalOwnerLease? _owner = widget.ownerLease;
+  late final Future<PosterStore> _store = _owner == null
+      ? widget.store ?? PosterStore.open()
+      : _owner.posters();
 
   Future<void> _confirmDelete(
     PosterStore store,
@@ -1207,7 +1213,12 @@ class _SavedPostersScreenState extends State<SavedPostersScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => _owner == null
+      ? _build(context)
+      : !identical(_owner, widget.ownerLease)
+      ? const OwnerAccessUnavailable()
+      : LocalOwnerView(lease: _owner, builder: _build);
+  Widget _build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xff020a18),
     appBar: AppBar(title: const Text('Posterlerim')),
     body: FutureBuilder<PosterStore>(
@@ -1250,8 +1261,11 @@ class _SavedPostersScreenState extends State<SavedPostersScreen> {
               onTap: () => Navigator.push(
                 context,
                 MaterialPageRoute<void>(
-                  builder: (_) =>
-                      _SavedPosterViewer(store: store, poster: poster),
+                  builder: (_) => _SavedPosterViewer(
+                    store: store,
+                    poster: poster,
+                    ownerLease: _owner,
+                  ),
                 ),
               ),
             );
@@ -1263,17 +1277,25 @@ class _SavedPostersScreenState extends State<SavedPostersScreen> {
 }
 
 class _SavedPosterViewer extends StatelessWidget {
-  const _SavedPosterViewer({required this.store, required this.poster});
+  const _SavedPosterViewer({
+    required this.store,
+    required this.poster,
+    this.ownerLease,
+  });
   final PosterStore store;
   final SavedDrivePoster poster;
+  final LocalOwnerLease? ownerLease;
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => ownerLease == null
+      ? _build(context)
+      : LocalOwnerView(lease: ownerLease!, builder: _build);
+  Widget _build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xff020a18),
     appBar: AppBar(
       title: const Text('Sürüş Posteri'),
       actions: [
-        if (poster.backgroundFileName != null)
+        if (poster.backgroundFileName != null && ownerLease == null)
           TextButton(
             child: const Text('Düzenle'),
             onPressed: () async {

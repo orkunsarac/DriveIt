@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
+import '../services/local_owner_lifecycle.dart';
 import '../widgets/neon_route_preview.dart';
 import 'drive_detail_screen.dart';
+import '../widgets/local_owner_view.dart';
 
 class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key});
+  const HistoryScreen({super.key, this.ownerLease, this.ownedDetailBuilder});
+  final LocalOwnerLease? ownerLease;
+
+  /// No legacy detail fallback: all nested detail consumers must be scoped.
+  final Widget Function(LocalOwnerLease, String)? ownedDetailBuilder;
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -16,18 +22,39 @@ class _HistoryScreenState extends State<HistoryScreen> {
   static const _background = Color(0xff020c1d);
 
   List<DriveSession> _drives = const [];
+  late final LocalOwnerLease? _mountedOwner;
 
   @override
   void initState() {
     super.initState();
+    _mountedOwner = widget.ownerLease;
+    widget.ownerLease?.changes.addListener(_ownerChanged);
     _loadDrives();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _loadDrives();
     });
   }
 
+  void _ownerChanged() {
+    if (mounted && widget.ownerLease?.isCurrent == false) {
+      setState(() => _drives = const []);
+    }
+  }
+
+  @override
+  void dispose() {
+    _mountedOwner?.changes.removeListener(_ownerChanged);
+    super.dispose();
+  }
+
   void _loadDrives() {
-    final loaded = DriveStorageService.getAllDrives();
+    if (!mounted ||
+        !identical(widget.ownerLease, _mountedOwner) ||
+        _mountedOwner?.isCurrent == false) {
+      return;
+    }
+    final loaded =
+        widget.ownerLease?.drives() ?? DriveStorageService.getAllDrives();
     if (!mounted) {
       _drives = loaded;
       return;
@@ -36,6 +63,26 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _openDetail(DriveSession drive) async {
+    final lease = widget.ownerLease;
+    if (lease != null) {
+      lease.requireCurrent();
+      if (lease.read<DriveSession>('drives', drive.id) == null ||
+          widget.ownedDetailBuilder == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Hesaba özel sürüş detayı henüz hazır değil.'),
+          ),
+        );
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => widget.ownedDetailBuilder!(lease, drive.id),
+        ),
+      );
+      if (mounted && lease.isCurrent) _loadDrives();
+      return;
+    }
     await Navigator.of(
       context,
     ).push(MaterialPageRoute(builder: (_) => DriveDetailScreen(drive: drive)));
@@ -66,9 +113,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
     );
 
-    if (result != true) return;
+    if (result != true ||
+        !identical(widget.ownerLease, _mountedOwner) ||
+        _mountedOwner?.isCurrent == false) {
+      return;
+    }
     try {
-      await DriveStorageService.deleteDrive(drive.id);
+      if (widget.ownerLease case final lease?) {
+        await lease.deleteHistory(drive.id);
+      } else {
+        await DriveStorageService.deleteDrive(drive.id);
+      }
     } on StateError catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -124,13 +179,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _displayName(DriveSession drive) {
-    final stored = DriveStorageService.getDriveName(drive.id);
+    final stored = widget.ownerLease != null
+        ? widget.ownerLease!.read<String>('drive_names', drive.id) ?? ''
+        : DriveStorageService.getDriveName(drive.id);
     if (stored.isNotEmpty) return stored;
     return 'Sürüş • ${drive.date.day.toString().padLeft(2, '0')}.${drive.date.month.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!identical(widget.ownerLease, _mountedOwner) ||
+        _mountedOwner?.isCurrent == false) {
+      return const OwnerAccessUnavailable();
+    }
     return Scaffold(
       backgroundColor: _background,
       body: SafeArea(

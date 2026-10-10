@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'local_source_writer_fence.dart';
 import '../models/drive_session.dart';
 import '../models/route_point.dart';
 import '../models/canonical_telemetry_point.dart';
@@ -88,8 +89,9 @@ class GpsHiveTransferSink implements GpsTransferSink {
       DriveTelemetryStorageService.get(id)?.points;
   @override
   Future<void> writeDrive(String id, Map<String, dynamic> manifest) =>
-      Hive.box<DriveSession>(
-        'drives',
+      SourceWriterBoundary.box(
+        'gps_transfer',
+        Hive.box<DriveSession>('drives'),
       ).put(id, driveFromTransferManifest(manifest));
   @override
   Future<void> writeTelemetry(
@@ -98,7 +100,10 @@ class GpsHiveTransferSink implements GpsTransferSink {
     Map<String, dynamic> metadata,
   ) async {
     // Empty telemetry still needs an explicit receipt, rather than absence.
-    await Hive.box<DriveTelemetryRecord>(DriveTelemetryHive.boxName).put(
+    await SourceWriterBoundary.box(
+      'gps_transfer',
+      Hive.box<DriveTelemetryRecord>(DriveTelemetryHive.boxName),
+    ).put(
       id,
       DriveTelemetryRecord(
         driveSessionId: id,

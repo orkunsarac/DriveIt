@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../models/route_point.dart';
+import '../features/my_world/models/validated_road.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../features/drive_replay/drive_replay_screen.dart';
@@ -17,15 +18,48 @@ import '../theme/drive_map_visuals.dart';
 import '../widgets/drive_score_summary_section.dart';
 import '../services/drive_reliability_service.dart';
 import '../services/drive_route_presentation.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../widgets/local_owner_view.dart';
+
+/// Resolve by ID inside the repository boundary; an external model is never
+/// used to prove ownership or to render a different account's route.
+class OwnedDriveDetailScreen extends StatelessWidget {
+  const OwnedDriveDetailScreen({
+    super.key,
+    required this.lease,
+    required this.driveId,
+  });
+  final LocalOwnerLease lease;
+  final String driveId;
+  @override
+  Widget build(BuildContext context) => LocalOwnerView(
+    lease: lease,
+    builder: (_) {
+      final drive = lease.read<DriveSession>('drives', driveId);
+      if (drive == null || drive.id != driveId) {
+        return const OwnerAccessUnavailable();
+      }
+      return DriveDetailScreen(
+        key: ValueKey(
+          [lease.owner.targetStore, lease.epoch, driveId].join(':'),
+        ),
+        drive: drive,
+        ownerLease: lease,
+      );
+    },
+  );
+}
 
 class DriveDetailScreen extends StatefulWidget {
   final DriveSession drive;
   final WorldPublishService? worldPublishService;
+  final LocalOwnerLease? ownerLease;
 
   const DriveDetailScreen({
     super.key,
     required this.drive,
     this.worldPublishService,
+    this.ownerLease,
   });
 
   @override
@@ -43,6 +77,12 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   Set<Marker> _markers = {};
   late final TextEditingController _nameController;
   bool _exporting = false;
+  late final DriveSession _drive;
+  late final LocalOwnerLease? _mountedOwner;
+  bool get _ownerValid =>
+      identical(widget.ownerLease, _mountedOwner) &&
+      _mountedOwner?.isCurrent != false;
+  bool get _current => mounted && _ownerValid;
 
   Future<void> _exportDiagnostic() async {
     if (_exporting) return;
@@ -67,7 +107,32 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
           ],
         ),
       );
-      if (confirmed == true) await DriveDiagnosticExport.share(widget.drive.id);
+      if (confirmed == true && _current) {
+        final lease = widget.ownerLease;
+        if (lease == null) {
+          await DriveDiagnosticExport.share(_drive.id);
+        } else {
+          final value = DriveDiagnosticExport.build(
+            lease.requireDrive(_drive.id),
+            lease.telemetry(_drive.id),
+            lease
+                .keys('my_world_validated_roads')
+                .map(
+                  (key) => lease.read<ValidatedRoad>(
+                    'my_world_validated_roads',
+                    key,
+                  )!,
+                )
+                .where((r) => r.driveSessionId == _drive.id)
+                .toList(),
+          );
+          await DriveDiagnosticExport.shareValue(
+            value,
+            scope: lease.owner.targetStore,
+            stillAllowed: () => _current && lease.isCurrent,
+          );
+        }
+      }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -82,8 +147,13 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _mountedOwner = widget.ownerLease;
+    _drive = widget.ownerLease?.requireDrive(widget.drive.id) ?? widget.drive;
+    widget.ownerLease?.changes.addListener(_ownerChanged);
     _nameController = TextEditingController(
-      text: DriveStorageService.getDriveName(widget.drive.id),
+      text: widget.ownerLease == null
+          ? DriveStorageService.getDriveName(_drive.id)
+          : widget.ownerLease!.read<String>('drive_names', _drive.id) ?? '',
     );
     _createPolyline();
     _createMarkers();
@@ -108,15 +178,25 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
 
   @override
   void dispose() {
+    _mountedOwner?.changes.removeListener(_ownerChanged);
     _fitRouteTimer?.cancel();
     _mapController = null;
     _nameController.dispose();
     super.dispose();
   }
 
+  void _ownerChanged() {
+    if (widget.ownerLease?.isCurrent == false && mounted) {
+      _mapActive = false;
+      _fitRouteTimer?.cancel();
+      _mapController = null;
+      setState(() {});
+    }
+  }
+
   void _createPolyline() {
-    final segments = routeSegments(widget.drive.route);
-    _routePresentation = DriveRoutePresentation(widget.drive.route);
+    final segments = routeSegments(_drive.route);
+    _routePresentation = DriveRoutePresentation(_drive.route);
     _polylines = {
       for (var i = 0; i < _routePresentation.gaps.length; i++)
         Polyline(
@@ -150,7 +230,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
     BitmapDescriptor? startIcon,
     BitmapDescriptor? finishIcon,
   }) {
-    if (widget.drive.route.isEmpty) {
+    if (_drive.route.isEmpty) {
       _markers = {};
       return;
     }
@@ -161,8 +241,8 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
       return;
     }
 
-    final start = widget.drive.route.first;
-    final finish = widget.drive.route.last;
+    final start = _drive.route.first;
+    final finish = _drive.route.last;
     _markers = {
       Marker(
         markerId: const MarkerId('start'),
@@ -190,7 +270,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
       const ui.Color(0xffef405d),
       isFinish: true,
     );
-    if (!mounted) return;
+    if (!_current) return;
     setState(() => _createMarkers(startIcon: start, finishIcon: finish));
   }
 
@@ -243,9 +323,9 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   void _fitRoute() {
-    if (!mounted || !_mapActive) return;
+    if (!_current || !_mapActive) return;
     final controller = _mapController;
-    final route = widget.drive.route;
+    final route = _drive.route;
     if (controller == null || route.isEmpty) return;
     if (route.length == 1) {
       controller.animateCamera(
@@ -286,11 +366,14 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   Future<void> _saveName() async {
-    await DriveStorageService.saveDriveName(
-      widget.drive.id,
-      _nameController.text,
-    );
-    if (!mounted) return;
+    if (!_current) return;
+    if (widget.ownerLease case final lease?) {
+      lease.requireDrive(_drive.id);
+      await lease.put('drive_names', _drive.id, _nameController.text.trim());
+    } else {
+      await DriveStorageService.saveDriveName(_drive.id, _nameController.text);
+    }
+    if (!mounted || !_current) return;
     FocusScope.of(context).unfocus();
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
@@ -304,7 +387,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   String _duration() {
-    final duration = Duration(seconds: widget.drive.durationSeconds);
+    final duration = Duration(seconds: _drive.durationSeconds);
     if (duration.inHours > 0) {
       return '${duration.inHours} sa ${duration.inMinutes.remainder(60)} dk';
     }
@@ -312,7 +395,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   String _stoppedDuration() {
-    final duration = Duration(seconds: widget.drive.stoppedSeconds);
+    final duration = Duration(seconds: _drive.stoppedSeconds);
     if (duration.inMinutes > 0) {
       return '${duration.inMinutes} dk ${duration.inSeconds.remainder(60)} sn';
     }
@@ -320,7 +403,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   String _date() {
-    final date = widget.drive.date;
+    final date = _drive.date;
     final day = date.day.toString().padLeft(2, '0');
     final month = date.month.toString().padLeft(2, '0');
     final hour = date.hour.toString().padLeft(2, '0');
@@ -330,7 +413,12 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final timing = DriveReliabilityService.get(widget.drive.id);
+    if (!_ownerValid) {
+      return const OwnerAccessUnavailable();
+    }
+    final timing = widget.ownerLease == null
+        ? DriveReliabilityService.get(_drive.id)
+        : widget.ownerLease!.timing(_drive.id);
     final width = MediaQuery.sizeOf(context).width;
     final mapHeight = (width * 0.77).clamp(250.0, 360.0).toDouble();
     return Scaffold(
@@ -380,10 +468,10 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                       children: [
                         GoogleMap(
                           initialCameraPosition: CameraPosition(
-                            target: widget.drive.route.isNotEmpty
+                            target: _drive.route.isNotEmpty
                                 ? LatLng(
-                                    widget.drive.route.first.latitude,
-                                    widget.drive.route.first.longitude,
+                                    _drive.route.first.latitude,
+                                    _drive.route.first.longitude,
                                   )
                                 : const LatLng(39.925533, 32.866287),
                             zoom: 14,
@@ -451,12 +539,13 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             color: const Color(0xee0a1d36),
                             borderRadius: BorderRadius.circular(16),
                             child: InkWell(
-                              onTap: widget.drive.route.length < 2
+                              onTap: _drive.route.length < 2
                                   ? null
                                   : () => Navigator.of(context).push(
                                       MaterialPageRoute<void>(
                                         builder: (_) => DriveReplayScreen(
-                                          drive: widget.drive,
+                                          drive: _drive,
+                                          ownerLease: widget.ownerLease,
                                         ),
                                       ),
                                     ),
@@ -499,7 +588,10 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                   children: [
                     _NameEditor(controller: _nameController, onSave: _saveName),
                     const SizedBox(height: 16),
-                    DriveScoreSummarySection(driveId: widget.drive.id),
+                    DriveScoreSummarySection(
+                      driveId: _drive.id,
+                      ownerLease: widget.ownerLease,
+                    ),
                     const SizedBox(height: 20),
                     const Text(
                       'Sürüş özeti',
@@ -511,8 +603,9 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                     ),
                     const SizedBox(height: 10),
                     PlanetPublicationSection(
-                      drive: widget.drive,
+                      drive: _drive,
                       publishService: widget.worldPublishService,
+                      ownerLease: widget.ownerLease,
                     ),
                     const SizedBox(height: 16),
                     LayoutBuilder(
@@ -522,21 +615,21 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             icon: Icons.speed_rounded,
                             title: 'Ortalama hız',
                             value:
-                                '${widget.drive.averageSpeed.toStringAsFixed(1)} km/h',
+                                '${_drive.averageSpeed.toStringAsFixed(1)} km/h',
                             color: const Color(0xff4bb7ff),
                           ),
                           _DetailStat(
                             icon: Icons.directions_car_filled_rounded,
                             title: 'Ortalama seyir hızı',
                             value:
-                                '${(timing?.timingKnown == true ? timing!.movingAverageSpeedKmh : widget.drive.drivingAverageSpeed).toStringAsFixed(1)} km/h',
+                                '${(timing?.timingKnown == true ? timing!.movingAverageSpeedKmh : _drive.drivingAverageSpeed).toStringAsFixed(1)} km/h',
                             color: const Color(0xff4be0ca),
                           ),
                           _DetailStat(
                             icon: Icons.route_rounded,
                             title: 'Toplam mesafe',
                             value:
-                                '${(widget.drive.distance / 1000).toStringAsFixed(2)} km',
+                                '${(_drive.distance / 1000).toStringAsFixed(2)} km',
                             color: const Color(0xff4be0ca),
                           ),
                           _DetailStat(
@@ -566,8 +659,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                           _DetailStat(
                             icon: Icons.bolt_rounded,
                             title: 'Maksimum hız',
-                            value:
-                                '${widget.drive.maxSpeed.toStringAsFixed(1)} km/h',
+                            value: '${_drive.maxSpeed.toStringAsFixed(1)} km/h',
                             color: const Color(0xffff9c3e),
                           ),
                           _DetailStat(
@@ -579,7 +671,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                           _DetailStat(
                             icon: Icons.pause_circle_outline_rounded,
                             title: 'Duruş sayısı',
-                            value: '${widget.drive.stopCount}',
+                            value: '${_drive.stopCount}',
                             color: const Color(0xffff6b8a),
                           ),
                           _DetailStat(
@@ -591,82 +683,81 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                           _DetailStat(
                             icon: Icons.speed_rounded,
                             title: 'Sert fren',
-                            value: '${widget.drive.hardBrakeCount}',
+                            value: '${_drive.hardBrakeCount}',
                             color: const Color(0xffff5f77),
                           ),
                           _DetailStat(
                             icon: Icons.rocket_launch_rounded,
                             title: 'Ani hızlanma',
-                            value: '${widget.drive.hardAccelerationCount}',
+                            value: '${_drive.hardAccelerationCount}',
                             color: const Color(0xff4be0ca),
                           ),
                           _DetailStat(
                             icon: Icons.turn_right_rounded,
                             title: 'Viraj sayısı',
-                            value: '${widget.drive.cornerCount}',
+                            value: '${_drive.cornerCount}',
                             color: const Color(0xff6faeff),
                           ),
                           _DetailStat(
                             icon: Icons.warning_amber_rounded,
                             title: 'Keskin dönüş',
-                            value: '${widget.drive.sharpTurnCount}',
+                            value: '${_drive.sharpTurnCount}',
                             color: const Color(0xffff9c3e),
                           ),
                           _DetailStat(
                             icon: Icons.trending_up_rounded,
                             title: 'Maksimum ivmelenme',
-                            value: widget.drive.maxAccelerationG > 0
-                                ? '${widget.drive.maxAccelerationG.toStringAsFixed(2)} G'
+                            value: _drive.maxAccelerationG > 0
+                                ? '${_drive.maxAccelerationG.toStringAsFixed(2)} G'
                                 : 'Veri yetersiz',
                             color: const Color(0xff47d7ff),
                           ),
                           _DetailStat(
                             icon: Icons.trending_down_rounded,
                             title: 'En sert frenleme',
-                            value: widget.drive.maxBrakingG > 0
-                                ? '${widget.drive.maxBrakingG.toStringAsFixed(2)} G'
+                            value: _drive.maxBrakingG > 0
+                                ? '${_drive.maxBrakingG.toStringAsFixed(2)} G'
                                 : 'Veri yetersiz',
                             color: const Color(0xffff668e),
                           ),
                           _DetailStat(
                             icon: Icons.sports_motorsports_rounded,
                             title: 'En yüksek viraj hızı',
-                            value: widget.drive.maxCorneringSpeed > 0
-                                ? '${widget.drive.maxCorneringSpeed.toStringAsFixed(1)} km/sa'
+                            value: _drive.maxCorneringSpeed > 0
+                                ? '${_drive.maxCorneringSpeed.toStringAsFixed(1)} km/sa'
                                 : 'Veri yetersiz',
                             color: const Color(0xffa66eff),
                           ),
                           _DetailStat(
                             icon: Icons.landscape_rounded,
                             title: 'Maksimum rakım',
-                            value: widget.drive.maxAltitude != 0
-                                ? '${widget.drive.maxAltitude.toStringAsFixed(0)} m'
+                            value: _drive.maxAltitude != 0
+                                ? '${_drive.maxAltitude.toStringAsFixed(0)} m'
                                 : 'Veri yetersiz',
                             color: const Color(0xff73cf77),
                           ),
                           _DetailStat(
                             icon: Icons.terrain_rounded,
                             title: 'Rakım kazanımı',
-                            value: widget.drive.maxAltitude != 0
-                                ? '${widget.drive.altitudeGain.toStringAsFixed(0)} m'
+                            value: _drive.maxAltitude != 0
+                                ? '${_drive.altitudeGain.toStringAsFixed(0)} m'
                                 : 'Veri yetersiz',
                             color: const Color(0xff4be0ca),
                           ),
                           _DetailStat(
                             icon: Icons.timer_rounded,
                             title: 'En hızlı 0–100',
-                            value: widget.drive.bestZeroToHundredSeconds == null
+                            value: _drive.bestZeroToHundredSeconds == null
                                 ? 'Ölçülemedi'
-                                : '${widget.drive.bestZeroToHundredSeconds!.toStringAsFixed(1)} sn',
+                                : '${_drive.bestZeroToHundredSeconds!.toStringAsFixed(1)} sn',
                             color: const Color(0xff4e9fff),
                           ),
                           _DetailStat(
                             icon: Icons.timer_rounded,
                             title: 'En hızlı 60–100',
-                            value:
-                                widget.drive.bestSixtyToHundredSeconds == null
+                            value: _drive.bestSixtyToHundredSeconds == null
                                 ? 'Ölçülemedi'
-                                : '${widget.drive.bestSixtyToHundredSeconds!.toStringAsFixed(1)} sn',
+                                : '${_drive.bestSixtyToHundredSeconds!.toStringAsFixed(1)} sn',
                             color: const Color(0xffb66dff),
                           ),
                         ];

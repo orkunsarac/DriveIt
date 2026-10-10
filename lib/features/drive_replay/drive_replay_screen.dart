@@ -8,13 +8,16 @@ import '../../models/drive_session.dart';
 import '../../theme/drive_map_visuals.dart';
 import 'drive_replay_controller.dart';
 import 'replay_interpolator.dart';
+import '../../services/local_owner_lifecycle.dart';
+import '../../widgets/local_owner_view.dart';
 
 enum ReplayCameraMode { close, medium, overview, free }
 
 class DriveReplayScreen extends StatefulWidget {
   final DriveSession drive;
+  final LocalOwnerLease? ownerLease;
 
-  const DriveReplayScreen({super.key, required this.drive});
+  const DriveReplayScreen({super.key, required this.drive, this.ownerLease});
 
   @override
   State<DriveReplayScreen> createState() => _DriveReplayScreenState();
@@ -35,22 +38,29 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   ReplayCameraMode _cameraMode = ReplayCameraMode.overview;
   bool _hasStartedReplay = false;
+  late final DriveSession _drive;
+  late final LocalOwnerLease? _mountedOwner;
+  bool get _ownerValid =>
+      identical(widget.ownerLease, _mountedOwner) &&
+      _mountedOwner?.isCurrent != false;
   int _activePointers = 0;
   int _programmaticCameraMoves = 0;
 
   @override
   void initState() {
     super.initState();
-    _replay = DriveReplayController(widget.drive)
-      ..addListener(_onReplayChanged);
+    _mountedOwner = widget.ownerLease;
+    _drive = widget.ownerLease?.requireDrive(widget.drive.id) ?? widget.drive;
+    _replay = DriveReplayController(_drive)..addListener(_onReplayChanged);
     _hudFrame = _replay.frame;
     _ticker = createTicker(_onTick)..start();
+    widget.ownerLease?.changes.addListener(_ownerChanged);
     _loadNavigationIcon();
   }
 
   Future<void> _loadNavigationIcon() async {
     final icon = await DriveMapVisuals.createNavigationArrow();
-    if (!mounted) return;
+    if (!mounted || widget.ownerLease?.isCurrent == false) return;
     setState(() => _navigationIcon = icon);
   }
 
@@ -161,6 +171,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   }
 
   Future<void> _animateCamera(CameraUpdate update) async {
+    if (!mounted || !_ownerValid) return;
     final controller = _mapController;
     if (controller == null) return;
     _programmaticCameraMoves++;
@@ -189,6 +200,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
 
   @override
   void dispose() {
+    _mountedOwner?.changes.removeListener(_ownerChanged);
     _ticker.dispose();
     _replay
       ..removeListener(_onReplayChanged)
@@ -197,8 +209,18 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     super.dispose();
   }
 
+  void _ownerChanged() {
+    if (widget.ownerLease?.isCurrent == false && mounted) {
+      _ticker.stop();
+      setState(() {});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (!_ownerValid) {
+      return const OwnerAccessUnavailable();
+    }
     if (!_replay.canReplay) {
       return _UnavailableReplay(onBack: () => Navigator.of(context).pop());
     }
@@ -336,7 +358,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                   AnimatedBuilder(
                     animation: _replay,
                     builder: (_, _) => _replay.isComplete
-                        ? _CompletionCard(drive: widget.drive)
+                        ? _CompletionCard(drive: _drive)
                         : const SizedBox.shrink(),
                   ),
                   const SizedBox(height: 10),

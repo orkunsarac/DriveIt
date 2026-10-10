@@ -11,6 +11,9 @@ import '../features/my_world/services/my_world_settings_service.dart';
 import '../services/profile_storage_service.dart';
 import '../services/supabase_account_service.dart';
 import '../features/account/widgets/driveit_account_section.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../services/owner_personal_preferences.dart';
+import '../widgets/local_owner_view.dart';
 
 class ProfileSettingsScreen extends StatefulWidget {
   const ProfileSettingsScreen({
@@ -19,12 +22,14 @@ class ProfileSettingsScreen extends StatefulWidget {
     this.profileLoader,
     this.imagePicker,
     this.accountGateway,
+    this.ownerLease,
   });
 
   final MyWorldSettingsStore? worldSettings;
   final Future<ProfileStorageService> Function()? profileLoader;
   final ImagePicker? imagePicker;
   final DriveItAccountGateway? accountGateway;
+  final LocalOwnerLease? ownerLease;
 
   @override
   State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
@@ -36,14 +41,19 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   static const _blue = Color(0xff248fff);
   late final MyWorldSettingsStore _worldSettings;
   late final ImagePicker _picker;
-  ProfileStorageService? _profile;
+  LocalProfileStore? _profile;
   Uint8List? _photo;
   String? _name;
   String? _cloudProfileError;
   bool _cloudSession = false;
   bool _cloudProfileLoading = false;
   DriveItAccountProfile? _cloudProfile;
-  late final DriveItAccountGateway _accountGateway;
+  DriveItAccountGateway? _accountGateway;
+  late final LocalOwnerLease? _mountedOwner;
+  bool get _ownerValid =>
+      identical(widget.ownerLease, _mountedOwner) &&
+      _mountedOwner?.isCurrent != false;
+  bool get _current => mounted && _ownerValid;
   StreamSubscription<dynamic>? _authSubscription;
   String _version = '…';
   bool _loading = true;
@@ -55,11 +65,17 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _worldSettings = widget.worldSettings ?? const HiveMyWorldSettingsStore();
+    _mountedOwner = widget.ownerLease;
+    _worldSettings = widget.ownerLease == null
+        ? widget.worldSettings ?? const HiveMyWorldSettingsStore()
+        : OwnerWorldSettings(widget.ownerLease!);
     _showIntro = !_worldSettings.skipIntroAnimation;
     _picker = widget.imagePicker ?? ImagePicker();
-    _accountGateway = widget.accountGateway ?? SupabaseAccountService.instance;
-    _authSubscription = _accountGateway.authStateChanges.listen(
+    _accountGateway =
+        widget.accountGateway ??
+        (widget.ownerLease == null ? SupabaseAccountService.instance : null);
+    widget.ownerLease?.changes.addListener(_ownerChanged);
+    _authSubscription = _accountGateway?.authStateChanges.listen(
       (_) => _loadCloudProfile(),
     );
     _loadProfile();
@@ -69,14 +85,26 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
 
   @override
   void dispose() {
+    _mountedOwner?.changes.removeListener(_ownerChanged);
     _authSubscription?.cancel();
     super.dispose();
   }
 
+  void _ownerChanged() {
+    if (mounted) {
+      setState(() {
+        _photo = null;
+        _cloudProfile = null;
+      });
+    }
+  }
+
   Future<void> _loadCloudProfile() async {
-    final signedIn = _accountGateway.isAvailable && _accountGateway.hasSession;
+    final gateway = _accountGateway;
+    final signedIn =
+        gateway != null && gateway.isAvailable && gateway.hasSession;
     if (!signedIn) {
-      if (mounted) {
+      if (_current) {
         setState(() {
           _cloudSession = false;
           _cloudProfile = null;
@@ -86,7 +114,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       }
       return;
     }
-    if (mounted) {
+    if (_current) {
       setState(() {
         _cloudSession = true;
         _cloudProfileLoading = true;
@@ -94,8 +122,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       });
     }
     try {
-      final profile = await _accountGateway.fetchCurrentProfile();
-      if (!mounted) return;
+      final profile = await gateway.fetchCurrentProfile();
+      if (!_current) return;
+      if (widget.ownerLease case final lease?) {
+        if (profile != null && profile.id != lease.owner.userId) {
+          throw StateError('Account profile owner mismatch');
+        }
+      }
       setState(() {
         _cloudProfile = profile;
         _cloudProfileLoading = false;
@@ -104,7 +137,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
             : null;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!_current) return;
       setState(() {
         _cloudProfile = null;
         _cloudProfileLoading = false;
@@ -133,17 +166,18 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   Future<void> _loadVersion() async {
     try {
       final info = await PackageInfo.fromPlatform();
-      if (mounted) setState(() => _version = info.version);
+      if (_current) setState(() => _version = info.version);
     } catch (_) {
-      if (mounted) setState(() => _version = 'Kullanılamıyor');
+      if (_current) setState(() => _version = 'Kullanılamıyor');
     }
   }
 
   Future<void> _loadProfile() async {
     try {
-      final profile =
-          await (widget.profileLoader ?? ProfileStorageService.open)();
-      if (!mounted) return;
+      final profile = widget.ownerLease == null
+          ? await (widget.profileLoader ?? ProfileStorageService.open)()
+          : OwnerProfileStore(widget.ownerLease!);
+      if (!_current) return;
       setState(() {
         _profile = profile;
         _name = profile.name;
@@ -163,11 +197,11 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         } catch (_) {
           _message('Fotoğraf geri alınamadı. Galeriden yeniden seçebilirsin.');
         } finally {
-          if (mounted) setState(() => _photoBusy = false);
+          if (_current) setState(() => _photoBusy = false);
         }
       }
     } catch (_) {
-      if (mounted) {
+      if (_current) {
         setState(() {
           _loading = false;
           _loadError = 'Profil yüklenemedi. Tekrar dene.';
@@ -177,13 +211,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   }
 
   void _message(String text) {
-    if (mounted) {
+    if (_current) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
 
   Future<void> _savePickedPhoto(XFile file) async {
-    if (!mounted || _profile == null) return;
+    if (!_current || _profile == null) return;
     if (await file.length() > ProfileStorageService.maximumPhotoBytes) {
       throw ArgumentError('Lütfen 2 MB altında bir fotoğraf seç.');
     }
@@ -202,7 +236,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       codec.dispose();
     }
     await _profile!.savePhoto(bytes);
-    if (mounted) setState(() => _photo = _profile!.photo);
+    if (_current) setState(() => _photo = _profile!.photo);
   }
 
   Future<void> _pickPhoto() async {
@@ -248,7 +282,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     } catch (_) {
       _message('Fotoğraf seçilemedi veya kaydedilemedi. Lütfen yeniden dene.');
     } finally {
-      if (mounted) setState(() => _photoBusy = false);
+      if (_current) setState(() => _photoBusy = false);
     }
   }
 
@@ -258,10 +292,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
       context: context,
       builder: (_) => _NameDialog(initialName: _name),
     );
-    if (value == null || !mounted || _profile == null) return;
+    if (value == null || !_current || _profile == null) return;
     try {
       await _profile!.saveName(value);
-      if (mounted) setState(() => _name = _profile!.name);
+      if (_current) setState(() => _name = _profile!.name);
     } catch (_) {
       _message('İsim kaydedilemedi. Lütfen yeniden dene.');
     }
@@ -271,13 +305,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     setState(() => _settingBusy = true);
     try {
       await _worldSettings.setSkipIntroAnimation(!value);
-      if (mounted) {
+      if (_current) {
         setState(() => _showIntro = !_worldSettings.skipIntroAnimation);
       }
     } catch (_) {
       _message('Ayar kaydedilemedi. Lütfen yeniden dene.');
     } finally {
-      if (mounted) setState(() => _settingBusy = false);
+      if (_current) setState(() => _settingBusy = false);
     }
   }
 
@@ -302,7 +336,14 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   );
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    if (!_ownerValid) {
+      return const OwnerAccessUnavailable();
+    }
+    return _build(context);
+  }
+
+  Widget _build(BuildContext context) => Scaffold(
     backgroundColor: _background,
     appBar: AppBar(
       title: const Text('Profil & Ayarlar'),
@@ -448,7 +489,8 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                   ),
                 ),
                 _section('DRIVEIT HESABI'),
-                DriveItAccountSection(accountGateway: _accountGateway),
+                if (_accountGateway != null && widget.ownerLease == null)
+                  DriveItAccountSection(accountGateway: _accountGateway),
                 _section('AYARLAR'),
                 _section('DÜNYA'),
                 _card(

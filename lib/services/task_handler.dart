@@ -11,6 +11,12 @@ import 'gps_failure.dart';
 import 'gps_stream_supervisor.dart';
 
 class DriveTaskHandler extends TaskHandler {
+  DriveTaskHandler({
+    Future<GpsSessionStore> Function()? openJournal,
+    this.verifySessionOwner,
+  }) : _openJournal = openJournal ?? openGpsJournal;
+  final Future<GpsSessionStore> Function() _openJournal;
+  final Future<void> Function(String sessionId)? verifySessionOwner;
   int seconds = 0;
   GpsStreamSupervisor<Position>? _gps;
   GpsSessionStore? _store;
@@ -37,13 +43,14 @@ class DriveTaskHandler extends TaskHandler {
     _starting = true;
     try {
       await _store?.close();
-      _store = await openGpsJournal();
+      _store = await _openJournal();
       final session = await _store!.active();
       if (session == null || session.state != 'recording') {
         _recordingError(true, failure: GpsFailure(GpsErrorCode.recovery));
         _starting = false;
         return;
       }
+      await verifySessionOwner?.call(session.id);
       _activeSessionId = session.id;
       final writer = GpsRecordingWriter(
         _store!,

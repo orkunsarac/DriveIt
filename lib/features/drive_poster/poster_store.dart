@@ -1,4 +1,6 @@
 import 'dart:io';
+import '../../services/local_source_writer_fence.dart';
+import '../../services/legacy_asset_transfer.dart';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -149,13 +151,70 @@ class PosterSaveRequest {
 }
 
 /// Poster metadata stays in its own untyped Hive box, avoiding typeId changes.
+abstract interface class PosterOperationBoundary {
+  Future<T> run<T>(Future<T> Function() action);
+}
+
 class PosterStore {
-  PosterStore(this.box, this.directory, {this.temporaryDirectory});
+  PosterStore(
+    Box<dynamic> box,
+    this.directory, {
+    this.temporaryDirectory,
+    this.requireAccess,
+    this.requireDrive,
+    this.operations,
+  }) : box = SourceWriterBoundary.box('poster', box);
   static const boxName = 'drive_posters';
   static const channel = MethodChannel('driveit/posters');
   final Box<dynamic> box;
   final Directory directory;
   final Directory? temporaryDirectory;
+  final void Function()? requireAccess;
+  final void Function(String)? requireDrive;
+  final PosterOperationBoundary? operations;
+  Future<T> _run<T>(Future<T> Function() action) =>
+      operations?.run(action) ?? action();
+  void _check() => requireAccess?.call();
+  File _resolve(String reference) {
+    _check();
+    final candidate = File(
+      File(reference).isAbsolute ? reference : '${directory.path}/$reference',
+    );
+    if (requireAccess != null) {
+      OwnerAssetTransfer.validatePath(reference);
+      final base = directory.absolute.path.replaceAll(
+        '/',
+        Platform.pathSeparator,
+      );
+      final path = candidate.absolute.path.replaceAll(
+        '/',
+        Platform.pathSeparator,
+      );
+      if (!OwnerAssetTransfer.within(base, path)) {
+        throw const ImportFailure('poster_owner_path_mismatch');
+      }
+      var component = candidate.absolute.path;
+      while (true) {
+        if (FileSystemEntity.typeSync(component, followLinks: false) ==
+            FileSystemEntityType.link) {
+          throw const ImportFailure('unsafe_symlink');
+        }
+        final parent = Directory(component).parent.path;
+        if (parent == component) break;
+        component = parent;
+      }
+    }
+    return candidate;
+  }
+
+  Future<void> _validateAccess(File file) async {
+    _check();
+    if (requireAccess != null) {
+      _resolve(file.path);
+      await OwnerAssetTransfer.noLinks(file.absolute.path);
+      _check();
+    }
+  }
 
   static Future<PosterStore> open() async {
     final root = await getApplicationDocumentsDirectory();
@@ -173,6 +232,7 @@ class PosterStore {
   }
 
   List<SavedDrivePoster> get all {
+    _check();
     final result = box.values
         .whereType<Map>()
         .map(SavedDrivePoster.fromMap)
@@ -183,23 +243,26 @@ class PosterStore {
   }
 
   File file(SavedDrivePoster poster) {
-    final reference = poster.fileName;
-    return File(
-      File(reference).isAbsolute ? reference : '${directory.path}/$reference',
-    );
+    return _resolve(poster.fileName);
   }
 
   File? backgroundFile(SavedDrivePoster poster) {
     final reference = poster.backgroundFileName;
     if (reference == null || reference.isEmpty) return null;
-    return File(
-      File(reference).isAbsolute ? reference : '${directory.path}/$reference',
-    );
+    return _resolve(reference);
   }
 
   /// Removes only the app-private poster record and its local files.
   /// MediaStore/gallery copies are intentionally not referenced here.
-  Future<void> delete(SavedDrivePoster poster) async {
+  Future<void> delete(SavedDrivePoster poster) => _run(
+    () => SourceWriterBoundary.run(
+      'poster',
+      () => _delete(poster),
+      path: directory.path,
+    ),
+  );
+  Future<void> _delete(SavedDrivePoster poster) async {
+    _check();
     final posterFile = file(poster);
     final localBackground = backgroundFile(poster);
     debugPrint(
@@ -218,6 +281,7 @@ class PosterStore {
         }
         continue;
       }
+      await _validateAccess(candidate);
       try {
         await candidate.delete();
         debugPrint(
@@ -258,7 +322,16 @@ class PosterStore {
     }
   }
 
-  Future<SavedDrivePoster> save(PosterSaveRequest request) async {
+  Future<SavedDrivePoster> save(PosterSaveRequest request) => _run(
+    () => SourceWriterBoundary.run(
+      'poster',
+      () => _save(request),
+      path: directory.path,
+    ),
+  );
+  Future<SavedDrivePoster> _save(PosterSaveRequest request) async {
+    _check();
+    requireDrive?.call(request.driveId);
     final png = request.png;
     if (png.length < 8 || png[0] != 137 || png[1] != 80) {
       throw ArgumentError('PNG bekleniyor.');
@@ -294,6 +367,10 @@ class PosterStore {
       layout: request.layout,
     );
     final output = file(poster);
+    await _validateAccess(output);
+    if (sourcePath != null && requireAccess != null) {
+      await _validateAccess(_resolve(sourcePath));
+    }
     final temporary = File('${output.path}.tmp');
     File? backgroundOutput;
     try {
@@ -322,6 +399,7 @@ class PosterStore {
         '[POSTER_SAVE] file.commit.done path=${output.path} '
         'exists=true size=$outputLength',
       );
+      _check();
       await box.put(id, poster.toMap());
       debugPrint('[POSTER_SAVE] hive.put.done id=$id');
       await box.flush();
@@ -355,8 +433,10 @@ class PosterStore {
   }
 
   Future<String> savePngToGallery(Uint8List png) async {
+    _check();
     _requirePngBytes(png);
     final tempRoot = temporaryDirectory ?? await getTemporaryDirectory();
+    await tempRoot.create(recursive: true);
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final temporary = File('${tempRoot.path}/DriveIt_Poster_$timestamp.png');
     try {
@@ -384,11 +464,13 @@ class PosterStore {
 
   Future<String> saveToGallery(SavedDrivePoster poster) async {
     final source = file(poster);
+    await _validateAccess(source);
     await _requireValidPngFile(source);
     return _saveFileToGallery(source, 'DriveIt_Poster_${poster.id}.png');
   }
 
   Future<String> _saveFileToGallery(File source, String name) async {
+    _check();
     debugPrint(
       '[POSTER_SAVE] android.gallery.start path=${source.path} name=$name',
     );
@@ -405,8 +487,10 @@ class PosterStore {
 
   Future<void> share(SavedDrivePoster poster) async {
     final source = file(poster);
+    await _validateAccess(source);
     await _requireValidPngFile(source);
     debugPrint('[POSTER_SAVE] android.share.start path=${source.path}');
+    _check();
     await channel.invokeMethod<void>('sharePng', {
       'path': source.path,
       'name': 'DriveIt_Poster_${poster.id}.png',

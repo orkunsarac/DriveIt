@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import '../../../services/local_source_writer_fence.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
@@ -138,7 +139,7 @@ class MyWorldRuntime {
   /// successful validation result.
   static Future<void> drainPendingJobs() async {
     if (_drainInFlight != null) return _drainInFlight!;
-    final operation = _drainPendingJobs();
+    final operation = SourceWriterBoundary.run('world_jobs', _drainPendingJobs);
     _drainInFlight = operation.whenComplete(() => _drainInFlight = null);
     return _drainInFlight!;
   }
@@ -232,7 +233,9 @@ class MyWorldRuntime {
   /// Ensures the persisted World index is rebuilt when the scoring or World
   /// rule version changes. This is deliberately awaited during app startup so
   /// the first World read cannot race an old snapshot.
-  static Future<void> ensureCurrentWorldIndex() async {
+  static Future<void> ensureCurrentWorldIndex() =>
+      SourceWriterBoundary.run('world_index', _ensureCurrentWorldIndex);
+  static Future<void> _ensureCurrentWorldIndex() async {
     final service = rebuildService();
     final index = indexRepository();
     late final WorldIndexSnapshot beforeSnapshot;

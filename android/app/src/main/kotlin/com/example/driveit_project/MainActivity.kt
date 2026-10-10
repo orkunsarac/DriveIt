@@ -5,10 +5,12 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private var posterBridge: PosterBridge? = null
+    private var localImportStorageBridge: LocalImportStorageBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         posterBridge = PosterBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        localImportStorageBridge = LocalImportStorageBridge(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     @Deprecated("Delegates document picker results for poster export")
@@ -19,6 +21,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         posterBridge?.close()
+        localImportStorageBridge?.close()
         super.onDestroy()
     }
 }

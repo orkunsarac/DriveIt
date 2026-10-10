@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'local_source_writer_fence.dart';
 import 'package:hive/hive.dart';
 import '../models/drive_session.dart';
 import '../features/my_world/models/validated_road.dart';
@@ -29,7 +30,9 @@ class LocalDataPreparationService {
     );
   }
 
-  static Future<bool> prepareWorldSource(String id) async {
+  static Future<bool> prepareWorldSource(String id) =>
+      SourceWriterBoundary.run('world_source', () => _prepareWorldSource(id));
+  static Future<bool> _prepareWorldSource(String id) async {
     final source = readSource(id);
     if (source == null) return false;
     final repository = WorldSourceSnapshotRepository(
@@ -55,7 +58,9 @@ class LocalDataPreparationService {
     return repository.get(id) != null;
   }
 
-  static Future<bool> prepareLegacyCareer() async {
+  static Future<bool> prepareLegacyCareer() =>
+      SourceWriterBoundary.run('career', _prepareLegacyCareer);
+  static Future<bool> _prepareLegacyCareer() async {
     final contributions = CareerContributionRepository(
       Hive.box<dynamic>(CareerContributionRepository.boxName),
     );

@@ -1,10 +1,23 @@
 import 'dart:typed_data';
+import 'local_source_writer_fence.dart';
 
 import 'package:hive/hive.dart';
 
 /// Small, independent preferences; no DriveSession or adapter changes.
-class ProfileStorageService {
-  ProfileStorageService(this._box);
+abstract interface class LocalProfileStore {
+  String? get name;
+  String? get username;
+  Uint8List? get photo;
+  bool get onboardingCompleted;
+  bool get homeTourCompleted;
+  Future<void> saveName(String input);
+  Future<void> savePhoto(Uint8List bytes);
+  Future<void> markHomeTourCompleted();
+}
+
+class ProfileStorageService implements LocalProfileStore {
+  ProfileStorageService(Box<dynamic> box)
+    : _box = SourceWriterBoundary.box('profile', box);
 
   static const boxName = 'profile';
   static const maximumNameLength = 40;
@@ -20,16 +33,19 @@ class ProfileStorageService {
   static Future<ProfileStorageService> open() async =>
       ProfileStorageService(await Hive.openBox<dynamic>(boxName));
 
+  @override
   String? get name {
     final value = _box.get(_nameKey);
     return value is String && value.trim().isNotEmpty ? value : null;
   }
 
+  @override
   String? get username {
     final value = _box.get(_usernameKey);
     return value is String && value.trim().isNotEmpty ? value : null;
   }
 
+  @override
   bool get onboardingCompleted =>
       _box.get(_onboardingCompletedKey, defaultValue: false) == true;
 
@@ -40,9 +56,11 @@ class ProfileStorageService {
 
   bool get hasCompleteProfile => name != null && username != null;
 
+  @override
   bool get homeTourCompleted =>
       _box.get(_homeTourCompletedKey, defaultValue: false) == true;
 
+  @override
   Uint8List? get photo {
     final value = _box.get(_photoKey);
     if (value is Uint8List && value.isNotEmpty) return value;
@@ -52,6 +70,7 @@ class ProfileStorageService {
     return null;
   }
 
+  @override
   Future<void> saveName(String input) async {
     final value = input.trim();
     if (value.isEmpty || value.runes.length > maximumNameLength) {
@@ -89,10 +108,12 @@ class ProfileStorageService {
     });
   }
 
+  @override
   Future<void> markHomeTourCompleted() async {
     await _box.put(_homeTourCompletedKey, true);
   }
 
+  @override
   Future<void> savePhoto(Uint8List bytes) async {
     if (bytes.isEmpty || bytes.length > maximumPhotoBytes) {
       throw ArgumentError('Lütfen 2 MB altında bir fotoğraf seç.');

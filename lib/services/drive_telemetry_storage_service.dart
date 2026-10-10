@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'local_source_writer_fence.dart';
 
 import '../models/canonical_telemetry_point.dart';
 
@@ -21,8 +22,10 @@ class DriveTelemetryHive {
 }
 
 class DriveTelemetryStorageService {
-  static Box<DriveTelemetryRecord> get _box =>
-      Hive.box<DriveTelemetryRecord>(DriveTelemetryHive.boxName);
+  static Box<DriveTelemetryRecord> get _box => SourceWriterBoundary.box(
+    'telemetry',
+    Hive.box<DriveTelemetryRecord>(DriveTelemetryHive.boxName),
+  );
 
   static Future<void> save({
     required String driveSessionId,

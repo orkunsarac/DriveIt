@@ -4,10 +4,14 @@ import '../models/drive_session.dart';
 import '../services/career_statistics_service.dart';
 import '../services/career_local_consumer.dart';
 import '../services/drive_storage_service.dart';
+import '../services/local_owner_lifecycle.dart';
 import 'drive_detail_screen.dart';
+import '../widgets/local_owner_view.dart';
 
 class CareerScreen extends StatelessWidget {
-  const CareerScreen({super.key});
+  const CareerScreen({super.key, this.ownerLease, this.ownedDetailBuilder});
+  final LocalOwnerLease? ownerLease;
+  final Widget Function(LocalOwnerLease, String)? ownedDetailBuilder;
 
   static const _bg = Color(0xff020a18);
   static const _blue = Color(0xff248fff);
@@ -23,8 +27,20 @@ class CareerScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (ownerLease case final lease?) {
+      return LocalOwnerView(lease: lease, builder: _build);
+    }
+    return _build(context);
+  }
+
+  Widget _build(BuildContext context) {
     return FutureBuilder<CareerStatistics>(
-      future: CareerLocalConsumer.load(),
+      key: ownerLease == null
+          ? null
+          : ValueKey('${ownerLease!.owner.targetStore}:${ownerLease!.epoch}'),
+      future: ownerLease == null
+          ? CareerLocalConsumer.load()
+          : Future<CareerStatistics>.sync(ownerLease!.career),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
@@ -379,7 +395,10 @@ class CareerScreen extends StatelessWidget {
 
   Widget _sourceCard(BuildContext context, DriveSession drive) => InkWell(
     onTap: () {
-      final source = DriveStorageService.getDrive(drive.id);
+      final lease = ownerLease;
+      final source = lease != null
+          ? lease.read<DriveSession>('drives', drive.id)
+          : DriveStorageService.getDrive(drive.id);
       if (source == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -390,9 +409,21 @@ class CareerScreen extends StatelessWidget {
         );
         return;
       }
+      if (lease != null && ownedDetailBuilder == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Hesaba özel sürüş detayı henüz hazır değil.'),
+          ),
+        );
+        return;
+      }
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => DriveDetailScreen(drive: source)),
+        MaterialPageRoute(
+          builder: (_) => lease != null
+              ? ownedDetailBuilder!(lease, drive.id)
+              : DriveDetailScreen(drive: source),
+        ),
       );
     },
     borderRadius: BorderRadius.circular(16),

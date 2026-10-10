@@ -24,6 +24,9 @@ import 'drive_detail_screen.dart';
 import 'world_mode_selection_screen.dart';
 import 'profile_settings_screen.dart';
 import 'world_trace_detail_screen.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../services/owner_personal_preferences.dart';
+import '../widgets/local_owner_view.dart';
 
 class MyWorldMapScreen extends StatefulWidget {
   const MyWorldMapScreen({
@@ -31,11 +34,13 @@ class MyWorldMapScreen extends StatefulWidget {
     this.loadData,
     this.settingsStore,
     this.detailService,
+    this.ownerLease,
   });
 
   final MyWorldDataLoader? loadData;
   final MyWorldSettingsStore? settingsStore;
   final WorldTraceDetailService? detailService;
+  final LocalOwnerLease? ownerLease;
 
   @override
   State<MyWorldMapScreen> createState() => _MyWorldMapScreenState();
@@ -93,13 +98,80 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   int? _markerCacheIconCount;
 
   bool get _interactionEnabled => !_introPlaying;
+  late final LocalOwnerLease? _owner;
+  bool get _viewCurrent =>
+      mounted &&
+      identical(widget.ownerLease, _owner) &&
+      (_owner?.isCurrent ?? true);
+  bool _rebuilding = false;
+  int _worldRevision = 0;
+  Timer? _highlightTimer;
+
+  void _ownerChanged() {
+    if (!mounted) return;
+    if (_owner?.isCurrent == true) {
+      if (_worldRevision != _owner!.worldRevision) {
+        _worldRevision = _owner.worldRevision;
+        unawaited(_refreshOwnedRead(_worldRevision));
+      }
+      return;
+    }
+    _data = null;
+    _selectedDetail = null;
+    _selectedTraceId = null;
+    _highlightedDriveId = null;
+    _highlightTimer?.cancel();
+    _polylineCache = null;
+    _circleCache = null;
+    _markerCache = null;
+    _oppositePartners = const {};
+    _flowTickIcons.clear();
+    final controller = _mapController;
+    _mapController = null;
+    controller?.dispose();
+    setState(() {});
+  }
+
+  Future<void> _refreshOwnedRead(int revision) async {
+    try {
+      final data = await _owner!.worldMap();
+      if (_viewCurrent && _worldRevision == revision) {
+        setState(() => _applyOwnedData(data));
+      }
+    } catch (_) {
+      if (_viewCurrent) {
+        _message('Dünya görünümü yenilenemedi; veriler korunuyor.');
+      }
+    }
+  }
+
+  void _applyOwnedData(MyWorldMapData data) {
+    // A durable tombstone may change visible traces before a generation commit.
+    // Generation alone therefore cannot identify an owner read's render cache.
+    _polylineCache = null;
+    _circleCache = null;
+    _markerCache = null;
+    _oppositeGeneration = null;
+    if (!data.traces.any((trace) => trace.trace.id == _selectedTraceId)) {
+      _selectedTraceId = null;
+      _selectedDetail = null;
+    }
+    _data = data;
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _settingsStore = widget.settingsStore ?? const HiveMyWorldSettingsStore();
+    _owner = widget.ownerLease;
+    _worldRevision = _owner?.worldRevision ?? 0;
+    _owner?.requireCurrent();
+    _owner?.changes.addListener(_ownerChanged);
+    _settingsStore = _owner == null
+        ? widget.settingsStore ?? const HiveMyWorldSettingsStore()
+        : OwnerWorldSettings(_owner);
     _detailService =
+        _owner?.worldDetails() ??
         widget.detailService ??
         WorldTraceDetailService(
           driveLoader: WorldSourceAccess.drive,
@@ -111,7 +183,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     _loadFuture = _loadWorldData();
     for (final color in _palette) {
       DriveMapVisuals.createWorldFlowTick(color: color, scale: .9).then((icon) {
-        if (mounted) {
+        if (_viewCurrent) {
           setState(() => _flowTickIcons[color.toARGB32()] = icon);
         }
       });
@@ -119,13 +191,18 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     _introController =
         AnimationController(vsync: this, duration: WorldIntroPolicy.duration)
           ..addStatusListener((status) {
-            if (status == AnimationStatus.completed && mounted) {
+            if (status == AnimationStatus.completed && _viewCurrent) {
               setState(() => _introPlaying = false);
             }
           });
   }
 
   Future<MyWorldMapData> _loadWorldData() async {
+    if (_owner case final owner?) {
+      // Scoped queue scheduling belongs to the controlled runtime, not a
+      // second screen-lifetime writer. Map opening itself is read-only.
+      return owner.worldMap();
+    }
     if (widget.loadData != null) return widget.loadData!();
     // Read the current snapshot immediately so map gestures are never held
     // behind network validation. Reconcile newly completed drives in the
@@ -136,6 +213,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   }
 
   Future<void> _refreshAfterPendingDrain() async {
+    if (_owner != null) throw StateError('Scoped queue requires owner worker');
     await MyWorldRuntime.drainPendingJobs();
     if (!mounted) return;
     final refreshed = await MyWorldRuntime.readWorldData();
@@ -151,6 +229,8 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
 
   @override
   void dispose() {
+    _highlightTimer?.cancel();
+    _owner?.changes.removeListener(_ownerChanged);
     WidgetsBinding.instance.removeObserver(this);
     _introController.dispose();
     _mapController?.dispose();
@@ -158,7 +238,15 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    if (!_viewCurrent) return const OwnerAccessUnavailable();
+    if (_owner case final owner?) {
+      return LocalOwnerView(lease: owner, builder: _buildScaffold);
+    }
+    return _buildScaffold(context);
+  }
+
+  Widget _buildScaffold(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
     body: FutureBuilder<MyWorldMapData>(
       future: _loadFuture,
@@ -214,7 +302,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
                 final height = constraints.maxHeight;
                 if ((_focusMapHeight - height).abs() > 1) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!mounted || _selectedTraceId == null) return;
+                    if (!_viewCurrent || _selectedTraceId == null) return;
                     _focusMapHeight = height;
                     final selected = data.traces.where(
                       (item) => item.trace.id == _selectedTraceId,
@@ -234,7 +322,12 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
               _clearSelection();
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => DriveDetailScreen(drive: detail.drive),
+                  builder: (_) => _owner == null
+                      ? DriveDetailScreen(drive: detail.drive)
+                      : OwnedDriveDetailScreen(
+                          lease: _owner,
+                          driveId: detail.drive.id,
+                        ),
                 ),
               );
             },
@@ -267,9 +360,11 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
         circles: _traceMarkers(data),
         markers: _directionMarkers(data),
         onTap: _selectedTraceId == null ? null : (_) => _clearSelection(),
-        onCameraMove: (position) => _camera = position,
+        onCameraMove: (position) {
+          if (_viewCurrent) _camera = position;
+        },
         onCameraIdle: () {
-          if (!mounted || !_interactionEnabled) return;
+          if (!_viewCurrent || !_interactionEnabled) return;
           // Panning does not alter rendered geometry. Rebuild only when a
           // zoom visibility bucket changes (for example, direction ticks
           // becoming eligible), avoiding a full trace rebuild after every
@@ -281,15 +376,21 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           }
         },
         onMapCreated: (controller) {
+          if (!_viewCurrent) {
+            controller.dispose();
+            return;
+          }
           _mapController = controller;
           SchedulerBinding.instance.addPostFrameCallback((_) async {
-            if (!mounted) return;
+            if (!_viewCurrent || !identical(_mapController, controller)) return;
             if (data.viewport != null) {
               await _showWorld();
             } else {
               await _centerOnLocation(requestPermission: false);
             }
-            if (mounted) _maybeStartIntro();
+            if (_viewCurrent && identical(_mapController, controller)) {
+              _maybeStartIntro();
+            }
           });
         },
       ),
@@ -319,6 +420,16 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           right: 20,
           bottom: 116,
           child: _EmptyWorldMessage(),
+        ),
+      if (_owner != null)
+        Positioned(
+          right: 20,
+          bottom: 24,
+          child: IconButton.filledTonal(
+            tooltip: 'Dünyayı yeniden oluştur',
+            onPressed: _rebuilding ? null : _rebuildOwnedWorld,
+            icon: const Icon(Icons.refresh),
+          ),
         ),
       if (_introPlaying)
         Positioned.fill(
@@ -690,7 +801,18 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   }
 
   Future<void> _selectTrace(ResolvedWorldTrace item) async {
-    if (!_interactionEnabled) return;
+    if (!_viewCurrent || !_interactionEnabled) return;
+    if (_owner case final owner?) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) =>
+              OwnedWorldTraceDetailScreen(lease: owner, traceId: item.trace.id),
+        ),
+      );
+      if (!_viewCurrent) return;
+      await _refreshOwnedRead(_worldRevision);
+      return;
+    }
     final detail = await _detailService.loadTrace(
       trace: item.trace,
       geometry: item.geometry,
@@ -751,9 +873,13 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   }
 
   Future<void> _openSettings() async {
+    if (!_viewCurrent) return;
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) => ProfileSettingsScreen(worldSettings: _settingsStore),
+        builder: (_) => ProfileSettingsScreen(
+          worldSettings: _settingsStore,
+          ownerLease: _owner,
+        ),
       ),
     );
   }
@@ -784,14 +910,15 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       return;
     }
     await _fitResolvedTraces(traces, padding: 70);
-    if (!mounted) return;
+    if (!_viewCurrent) return;
     setState(() => _highlightedDriveId = drive.id);
     _message(
       '${(drive.distance / 1000).toStringAsFixed(1).replaceAll('.', ',')} km sürüş  •  '
       '${(traces.fold<double>(0, (sum, item) => sum + item.trace.distanceMeters) / 1000).toStringAsFixed(1).replaceAll('.', ',')} km aktif iz',
     );
-    Future<void>.delayed(const Duration(milliseconds: 1800), () {
-      if (mounted && _highlightedDriveId == drive.id) {
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (_viewCurrent && _highlightedDriveId == drive.id) {
         setState(() => _highlightedDriveId = null);
       }
     });
@@ -800,7 +927,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   DriveSession? _lastProcessedDrive(MyWorldMapData data) =>
       WorldTraceDetailService.latestProcessedDrive(
         processedDriveIds: data.processedDriveSessionIds,
-        drives: WorldSourceAccess.drives(),
+        drives: _owner?.worldDrives() ?? WorldSourceAccess.drives(),
       );
 
   Future<void> _fitResolvedTraces(
@@ -837,7 +964,10 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     required double padding,
   }) async {
     final controller = _mapController;
-    if (controller == null || !minLatitude.isFinite || !minLongitude.isFinite) {
+    if (!_viewCurrent ||
+        controller == null ||
+        !minLatitude.isFinite ||
+        !minLongitude.isFinite) {
       return;
     }
     final latitudePadding = (maxLatitude - minLatitude).abs() < .0001
@@ -865,7 +995,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
 
   Future<void> _centerOnLocation({required bool requestPermission}) async {
     final controller = _mapController;
-    if (controller == null) return;
+    if (!_viewCurrent || controller == null) return;
     try {
       if (!await Geolocator.isLocationServiceEnabled()) {
         if (requestPermission) _message('Konum servisi kapalı.');
@@ -887,6 +1017,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           accuracy: LocationAccuracy.high,
         ),
       );
+      if (!_viewCurrent || !identical(_mapController, controller)) return;
       await controller.animateCamera(
         CameraUpdate.newLatLngZoom(
           LatLng(position.latitude, position.longitude),
@@ -900,7 +1031,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
 
   Future<void> _resetBearing() async {
     final controller = _mapController;
-    if (controller == null) return;
+    if (!_viewCurrent || controller == null) return;
     await controller.animateCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
@@ -915,8 +1046,28 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   }
 
   void _message(String value) {
-    if (!mounted) return;
+    if (!_viewCurrent) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
+  }
+
+  Future<void> _rebuildOwnedWorld() async {
+    if (!_viewCurrent || _rebuilding) return;
+    setState(() => _rebuilding = true);
+    try {
+      await _owner!.drainWorldJobs();
+      if (!_viewCurrent) return;
+      final result = await _owner.rebuildWorld();
+      if (!_viewCurrent) return;
+      if (!result.success) throw StateError('World rebuild incomplete');
+      final data = await _owner.worldMap();
+      if (_viewCurrent) setState(() => _applyOwnedData(data));
+    } catch (_) {
+      if (_viewCurrent) {
+        _message('Dünya yeniden oluşturulamadı; kayıtlar korunuyor.');
+      }
+    } finally {
+      if (_viewCurrent) setState(() => _rebuilding = false);
+    }
   }
 }
 

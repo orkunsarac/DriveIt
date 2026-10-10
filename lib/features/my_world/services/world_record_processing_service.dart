@@ -50,6 +50,8 @@ class WorldRecordProcessingService {
     WorldIndexMutationPlanner mutationPlanner =
         const WorldIndexMutationPlanner(),
     DateTime Function()? clock,
+    bool Function(String)? worldDeleted,
+    List<ActiveWorldTrace> Function(List<ActiveWorldTrace>)? traceFilter,
   }) => WorldRecordProcessingService._(
     repository,
     indexRepository,
@@ -58,6 +60,8 @@ class WorldRecordProcessingService {
     winnerRegionService,
     mutationPlanner,
     clock ?? DateTime.now,
+    worldDeleted ?? LocalLifecycleJournal.worldDeleted,
+    traceFilter ?? LocalLifecycleJournal.filterTraces,
   );
 
   WorldRecordProcessingService._(
@@ -68,6 +72,8 @@ class WorldRecordProcessingService {
     this._winnerRegionService,
     this._mutationPlanner,
     this._clock,
+    this._worldDeleted,
+    this._traceFilter,
   );
 
   final MyWorldRepository _repository;
@@ -77,12 +83,14 @@ class WorldRecordProcessingService {
   final LocalWinningRoadRegionService _winnerRegionService;
   final WorldIndexMutationPlanner _mutationPlanner;
   final DateTime Function() _clock;
+  final bool Function(String) _worldDeleted;
+  final List<ActiveWorldTrace> Function(List<ActiveWorldTrace>) _traceFilter;
 
   Future<WorldRecordProcessingResult> processReadyDrive(
     String driveSessionId, {
     DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
   }) async {
-    if (LocalLifecycleJournal.worldDeleted(driveSessionId)) {
+    if (_worldDeleted(driveSessionId)) {
       return const WorldRecordProcessingResult(
         outcome: WorldRecordProcessingOutcome.notReady,
         traceCount: 0,
@@ -145,7 +153,7 @@ class WorldRecordProcessingService {
         overlaps: overlaps,
         now: _clock(),
         algorithmVersion: algorithmVersion,
-        traceFilter: LocalLifecycleJournal.filterTraces,
+        traceFilter: _traceFilter,
       );
       await _indexRepository.commit(plan);
       await _markProcessed(driveSessionId, challenger.id);

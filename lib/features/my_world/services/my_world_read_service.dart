@@ -8,6 +8,7 @@ import '../repositories/my_world_index_repository.dart';
 import '../repositories/my_world_repository.dart';
 import 'world_trace_travel_direction_resolver.dart';
 import '../models/world_trace_travel_direction.dart';
+import '../models/active_world_trace.dart';
 import 'world_trace_geometry_resolver.dart';
 import 'world_trace_visual_variants.dart';
 
@@ -22,6 +23,7 @@ class MyWorldReadService {
     telemetryLoader,
     WorldTraceTravelDirectionResolver directionResolver =
         const WorldTraceTravelDirectionResolver(),
+    List<ActiveWorldTrace> Function(List<ActiveWorldTrace>)? traceFilter,
   }) => MyWorldReadService._(
     repository,
     indexRepository,
@@ -29,6 +31,7 @@ class MyWorldReadService {
     visualVariants,
     telemetryLoader,
     directionResolver,
+    traceFilter,
   );
 
   const MyWorldReadService._(
@@ -38,6 +41,7 @@ class MyWorldReadService {
     this._visualVariants,
     this._telemetryLoader,
     this._directionResolver,
+    this._traceFilter,
   );
 
   final MyWorldSourceRepository _repository;
@@ -47,9 +51,11 @@ class MyWorldReadService {
   final Future<List<CanonicalTelemetryPoint>> Function(String driveId)?
   _telemetryLoader;
   final WorldTraceTravelDirectionResolver _directionResolver;
+  final List<ActiveWorldTrace> Function(List<ActiveWorldTrace>)? _traceFilter;
 
   Future<MyWorldMapData> load() async {
     final snapshot = await _indexRepository.getActiveSnapshot();
+    final traces = _traceFilter?.call(snapshot.traces) ?? snapshot.traces;
     if (kDebugMode) {
       debugPrint(
         '[WORLD_READ] loadedSnapshotGeneration=${snapshot.generation} '
@@ -63,7 +69,7 @@ class MyWorldReadService {
     final resolved = <ResolvedWorldTrace>[];
     var brokenReferences = 0;
 
-    for (final trace in snapshot.traces) {
+    for (final trace in traces) {
       final road = roadCache.containsKey(trace.validatedRoadId)
           ? roadCache[trace.validatedRoadId]
           : await _repository.getValidatedRoad(trace.validatedRoadId);
@@ -136,7 +142,7 @@ class MyWorldReadService {
     final result = MyWorldMapData(
       snapshotGeneration: snapshot.generation,
       traces: List.unmodifiable(styled),
-      totalActiveDistanceMeters: snapshot.traces.fold<double>(
+      totalActiveDistanceMeters: traces.fold<double>(
         0,
         (sum, trace) => sum + trace.distanceMeters,
       ),

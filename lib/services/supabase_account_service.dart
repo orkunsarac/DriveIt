@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/supabase_bootstrap.dart';
+import 'local_owner_lifecycle.dart';
 
 /// Cloud identity is deliberately separate from the existing local profile.
 class DriveItAccountProfile {
@@ -123,6 +124,25 @@ class SupabaseAccountService extends ChangeNotifier
   SupabaseAccountService._();
 
   static final instance = SupabaseAccountService._();
+  LocalOwnerLifecycle? _controlledOwner;
+
+  /// Same public Auth entry points, fenced only in an explicit debug harness.
+  void attachOwnerForTesting(LocalOwnerLifecycle owner) {
+    if (!kDebugMode || !owner.gate.enabled || _controlledOwner != null) {
+      throw StateError('Controlled Auth owner unavailable');
+    }
+    _controlledOwner = owner;
+  }
+
+  void detachOwnerForTesting(LocalOwnerLifecycle owner) {
+    if (!identical(_controlledOwner, owner)) {
+      throw StateError('Auth owner conflict');
+    }
+    _controlledOwner = null;
+  }
+
+  Future<T> _identityChange<T>(Future<T> Function() action) =>
+      _controlledOwner?.authorizeIdentityChange(action) ?? action();
 
   StreamSubscription<AuthState>? _identitySubscription;
   DriveItAccountProfile? _profile;
@@ -238,6 +258,19 @@ class SupabaseAccountService extends ChangeNotifier
     required String username,
     required String email,
     required String password,
+  }) => _identityChange(
+    () => _signUp(
+      displayName: displayName,
+      username: username,
+      email: email,
+      password: password,
+    ),
+  );
+  Future<bool> _signUp({
+    required String displayName,
+    required String username,
+    required String email,
+    required String password,
   }) async {
     final client = _client;
     if (client == null) throw const AccountServiceException.unavailable();
@@ -262,7 +295,12 @@ class SupabaseAccountService extends ChangeNotifier
   }
 
   @override
-  Future<void> signIn({required String email, required String password}) async {
+  Future<void> signIn({required String email, required String password}) =>
+      _identityChange(() => _signIn(email: email, password: password));
+  Future<void> _signIn({
+    required String email,
+    required String password,
+  }) async {
     final client = _client;
     if (client == null) throw const AccountServiceException.unavailable();
     try {
@@ -281,7 +319,8 @@ class SupabaseAccountService extends ChangeNotifier
   }
 
   @override
-  Future<void> signOut() async {
+  Future<void> signOut() => _identityChange(_signOut);
+  Future<void> _signOut() async {
     final client = _client;
     if (client == null) throw const AccountServiceException.unavailable();
     await client.auth.signOut();

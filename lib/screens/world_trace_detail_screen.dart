@@ -10,6 +10,65 @@ import '../services/profile_storage_service.dart';
 import '../services/supabase_account_service.dart';
 import '../theme/drive_map_visuals.dart';
 import 'drive_detail_screen.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../services/owner_personal_preferences.dart';
+import '../widgets/local_owner_view.dart';
+import '../features/my_world/models/world_map_read_model.dart';
+
+/// The ID is resolved only against the current owner's authoritative snapshot.
+/// Caller-provided geometry/detail is never ownership evidence.
+class OwnedWorldTraceDetailScreen extends StatefulWidget {
+  const OwnedWorldTraceDetailScreen({
+    super.key,
+    required this.lease,
+    required this.traceId,
+  });
+  final LocalOwnerLease lease;
+  final String traceId;
+  @override
+  State<OwnedWorldTraceDetailScreen> createState() =>
+      _OwnedWorldTraceDetailState();
+}
+
+class _OwnedWorldTraceDetailState extends State<OwnedWorldTraceDetailScreen> {
+  late final LocalOwnerLease _lease = widget.lease;
+  late final Future<(ResolvedWorldTrace, WorldTraceDetail)?> _future = _load();
+  Future<(ResolvedWorldTrace, WorldTraceDetail)?> _load() async {
+    final trace = await _lease.resolveWorldTrace(widget.traceId);
+    if (trace == null) return null;
+    final detail = await _lease.worldTraceDetail(widget.traceId);
+    _lease.requireCurrent();
+    return detail == null ? null : (trace, detail);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!identical(widget.lease, _lease)) return const OwnerAccessUnavailable();
+    return LocalOwnerView(
+      lease: _lease,
+      builder: (_) => FutureBuilder(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final value = snapshot.data;
+          if (snapshot.hasError || value == null) {
+            return const OwnerAccessUnavailable();
+          }
+          return WorldTraceDetailScreen._owned(
+            detail: value.$2,
+            geometry: value.$1.geometry,
+            ownerLease: _lease,
+            onDeleteWorld: () => _lease.deleteWorldTrace(widget.traceId),
+          );
+        },
+      ),
+    );
+  }
+}
 
 class WorldTraceDetailScreen extends StatefulWidget {
   const WorldTraceDetailScreen({
@@ -18,7 +77,15 @@ class WorldTraceDetailScreen extends StatefulWidget {
     required this.geometry,
     this.traceColor = const Color(0xff53d7ff),
     this.onDeleteWorld,
-  });
+  }) : ownerLease = null;
+
+  const WorldTraceDetailScreen._owned({
+    required this.detail,
+    required this.geometry,
+    required this.ownerLease,
+    required this.onDeleteWorld,
+  }) : traceColor = const Color(0xff53d7ff);
+  final LocalOwnerLease? ownerLease;
 
   final WorldTraceDetail detail;
   final List<MatchedRoadPoint> geometry;
@@ -38,9 +105,10 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   BitmapDescriptor? _startIcon;
   BitmapDescriptor? _finishIcon;
   bool _deleting = false;
+  bool get _viewCurrent => mounted && (widget.ownerLease?.isCurrent ?? true);
 
   Future<void> _deleteWorld() async {
-    if (_deleting) return;
+    if (!_viewCurrent || _deleting) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -60,13 +128,13 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted || !_viewCurrent) return;
     setState(() => _deleting = true);
     try {
       await widget.onDeleteWorld!();
-      if (mounted) Navigator.pop(context);
+      if (mounted && _viewCurrent) Navigator.pop(context);
     } catch (error) {
-      if (mounted) {
+      if (mounted && _viewCurrent) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -78,7 +146,7 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _deleting = false);
+      if (_viewCurrent) setState(() => _deleting = false);
     }
   }
 
@@ -89,20 +157,26 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _accountIdentity.addListener(_onAccountIdentityChanged);
+    if (widget.ownerLease == null) {
+      _accountIdentity.addListener(_onAccountIdentityChanged);
+    }
     _loadProfile();
     _loadEndpointIcons();
   }
 
   @override
   void dispose() {
-    _accountIdentity.removeListener(_onAccountIdentityChanged);
-    _controller?.dispose();
+    if (widget.ownerLease == null) {
+      _accountIdentity.removeListener(_onAccountIdentityChanged);
+    }
+    final controller = _controller;
+    _controller = null;
+    controller?.dispose();
     super.dispose();
   }
 
   void _onAccountIdentityChanged() {
-    if (!mounted) return;
+    if (!_viewCurrent) return;
     setState(() {
       _name = _accountIdentity.effectiveDisplayName(localName: _localName);
     });
@@ -117,7 +191,7 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
       const ui.Color(0xffef405d),
       isFinish: true,
     );
-    if (!mounted) return;
+    if (!_viewCurrent) return;
     setState(() {
       _startIcon = start;
       _finishIcon = finish;
@@ -173,6 +247,13 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   }
 
   Future<void> _loadProfile() async {
+    if (widget.ownerLease case final lease?) {
+      final profile = OwnerProfileStore(lease);
+      _localName = profile.name;
+      _name = profile.name;
+      _photo = profile.photo;
+      return;
+    }
     try {
       final profile = await ProfileStorageService.open();
       if (!mounted) return;
@@ -187,7 +268,7 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   void _fitRoute() {
     final points = _points;
     final controller = _controller;
-    if (controller == null || points.isEmpty) return;
+    if (!_viewCurrent || controller == null || points.isEmpty) return;
     if (points.length == 1) {
       controller.animateCamera(CameraUpdate.newLatLngZoom(points.first, 15));
       return;
@@ -296,10 +377,17 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
                         ),
                     },
                     onMapCreated: (controller) {
+                      if (!_viewCurrent) {
+                        controller.dispose();
+                        return;
+                      }
                       _controller = controller;
-                      WidgetsBinding.instance.addPostFrameCallback(
-                        (_) => _fitRoute(),
-                      );
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (_viewCurrent &&
+                            identical(_controller, controller)) {
+                          _fitRoute();
+                        }
+                      });
                     },
                   ),
                 ),
@@ -363,12 +451,24 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
                         const SizedBox(height: 18),
                         FilledButton.icon(
                           key: const Key('view_full_drive_button'),
-                          onPressed: () => Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) =>
-                                  DriveDetailScreen(drive: detail.drive),
-                            ),
-                          ),
+                          onPressed:
+                              widget.ownerLease != null &&
+                                  widget.ownerLease!.read(
+                                        'drives',
+                                        detail.drive.id,
+                                      ) ==
+                                      null
+                              ? null
+                              : () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => widget.ownerLease == null
+                                        ? DriveDetailScreen(drive: detail.drive)
+                                        : OwnedDriveDetailScreen(
+                                            lease: widget.ownerLease!,
+                                            driveId: detail.drive.id,
+                                          ),
+                                  ),
+                                ),
                           icon: const Icon(Icons.arrow_forward),
                           label: const Text('TAM SÜRÜŞÜ GÖR →'),
                           style: FilledButton.styleFrom(

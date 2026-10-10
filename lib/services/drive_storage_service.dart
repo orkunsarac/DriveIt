@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'local_source_writer_fence.dart';
+import 'owned_drive_transfer_route.dart';
 
 import 'package:hive/hive.dart';
 
@@ -21,17 +23,45 @@ import 'independent_deletion_service.dart';
 import '../features/my_world/repositories/world_source_snapshot_repository.dart';
 
 class DriveStorageService {
-  static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
-  static Box<dynamic> get _careerBox => Hive.box<dynamic>('career_totals');
-  static Box<dynamic> get _symbolicBox => Hive.box<dynamic>('symbolic_routes');
-  static Box<dynamic> get _namesBox => Hive.box<dynamic>('drive_names');
+  static Box<DriveSession> get _box =>
+      SourceWriterBoundary.box('history', Hive.box<DriveSession>('drives'));
+  static Box<dynamic> get _careerBox =>
+      SourceWriterBoundary.box('career', Hive.box<dynamic>('career_totals'));
+  static Box<dynamic> get _symbolicBox =>
+      SourceWriterBoundary.box('history', Hive.box<dynamic>('symbolic_routes'));
+  static Box<dynamic> get _namesBox =>
+      SourceWriterBoundary.box('history', Hive.box<dynamic>('drive_names'));
 
   /// Yeni sürüş kaydet
   static Future<void> saveDrive(
     DriveSession drive, {
     List<CanonicalTelemetryPoint>? telemetry,
     Map<String, dynamic> acquisitionMetadata = const {},
+  }) => SourceWriterBoundary.run(
+    'history',
+    () => _saveDrive(
+      drive,
+      telemetry: telemetry,
+      acquisitionMetadata: acquisitionMetadata,
+    ),
+  );
+
+  static Future<void> _saveDrive(
+    DriveSession drive, {
+    List<CanonicalTelemetryPoint>? telemetry,
+    Map<String, dynamic> acquisitionMetadata = const {},
   }) async {
+    final owned = OwnedDriveTransferRoute.transfer;
+    if (owned != null) {
+      final sessionId = acquisitionMetadata['sessionId'];
+      if (sessionId is! String || sessionId != drive.id) {
+        throw StateError(
+          'Controlled GPS save requires durable session identity',
+        );
+      }
+      await owned(sessionId, driveTransferManifest(drive));
+      return; // Never touch shared Hive/Career/World from the controlled path.
+    }
     if (LocalLifecycleJournal.historyDeleted(drive.id)) {
       throw StateError('Silinmiş sürüş tekrar kaydedilemez.');
     }

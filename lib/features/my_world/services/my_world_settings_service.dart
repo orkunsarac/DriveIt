@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import '../../../services/local_source_writer_fence.dart';
 
 abstract interface class MyWorldSettingsStore {
   bool get skipIntroAnimation;
@@ -14,8 +15,9 @@ class HiveMyWorldSettingsStore implements MyWorldSettingsStore {
   static Future<void> openBox(HiveInterface hive) =>
       hive.openBox<dynamic>(boxName);
 
-  Box<dynamic>? get _box =>
-      Hive.isBoxOpen(boxName) ? Hive.box<dynamic>(boxName) : null;
+  Box<dynamic>? get _box => Hive.isBoxOpen(boxName)
+      ? SourceWriterBoundary.box('settings', Hive.box<dynamic>(boxName))
+      : null;
 
   @override
   bool get skipIntroAnimation =>

@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import '../../../services/local_source_writer_fence.dart';
 
 import '../models/active_world_trace.dart';
 import '../models/world_index_mutation_plan.dart';
@@ -11,7 +12,16 @@ import '../../../services/local_lifecycle_journal.dart';
 /// orphaned generation, but can never change the active pointer.
 class HiveMyWorldIndexRepository
     implements MyWorldIndexRepository, WorldIndexRecoveryRepository {
-  HiveMyWorldIndexRepository(this._snapshots, this._metadata);
+  HiveMyWorldIndexRepository(
+    Box<WorldIndexSnapshot> snapshots,
+    Box<WorldIndexPointer> metadata, {
+    this.lifecycle,
+  }) : _snapshots = SourceWriterBoundary.box('world_index', snapshots),
+       _metadata = SourceWriterBoundary.box('world_index', metadata);
+
+  /// Optional frozen local namespace. Existing production uses the same global
+  /// lifecycle path as before; no caller is switched in Phase 5B.
+  final WorldIndexLifecycle? lifecycle;
 
   final Box<WorldIndexSnapshot> _snapshots;
   final Box<WorldIndexPointer> _metadata;
@@ -31,7 +41,13 @@ class HiveMyWorldIndexRepository
 
   @override
   Future<void> commit(WorldIndexMutationPlan plan) async {
-    await LocalLifecycleJournal.serialized(() => _commit(plan));
+    await SourceWriterBoundary.run(
+      'world_index',
+      () =>
+          lifecycle?.serialized(() => _commit(plan)) ??
+          LocalLifecycleJournal.serialized(() => _commit(plan)),
+      path: _metadata.path,
+    );
   }
 
   Future<void> _commit(WorldIndexMutationPlan plan) async {
@@ -50,7 +66,9 @@ class HiveMyWorldIndexRepository
     }
     _validateSnapshot(plan.resultingSnapshot);
     _checkDeletedSources(plan.resultingSnapshot);
-    if (LocalLifecycleJournal.available) {
+    if (lifecycle != null) {
+      await lifecycle!.flush();
+    } else if (LocalLifecycleJournal.available) {
       await LocalLifecycleJournal.box.flush();
     }
 
@@ -73,13 +91,21 @@ class HiveMyWorldIndexRepository
 
   @override
   Future<void> activateRecoverySnapshot(WorldIndexSnapshot snapshot) async {
-    await LocalLifecycleJournal.serialized(() => _activateRecovery(snapshot));
+    await SourceWriterBoundary.run(
+      'world_index',
+      () =>
+          lifecycle?.serialized(() => _activateRecovery(snapshot)) ??
+          LocalLifecycleJournal.serialized(() => _activateRecovery(snapshot)),
+      path: _metadata.path,
+    );
   }
 
   Future<void> _activateRecovery(WorldIndexSnapshot snapshot) async {
     _validateSnapshot(snapshot);
     _checkDeletedSources(snapshot);
-    if (LocalLifecycleJournal.available) {
+    if (lifecycle != null) {
+      await lifecycle!.flush();
+    } else if (LocalLifecycleJournal.available) {
       await LocalLifecycleJournal.box.flush();
     }
     await _snapshots.put(snapshot.generation, snapshot);
@@ -161,7 +187,9 @@ class HiveMyWorldIndexRepository
   }
 
   void _checkDeletedSources(WorldIndexSnapshot snapshot) {
-    final filtered = LocalLifecycleJournal.filterTraces(snapshot.traces);
+    final filtered =
+        lifecycle?.filterTraces(snapshot.traces) ??
+        LocalLifecycleJournal.filterTraces(snapshot.traces);
     if (filtered.length != snapshot.traces.length ||
         List.generate(
           filtered.length,
@@ -174,4 +202,10 @@ class HiveMyWorldIndexRepository
       throw StateError('Silinmiş Dünya kaynağı yeniden etkinleştirilemez.');
     }
   }
+}
+
+abstract interface class WorldIndexLifecycle {
+  Future<void> serialized(Future<void> Function() operation);
+  Future<void> flush();
+  List<ActiveWorldTrace> filterTraces(List<ActiveWorldTrace> traces);
 }

@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'local_source_writer_fence.dart';
 import '../features/my_world/models/validated_road.dart';
 import '../features/my_world/persistence/my_world_hive.dart';
 import '../features/my_world/repositories/world_source_snapshot_repository.dart';
@@ -29,7 +30,7 @@ class IndependentDeletionService {
   static Future<void> _once(String key, Future<void> Function() body) {
     final active = _inFlight[key];
     if (active != null) return active;
-    final future = body();
+    final future = SourceWriterBoundary.run('lifecycle', body);
     _inFlight[key] = future;
     return future.whenComplete(() => _inFlight.remove(key));
   }
@@ -202,7 +203,10 @@ class IndependentDeletionService {
       if (LocalLifecycleJournal.filterTraces(footprint).isNotEmpty) return;
     }
     await MyWorldRuntime.repository().deleteWorldDataForDrive(id);
-    final box = Hive.box<dynamic>(WorldSourceSnapshotRepository.boxName);
+    final box = SourceWriterBoundary.box(
+      'world_source',
+      Hive.box<dynamic>(WorldSourceSnapshotRepository.boxName),
+    );
     await box.delete(id);
     await box.flush();
   }

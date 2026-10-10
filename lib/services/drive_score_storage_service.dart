@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'local_source_writer_fence.dart';
 
 import '../models/drive_score_record.dart';
 import 'local_data_preparation_service.dart';
@@ -22,8 +23,10 @@ class DriveScoreHive {
 }
 
 class DriveScoreStorageService {
-  static Box<DriveScoreRecord> get _box =>
-      Hive.box<DriveScoreRecord>(DriveScoreHive.boxName);
+  static Box<DriveScoreRecord> get _box => SourceWriterBoundary.box(
+    'score',
+    Hive.box<DriveScoreRecord>(DriveScoreHive.boxName),
+  );
 
   static String keyFor(String driveId, int algorithmVersion) =>
       '$driveId:v$algorithmVersion';
@@ -45,7 +48,9 @@ class DriveScoreStorageService {
     int algorithmVersion = DriveScoreRecord.currentAlgorithmVersion,
   }) => get(driveId: driveId, algorithmVersion: algorithmVersion) != null;
 
-  static Future<void> save(DriveScoreRecord record) async {
+  static Future<void> save(DriveScoreRecord record) =>
+      SourceWriterBoundary.run('score', () => _save(record));
+  static Future<void> _save(DriveScoreRecord record) async {
     _validate(record);
     if (!LocalLifecycleJournal.historyDeleted(record.driveId)) {
       await _box.put(keyFor(record.driveId, record.algorithmVersion), record);

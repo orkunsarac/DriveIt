@@ -1,4 +1,5 @@
 import 'package:hive/hive.dart';
+import 'local_source_writer_fence.dart';
 import '../features/my_world/models/active_world_trace.dart';
 import '../features/my_world/config/my_world_rules.dart';
 
@@ -8,7 +9,8 @@ class LocalLifecycleJournal {
   static Future<void> open(HiveInterface hive) =>
       hive.openBox<dynamic>(boxName);
   static bool get available => Hive.isBoxOpen(boxName);
-  static Box<dynamic> get box => Hive.box<dynamic>(boxName);
+  static Box<dynamic> get box =>
+      SourceWriterBoundary.box('lifecycle', Hive.box<dynamic>(boxName));
   static bool worldDeleted(String id) =>
       available && box.containsKey('world:$id');
   static bool historyDeleted(String id) =>
@@ -44,14 +46,28 @@ class LocalLifecycleJournal {
   /// rounded here. Only the existing trace identity formatting is reused.
   static List<ActiveWorldTrace> filterTraces(List<ActiveWorldTrace> traces) {
     if (!available) return traces;
-    final deleted = box.keys
+    return filterWithRecords(traces, {
+      for (final key in box.keys.whereType<String>().where(
+        (key) => key.startsWith('world:') || key.startsWith('worldTrace:'),
+      ))
+        key: box.get(key),
+    });
+  }
+
+  /// Pure shared tombstone semantics; permits a frozen owner-scoped journal
+  /// without consulting global Hive. The production caller above is unchanged.
+  static List<ActiveWorldTrace> filterWithRecords(
+    List<ActiveWorldTrace> traces,
+    Map<String, Object?> records,
+  ) {
+    final deleted = records.keys
         .whereType<String>()
         .where((k) => k.startsWith('worldTrace:'))
-        .map((k) => box.get(k) as Map)
+        .map((k) => records[k] as Map)
         .toList();
     final result = <ActiveWorldTrace>[];
     for (final trace in traces) {
-      if (worldDeleted(trace.sourceDriveSessionId)) continue;
+      if (records.containsKey('world:${trace.sourceDriveSessionId}')) continue;
       var spans = <(double, double)>[
         (trace.startOffsetMeters, trace.endOffsetMeters),
       ];
@@ -98,6 +114,10 @@ class LocalLifecycleJournal {
   /// Shares the local critical section with World pointer commits. No network
   /// or rebuild is awaited inside this lock; stale generation remains a CAS.
   static Future<T> serialized<T>(Future<T> Function() operation) {
+    return SourceWriterBoundary.run('lifecycle', () => _serialized(operation));
+  }
+
+  static Future<T> _serialized<T>(Future<T> Function() operation) {
     final next = _tail.then((_) => operation());
     _tail = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return next;

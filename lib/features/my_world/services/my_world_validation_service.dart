@@ -28,6 +28,7 @@ class MyWorldValidationService {
   final DateTime Function() _clock;
   final Future<List<CanonicalTelemetryPoint>> Function(String driveSessionId)?
   _telemetryLoader;
+  final bool Function(String) _hasDeletion;
 
   MyWorldValidationService({
     required this.repository,
@@ -35,13 +36,15 @@ class MyWorldValidationService {
     DateTime Function()? clock,
     Future<List<CanonicalTelemetryPoint>> Function(String driveSessionId)?
     telemetryLoader,
+    bool Function(String)? hasDeletion,
   }) : _clock = clock ?? DateTime.now,
+       _hasDeletion = hasDeletion ?? LocalLifecycleJournal.worldHasDeletion,
        // Public constructor keeps the readable `telemetryLoader` name.
        // ignore: prefer_initializing_formals
        _telemetryLoader = telemetryLoader;
 
   Future<void> enqueueDrive(DriveSession drive) async {
-    if (LocalLifecycleJournal.worldHasDeletion(drive.id)) return;
+    if (_hasDeletion(drive.id)) return;
     final roads = await repository.getValidatedRoadsForDrive(drive.id);
     if (_currentRoad(roads) case final existing? when !existing.requiresRetry) {
       // A validated road is not enough to consider the drive complete: an
@@ -83,7 +86,7 @@ class MyWorldValidationService {
     DriveSession drive, {
     bool forceRebuild = false,
   }) async {
-    if (LocalLifecycleJournal.worldHasDeletion(drive.id)) {
+    if (_hasDeletion(drive.id)) {
       return const MyWorldValidationResult(
         state: WorldProcessingState.failedPermanent,
         road: null,

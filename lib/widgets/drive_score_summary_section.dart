@@ -6,6 +6,7 @@ import '../models/drive_score_record.dart';
 import '../services/drive_score_storage_service.dart';
 import '../services/drive_reliability_service.dart';
 import '../services/drive_time_analysis.dart';
+import '../services/local_owner_lifecycle.dart';
 
 typedef DriveScoreRecordLoader =
     Future<DriveScoreRecord?> Function(String driveId);
@@ -20,11 +21,13 @@ class DriveScoreSummarySection extends StatefulWidget {
     required this.driveId,
     this.loader,
     this.reliabilityLoader,
+    this.ownerLease,
   });
 
   final String driveId;
   final DriveScoreRecordLoader? loader;
   final DriveTimeAnalysis? Function(String)? reliabilityLoader;
+  final LocalOwnerLease? ownerLease;
 
   @override
   State<DriveScoreSummarySection> createState() =>
@@ -38,20 +41,43 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
   @override
   void initState() {
     super.initState();
+    widget.ownerLease?.changes.addListener(_ownerChanged);
     _record = _load();
+  }
+
+  void _ownerChanged() {
+    if (mounted && widget.ownerLease?.isCurrent == false) {
+      setState(() => _timing = null);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.ownerLease?.changes.removeListener(_ownerChanged);
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(covariant DriveScoreSummarySection oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.ownerLease != widget.ownerLease) {
+      oldWidget.ownerLease?.changes.removeListener(_ownerChanged);
+      widget.ownerLease?.changes.addListener(_ownerChanged);
+    }
     if (oldWidget.driveId != widget.driveId ||
         oldWidget.loader != widget.loader ||
-        oldWidget.reliabilityLoader != widget.reliabilityLoader) {
+        oldWidget.reliabilityLoader != widget.reliabilityLoader ||
+        oldWidget.ownerLease != widget.ownerLease) {
       _record = _load();
     }
   }
 
   Future<DriveScoreRecord?> _load() => Future.sync(() {
+    if (widget.ownerLease case final lease?) {
+      lease.requireCurrent();
+      _timing = lease.timing(widget.driveId);
+      return lease.score(widget.driveId);
+    }
     _timing = (widget.reliabilityLoader ?? DriveReliabilityService.get)(
       widget.driveId,
     );
@@ -72,6 +98,9 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.ownerLease?.isCurrent == false) {
+      return _unavailable('Hesap verisi hazır değil');
+    }
     return FutureBuilder<DriveScoreRecord?>(
       future: _record,
       builder: (context, snapshot) {

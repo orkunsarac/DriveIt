@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'local_source_writer_fence.dart';
 import 'package:hive/hive.dart';
 import '../models/drive_session.dart';
 import '../models/drive_score_record.dart';
@@ -10,13 +11,22 @@ import 'career_statistics_service.dart';
 /// Legacy activation is explicit, conservative, and never runs at startup.
 class CareerContributionRepository {
   static const boxName = 'career_contributions_v1';
-  CareerContributionRepository(this.box);
+  CareerContributionRepository(Box<dynamic> box)
+    : box = SourceWriterBoundary.box('career', box);
   final Box<dynamic> box;
   static Future<void> open(HiveInterface hive) =>
       hive.openBox<dynamic>(boxName);
   static final Map<String, Future<void>> _queues = {};
 
   Future<void> add(LocalSourceBundle source, {bool legacy = false}) {
+    return SourceWriterBoundary.run(
+      'career',
+      () => _add(source, legacy: legacy),
+      path: box.path,
+    );
+  }
+
+  Future<void> _add(LocalSourceBundle source, {bool legacy = false}) {
     final key = box.path ?? box.name;
     final prior = _queues[key] ?? Future<void>.value();
     final future = prior.then((_) async {
@@ -53,6 +63,14 @@ class CareerContributionRepository {
 
   /// Does not need the removed History payload and cannot create a contribution.
   Future<void> attachScore(DriveScoreRecord record) {
+    return SourceWriterBoundary.run(
+      'career',
+      () => _attachQueuedScore(record),
+      path: box.path,
+    );
+  }
+
+  Future<void> _attachQueuedScore(DriveScoreRecord record) {
     final key = box.path ?? box.name;
     final prior = _queues[key] ?? Future<void>.value();
     final future = prior.then((_) async {
@@ -133,6 +151,19 @@ class CareerContributionRepository {
   /// prevent reconstruction of *all* existing Career metrics. Known totals are
   /// retained verbatim; no missing drive, score, date or record is fabricated.
   Future<bool> prepareLegacy({
+    required List<LocalSourceBundle> sources,
+    required Map<String, dynamic> totals,
+    Future<void> Function()? afterContributions,
+  }) => SourceWriterBoundary.run(
+    'career',
+    () => _prepareLegacy(
+      sources: sources,
+      totals: totals,
+      afterContributions: afterContributions,
+    ),
+    path: box.path,
+  );
+  Future<bool> _prepareLegacy({
     required List<LocalSourceBundle> sources,
     required Map<String, dynamic> totals,
     Future<void> Function()? afterContributions,

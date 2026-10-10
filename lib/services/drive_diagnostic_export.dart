@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:crypto/crypto.dart';
 import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
@@ -26,13 +27,29 @@ class DriveDiagnosticExport {
   }
 
   static Future<void> share(String id) async {
-    final json = const JsonEncoder.withIndent('  ').convert(read(id));
+    await shareValue(read(id));
+  }
+
+  static Future<void> shareValue(
+    Map<String, Object?> value, {
+    String? scope,
+    bool Function()? stillAllowed,
+  }) async {
+    if (stillAllowed?.call() == false) throw StateError('Owner view revoked');
+    final json = const JsonEncoder.withIndent('  ').convert(value);
     final directory = await getTemporaryDirectory();
+    final id = (value['drive'] as Map)['id'] as String;
     final safeId = id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-    final exportDirectory = Directory('${directory.path}/drive_diagnostics');
+    final namespace = scope == null
+        ? ''
+        : '/${sha256.convert(utf8.encode(scope))}';
+    final exportDirectory = Directory(
+      '${directory.path}/drive_diagnostics$namespace',
+    );
     await exportDirectory.create(recursive: true);
     final file = File('${exportDirectory.path}/drive-diagnostic-$safeId.json');
     await file.writeAsString(json, flush: true);
+    if (stillAllowed?.call() == false) throw StateError('Owner view revoked');
     await const MethodChannel(
       'driveit/posters',
     ).invokeMethod<void>('shareDiagnosticJson', {'path': file.path});

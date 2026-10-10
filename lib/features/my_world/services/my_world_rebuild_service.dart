@@ -10,6 +10,7 @@ import '../../../models/drive_session.dart';
 import '../../../services/local_lifecycle_journal.dart';
 import '../config/my_world_rules.dart';
 import '../models/validated_road.dart';
+import '../models/active_world_trace.dart';
 import '../models/world_index_mutation_plan.dart';
 import '../models/world_index_snapshot.dart';
 import '../models/world_rebuild_result.dart';
@@ -35,6 +36,8 @@ class MyWorldRebuildService {
         const WorldIndexMutationPlanner(),
     WorldRecordProcessingService? processingService,
     WorldDriveEligibility? driveEligibility,
+    bool Function(String)? worldDeleted,
+    List<ActiveWorldTrace> Function(List<ActiveWorldTrace>)? traceFilter,
     DateTime Function()? clock,
   }) : _repository = repository,
        _indexRepository = indexRepository,
@@ -43,6 +46,8 @@ class MyWorldRebuildService {
        _mutationPlanner = mutationPlanner,
        _processingService = processingService,
        _driveEligibility = driveEligibility ?? ((_) => true),
+       _worldDeleted = worldDeleted ?? LocalLifecycleJournal.worldDeleted,
+       _traceFilter = traceFilter ?? LocalLifecycleJournal.filterTraces,
        _clock = clock ?? DateTime.now;
 
   final MyWorldSourceRepository _repository;
@@ -52,6 +57,8 @@ class MyWorldRebuildService {
   final WorldIndexMutationPlanner _mutationPlanner;
   final WorldRecordProcessingService? _processingService;
   final WorldDriveEligibility _driveEligibility;
+  final bool Function(String) _worldDeleted;
+  final List<ActiveWorldTrace> Function(List<ActiveWorldTrace>) _traceFilter;
   final DateTime Function() _clock;
 
   Future<WorldRebuildResult> rebuild({
@@ -94,7 +101,7 @@ class MyWorldRebuildService {
     final unresolvedActiveSource = base.traces.any(
       (trace) =>
           !excludedDriveIds.contains(trace.sourceDriveSessionId) &&
-          !LocalLifecycleJournal.worldDeleted(trace.sourceDriveSessionId) &&
+          !_worldDeleted(trace.sourceDriveSessionId) &&
           (!driveById.containsKey(trace.sourceDriveSessionId) ||
               !roads.any((road) => road.id == trace.validatedRoadId)),
     );
@@ -119,7 +126,7 @@ class MyWorldRebuildService {
         roads.where((road) {
           final drive = driveById[road.driveSessionId];
           return drive != null &&
-              !LocalLifecycleJournal.worldDeleted(road.driveSessionId) &&
+              !_worldDeleted(road.driveSessionId) &&
               _driveEligibility(road.driveSessionId) &&
               road.processingVersion ==
                   MyWorldRules.validatedRoadProcessingVersion &&
@@ -203,7 +210,7 @@ class MyWorldRebuildService {
           overlaps: overlaps,
           now: _clock(),
           algorithmVersion: targetVersion,
-          traceFilter: LocalLifecycleJournal.filterTraces,
+          traceFilter: _traceFilter,
         );
         staged = plan.resultingSnapshot;
         processed++;

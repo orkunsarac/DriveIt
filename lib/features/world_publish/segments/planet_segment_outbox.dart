@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../../../services/local_source_writer_fence.dart';
 import 'package:hive/hive.dart';
 import 'planet_segment.dart';
 import '../../my_world/config/my_world_rules.dart';
@@ -60,9 +61,9 @@ class DisabledPlanetSegmentGateway implements PlanetSegmentGateway {
 /// Persisted sending means "response unknown": ALWAYS reconcile before submit.
 class PlanetSegmentOutbox {
   PlanetSegmentOutbox(
-    this.box, {
+    Box<dynamic> box, {
     this.gateway = const DisabledPlanetSegmentGateway(),
-  });
+  }) : box = SourceWriterBoundary.box('planet', box);
   static const boxName = 'planet_segment_outbox_v1';
   static Future<void> open(HiveInterface hive) =>
       hive.openBox<dynamic>(boxName);
@@ -92,6 +93,14 @@ class PlanetSegmentOutbox {
   }
 
   Future<void> prepare(String owner, Iterable<PlanetSegment> segments) {
+    return SourceWriterBoundary.run(
+      'planet',
+      () => _prepare(owner, segments),
+      path: box.path,
+    );
+  }
+
+  Future<void> _prepare(String owner, Iterable<PlanetSegment> segments) {
     if (owner.isEmpty) {
       return Future.error(ArgumentError('Owner scope required'));
     }
@@ -128,6 +137,14 @@ class PlanetSegmentOutbox {
   }
 
   Future<void> deliver(String owner, String id) {
+    return SourceWriterBoundary.run(
+      'planet',
+      () => _deliverOnce(owner, id),
+      path: box.path,
+    );
+  }
+
+  Future<void> _deliverOnce(String owner, String id) {
     final key = '${box.path}:${_key(owner, id)}';
     return _inFlight.putIfAbsent(
       key,

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import '../../../services/local_source_writer_fence.dart';
 import 'package:hive/hive.dart';
 import '../../../services/local_source_bundle.dart';
 import '../config/my_world_rules.dart';
@@ -9,7 +10,8 @@ import '../models/validated_road.dart';
 /// promotion leaves a resumable staging entry, never an authoritative source.
 class WorldSourceSnapshotRepository {
   static const boxName = 'my_world_source_snapshots_v1';
-  WorldSourceSnapshotRepository(this.box);
+  WorldSourceSnapshotRepository(Box<dynamic> box)
+    : box = SourceWriterBoundary.box('world_source', box);
   final Box<dynamic> box;
   static Future<void> open(HiveInterface hive) =>
       hive.openBox<dynamic>(boxName);
@@ -37,6 +39,17 @@ class WorldSourceSnapshotRepository {
     LocalSourceBundle source, {
     Future<void> Function()? afterStage,
   }) {
+    return SourceWriterBoundary.run(
+      'world_source',
+      () => _prepareQueued(source, afterStage),
+      path: box.path,
+    );
+  }
+
+  Future<void> _prepareQueued(
+    LocalSourceBundle source,
+    Future<void> Function()? afterStage,
+  ) {
     final key = '${box.path}:${source.drive.id}';
     final previous = _queues[key] ?? Future<void>.value();
     final future = previous.then((_) => _prepare(source, afterStage));
@@ -121,6 +134,14 @@ class WorldSourceSnapshotRepository {
   /// Enrich an already prepared new source after validation. This never
   /// backfills old drives automatically or replaces a canonical source.
   Future<void> attachRoad(ValidatedRoad road) {
+    return SourceWriterBoundary.run(
+      'world_source',
+      () => _attachQueuedRoad(road),
+      path: box.path,
+    );
+  }
+
+  Future<void> _attachQueuedRoad(ValidatedRoad road) {
     final key = '${box.path}:${road.driveSessionId}';
     final previous = _queues[key] ?? Future<void>.value();
     final future = previous.then((_) async {

@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'config/local_ownership_gate.dart';
+import 'services/local_ownership_bootstrap.dart';
 
 import 'services/foreground_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -27,6 +29,13 @@ import 'features/world_publish/segments/planet_segment_outbox.dart';
 import 'features/my_world/repositories/world_source_snapshot_repository.dart';
 
 void main() async {
+  await LocalOwnershipBootstrap.run(
+    gate: LocalOwnershipGate.production,
+    legacyBootstrap: _legacyBootstrap,
+  );
+}
+
+Future<void> _legacyBootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations(const [
     DeviceOrientation.portraitUp,

@@ -21,9 +21,11 @@ class WorldPendingJobProcessor {
     required this._recordProcessing,
     required this._driveLoader,
     WorldDriveEligibility? driveEligibility,
+    this.drainScope = 'legacy',
   }) : _driveEligibility = driveEligibility ?? ((_) => true);
 
-  static Future<void>? _activeDrain;
+  static final Map<String, Future<void>> _activeDrains = {};
+  final String drainScope;
 
   final MyWorldRepository _repository;
   final MyWorldValidationService _validation;
@@ -32,14 +34,15 @@ class WorldPendingJobProcessor {
   final WorldDriveEligibility _driveEligibility;
 
   Future<void> drain() {
-    final active = _activeDrain;
+    final active = _activeDrains[drainScope];
     if (active != null) return active;
     final future = _drainSafely();
-    _activeDrain = future;
-    future.whenComplete(() {
-      if (identical(_activeDrain, future)) _activeDrain = null;
+    _activeDrains[drainScope] = future;
+    return future.whenComplete(() {
+      if (identical(_activeDrains[drainScope], future)) {
+        _activeDrains.remove(drainScope);
+      }
     });
-    return future;
   }
 
   Future<void> _drainSafely() async {

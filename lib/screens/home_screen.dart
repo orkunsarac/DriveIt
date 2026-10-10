@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
+import '../models/route_point.dart';
 import '../features/drive_poster/poster_screens.dart';
 import '../features/onboarding/widgets/home_tour_overlay.dart';
 import '../services/drive_storage_service.dart';
@@ -18,9 +19,13 @@ import 'history_screen.dart';
 import 'career_screen.dart';
 import 'world_mode_selection_screen.dart';
 import 'profile_settings_screen.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../services/owner_personal_preferences.dart';
+import '../widgets/local_owner_view.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.ownerLease});
+  final LocalOwnerLease? ownerLease;
 
   static const blue = Color(0xff248fff);
   static const textFont = 'Noto Sans';
@@ -41,12 +46,39 @@ class _HomeScreenState extends State<HomeScreen> {
   final _worldTourKey = GlobalKey();
   final _careerTourKey = GlobalKey();
   bool _showHomeTour = false;
+  late final LocalOwnerLease? _mountedOwner;
+  bool get _ownerValid =>
+      identical(widget.ownerLease, _mountedOwner) &&
+      _mountedOwner?.isCurrent != false;
+  bool get _current => mounted && _ownerValid;
+
+  Widget _detail(DriveSession drive) => widget.ownerLease == null
+      ? DriveDetailScreen(drive: drive)
+      : OwnedDriveDetailScreen(lease: widget.ownerLease!, driveId: drive.id);
+
+  Future<void> _navigate(String route, WidgetBuilder legacy) async {
+    if (!_current) return;
+    if (widget.ownerLease == null) {
+      await Navigator.of(
+        context,
+      ).push<void>(MaterialPageRoute(builder: legacy));
+    } else {
+      // Missing registered scoped consumers fail closed in LocalOwnerNavigator.
+      await Navigator.of(context).pushNamed<void>(route);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    if (_accountIdentity.hasSession) _profileName = null;
-    _accountIdentity.addListener(_onAccountIdentityChanged);
+    _mountedOwner = widget.ownerLease;
+    if (widget.ownerLease == null) {
+      if (_accountIdentity.hasSession) _profileName = null;
+      _accountIdentity.addListener(_onAccountIdentityChanged);
+    } else {
+      _profileName = null;
+      widget.ownerLease!.changes.addListener(_onOwnerChanged);
+    }
     _loadProfile();
     _loadHomeTourState();
   }
@@ -54,7 +86,18 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _accountIdentity.removeListener(_onAccountIdentityChanged);
+    _mountedOwner?.changes.removeListener(_onOwnerChanged);
     super.dispose();
+  }
+
+  void _onOwnerChanged() {
+    if (mounted) {
+      setState(() {
+        _profileName = null;
+        _profilePhoto = null;
+        _localProfileName = null;
+      });
+    }
   }
 
   void _onAccountIdentityChanged() {
@@ -65,6 +108,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadProfile() async {
+    if (!_current) return;
+    if (widget.ownerLease case final lease?) {
+      if (!lease.isCurrent) return;
+      final profile = OwnerProfileStore(lease);
+      setState(() {
+        _localProfileName = profile.name;
+        _profileName = profile.name;
+        _profilePhoto = profile.photo;
+      });
+      return;
+    }
     // Widget tests and desktop previews may not initialise Hive. The app
     // opens this optional box during startup, so simply retain the fallback
     // avatar/name until it is available.
@@ -91,6 +145,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _loadHomeTourState() async {
+    if (widget.ownerLease != null) {
+      return; // No global onboarding preference read.
+    }
     if (!Hive.isBoxOpen(ProfileStorageService.boxName)) return;
     try {
       final profile = await ProfileStorageService.open();
@@ -106,6 +163,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _completeHomeTour() async {
+    if (widget.ownerLease case final lease?) {
+      await OwnerProfileStore(lease).markHomeTourCompleted();
+      if (_current) setState(() => _showHomeTour = false);
+      return;
+    }
     final profile = await ProfileStorageService.open();
     await profile.markHomeTourCompleted();
     if (mounted) setState(() => _showHomeTour = false);
@@ -113,7 +175,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _openProfileSettings(BuildContext context) async {
     await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(builder: (_) => const ProfileSettingsScreen()),
+      MaterialPageRoute<void>(
+        builder: (_) => ProfileSettingsScreen(ownerLease: widget.ownerLease),
+      ),
     );
     await _loadProfile();
   }
@@ -128,11 +192,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final drives = DriveStorageService.getAllDrives();
+    if (!_ownerValid) {
+      return const OwnerAccessUnavailable();
+    }
+    final drives = widget.ownerLease == null
+        ? DriveStorageService.getAllDrives()
+        : (widget.ownerLease!.drives()
+            ..sort((a, b) => b.date.compareTo(a.date)));
     final last = drives.isEmpty ? null : drives.first;
     final lastScore = last == null
         ? null
-        : DriveScoreStorageService.get(driveId: last.id);
+        : widget.ownerLease == null
+        ? DriveScoreStorageService.get(driveId: last.id)
+        : widget.ownerLease!.score(last.id);
     return PopScope(
       canPop: !_showHomeTour,
       child: Scaffold(
@@ -370,12 +442,33 @@ class _HomeScreenState extends State<HomeScreen> {
   );
 
   Widget _career(BuildContext context) {
-    final km = DriveStorageService.getCareerDistance() / 1000;
-    final seconds = DriveStorageService.getCareerDurationSeconds();
+    double meters;
+    int seconds;
+    if (widget.ownerLease case final lease?) {
+      try {
+        final stats = lease.career();
+        meters = stats.totalDistanceMeters;
+        seconds = stats.totalDurationSeconds;
+      } on StateError {
+        return const Text(
+          'Kariyer verisi henüz hazırlanmadı. Kayıtlar korunuyor.',
+        );
+      }
+    } else {
+      meters = DriveStorageService.getCareerDistance();
+      seconds = DriveStorageService.getCareerDurationSeconds();
+    }
+    final km = meters / 1000;
     return InkWell(
       onTap: () => Navigator.push(
         context,
-        MaterialPageRoute(builder: (_) => const CareerScreen()),
+        MaterialPageRoute(
+          builder: (_) => CareerScreen(
+            ownerLease: widget.ownerLease,
+            ownedDetailBuilder: (lease, id) =>
+                OwnedDriveDetailScreen(lease: lease, driveId: id),
+          ),
+        ),
       ),
       borderRadius: BorderRadius.circular(22),
       child: _glass(
@@ -420,96 +513,96 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _drives(BuildContext context, List<DriveSession> drives) =>
-      GestureDetector(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const HistoryScreen()),
+  Widget _drives(
+    BuildContext context,
+    List<DriveSession> drives,
+  ) => GestureDetector(
+    onTap: () => Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HistoryScreen(
+          ownerLease: widget.ownerLease,
+          ownedDetailBuilder: (lease, id) =>
+              OwnedDriveDetailScreen(lease: lease, driveId: id),
         ),
-        child: _glass(
-          const Color(0xff9d5cff),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+      ),
+    ),
+    child: _glass(
+      const Color(0xff9d5cff),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
             children: [
-              const Row(
-                children: [
-                  Icon(Icons.alt_route, color: Color(0xffbd82ff), size: 18),
-                  SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      'Sürüşlerim',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontFamily: textFont,
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 7),
-              SizedBox(
-                height: 68,
-                child: Builder(
-                  builder: (_) {
-                    final route = DriveStorageService.getSymbolicRoute(drives);
-                    return route.length < 2
-                        ? const Center(
-                            child: Icon(
-                              Icons.route,
-                              color: Colors.white38,
-                              size: 28,
-                            ),
-                          )
-                        : Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 3),
-                            child: NeonRoutePreview(route: route),
-                          );
-                  },
-                ),
-              ),
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 3),
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.center,
-                    child: Text(
-                      'Toplam Sürüş ${drives.length}',
-                      maxLines: 1,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 9,
-                      ),
-                    ),
+              Icon(Icons.alt_route, color: Color(0xffbd82ff), size: 18),
+              SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  'Sürüşlerim',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: textFont,
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
             ],
           ),
-        ),
-      );
+          const SizedBox(height: 7),
+          SizedBox(
+            height: 68,
+            child: Builder(
+              builder: (_) {
+                final route = widget.ownerLease == null
+                    ? DriveStorageService.getSymbolicRoute(drives)
+                    : (drives.isEmpty ? <RoutePoint>[] : drives.first.route);
+                return route.length < 2
+                    ? const Center(
+                        child: Icon(
+                          Icons.route,
+                          color: Colors.white38,
+                          size: 28,
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 3),
+                        child: NeonRoutePreview(route: route),
+                      );
+              },
+            ),
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.center,
+                child: Text(
+                  'Toplam Sürüş ${drives.length}',
+                  maxLines: 1,
+                  style: const TextStyle(color: Colors.white70, fontSize: 9),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget _driveButton(BuildContext context) => _AnimatedDriveButton(
-    onTap: () => Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const DriveCenterScreen()),
-    ),
+    onTap: () => _navigate('/drive', (_) => const DriveCenterScreen()),
   );
 
   Widget _world(BuildContext context) => KeyedSubtree(
     key: _worldTourKey,
     child: GestureDetector(
       key: const Key('home_world_card'),
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => const WorldModeSelectionScreen(),
-        ),
-      ),
+      onTap: () => _navigate('/world', (_) => const WorldModeSelectionScreen()),
       child: const _HomeWorldCard(),
     ),
   );
@@ -522,12 +615,8 @@ class _HomeScreenState extends State<HomeScreen> {
           child: InkWell(
             key: const Key('home_poster_card'),
             borderRadius: BorderRadius.circular(22),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => const PosterCenterScreen(),
-              ),
-            ),
+            onTap: () =>
+                _navigate('/posters', (_) => const PosterCenterScreen()),
             child: _glass(
               blue,
               const Center(
@@ -594,7 +683,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ? null
         : () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => DriveDetailScreen(drive: drive)),
+            MaterialPageRoute(builder: (_) => _detail(drive)),
           ),
     child: _glass(
       const Color(0xff315071),
@@ -671,9 +760,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: OutlinedButton.icon(
                           onPressed: () => Navigator.push(
                             context,
-                            MaterialPageRoute(
-                              builder: (_) => DriveDetailScreen(drive: drive),
-                            ),
+                            MaterialPageRoute(builder: (_) => _detail(drive)),
                           ),
                           icon: const Icon(Icons.arrow_forward, size: 15),
                           label: const Text(

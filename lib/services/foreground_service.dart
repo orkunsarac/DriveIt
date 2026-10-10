@@ -85,6 +85,19 @@ class ForegroundService {
   }
 
   static Future<void>? _stopInFlight;
+
+  /// Called only after the platform has confirmed the producer is absent.
+  /// This path has no native GPS or service-start side effects.
+  static Future<void> finishCommittedJournal(
+    GpsSessionStore store,
+    String sessionId,
+  ) async {
+    await store.stop(
+      sessionId,
+      expectedSequence: (await store.last(sessionId))?.sequence ?? 0,
+    );
+  }
+
   static Future<void> stop() => _stopInFlight ??= _stopRecording().whenComplete(
     () => _stopInFlight = null,
   );
@@ -96,7 +109,10 @@ class ForegroundService {
       await (await journal).requestStop(session.id, at: requestedAt);
       // Explicit durable-drain acknowledgement, not a fixed 250ms sleep.
       if (!await FlutterForegroundTask.isRunningService) {
-        await resumeRecording();
+        // No producer exists: preserve and finalize only the committed journal.
+        // Never start live GPS merely to save a recovered drive.
+        final store = await journal;
+        await finishCommittedJournal(store, session.id);
       }
       FlutterForegroundTask.sendDataToTask({'drainSession': session.id});
       final deadline = DateTime.now().add(const Duration(seconds: 15));
@@ -137,6 +153,7 @@ class ForegroundService {
   }
 
   static Future<DriveRecoveryStatus> inspectRecovery() => inspectDriveRecovery(
+    producerRunning: () => FlutterForegroundTask.isRunningService,
     loadActive: () async {
       final store = await journal;
       var session = await store.active();

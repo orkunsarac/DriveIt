@@ -14,12 +14,15 @@ class DriveRecoveryScreen extends StatefulWidget {
     this.loadStatus,
     this.loadSessions,
     this.selectSession,
+    this.recoveredScreenBuilder,
   });
   final DriveRecoveryStatus? initialStatus;
   final bool allowNewDrive;
   final Future<DriveRecoveryStatus> Function()? loadStatus;
   final Future<List<GpsSession>> Function()? loadSessions;
   final Future<void> Function(String)? selectSession;
+  final Widget Function(bool finishOnOpen, bool resumeIfStopped)?
+  recoveredScreenBuilder;
   @override
   State<DriveRecoveryScreen> createState() => _DriveRecoveryScreenState();
 }
@@ -28,6 +31,7 @@ class _DriveRecoveryScreenState extends State<DriveRecoveryScreen> {
   DriveRecoveryStatus? _status;
   bool _busy = false;
   bool _openRecovered = false;
+  bool _finishRecovered = false;
   List<GpsSession> _candidates = [];
   @override
   void initState() {
@@ -71,6 +75,7 @@ class _DriveRecoveryScreenState extends State<DriveRecoveryScreen> {
         await (await ForegroundService.journal).selectRecovery(id);
       }
       _openRecovered = false;
+      _finishRecovered = false;
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -112,6 +117,46 @@ class _DriveRecoveryScreenState extends State<DriveRecoveryScreen> {
     if (status == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
+    if (status.requiresDecision && !_openRecovered) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Kesintiye uğramış sürüş')),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'GPS günlüğün korunuyor. Sürüşe devam edebilir veya kayıtlı verilerle bitirebilirsin.',
+                ),
+              ),
+              FilledButton(
+                onPressed: _busy
+                    ? null
+                    : () => setState(() {
+                        _openRecovered = true;
+                        _finishRecovered = false;
+                      }),
+                child: const Text('Sürüşe Devam Et'),
+              ),
+              FilledButton(
+                onPressed: _busy
+                    ? null
+                    : () => setState(() {
+                        _openRecovered = true;
+                        _finishRecovered = true;
+                      }),
+                child: const Text('Kaydet ve Bitir'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.maybePop(context),
+                child: const Text('Şimdi değil — kayıtları koru'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     if (status.hasVerifiedSession &&
         status.session?.state == 'stopped' &&
         !_openRecovered) {
@@ -137,7 +182,12 @@ class _DriveRecoveryScreenState extends State<DriveRecoveryScreen> {
               ),
               if (_candidates.length > 1) _sessionChoices(),
               if (_candidates.isEmpty)
-                TextButton(onPressed: _busy ? null : _check, child: const Text('Diğer kurtarılabilir sürüşleri kontrol et')),
+                TextButton(
+                  onPressed: _busy ? null : _check,
+                  child: const Text(
+                    'Diğer kurtarılabilir sürüşleri kontrol et',
+                  ),
+                ),
             ],
           ),
         ),
@@ -145,7 +195,17 @@ class _DriveRecoveryScreenState extends State<DriveRecoveryScreen> {
     }
     if (status.hasVerifiedSession ||
         (status.canStartNewDrive && widget.allowNewDrive)) {
-      return MapScreen(resumeDrive: status.hasVerifiedSession);
+      if (status.hasVerifiedSession && widget.recoveredScreenBuilder != null) {
+        return widget.recoveredScreenBuilder!(
+          _finishRecovered,
+          _openRecovered && !_finishRecovered,
+        );
+      }
+      return MapScreen(
+        resumeDrive: status.hasVerifiedSession,
+        finishOnOpen: _finishRecovered,
+        resumeIfServiceStopped: _openRecovered && !_finishRecovered,
+      );
     }
     if (status.canStartNewDrive) {
       return Scaffold(

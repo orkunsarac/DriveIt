@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -33,6 +34,8 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   static const _background = Color(0xff020c1d);
 
   GoogleMapController? _mapController;
+  Timer? _fitRouteTimer;
+  bool _mapActive = true;
   late final Set<Polyline> _polylines;
   Set<Marker> _markers = {};
   late final TextEditingController _nameController;
@@ -85,7 +88,25 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   @override
+  void deactivate() {
+    // A child GoogleMap can be disposed before this State's dispose runs.
+    _mapActive = false;
+    _fitRouteTimer?.cancel();
+    _fitRouteTimer = null;
+    _mapController = null;
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _mapActive = true;
+  }
+
+  @override
   void dispose() {
+    _fitRouteTimer?.cancel();
+    _mapController = null;
     _nameController.dispose();
     super.dispose();
   }
@@ -206,6 +227,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   }
 
   void _fitRoute() {
+    if (!mounted || !_mapActive) return;
     final controller = _mapController;
     final route = widget.drive.route;
     if (controller == null || route.isEmpty) return;
@@ -370,10 +392,18 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                           polylines: _polylines,
                           markers: _markers,
                           onMapCreated: (controller) {
+                            if (!mounted || !_mapActive) return;
+                            _fitRouteTimer?.cancel();
                             _mapController = controller;
-                            Future.delayed(
+                            _fitRouteTimer = Timer(
                               const Duration(milliseconds: 350),
-                              _fitRoute,
+                              () {
+                                if (!identical(_mapController, controller)) {
+                                  return;
+                                }
+                                _fitRouteTimer = null;
+                                _fitRoute();
+                              },
                             );
                           },
                         ),

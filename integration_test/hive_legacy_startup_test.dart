@@ -72,5 +72,24 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(PosterCanvas), findsOneWidget);
     expect(tester.takeException(), isNull);
+    // Repeated rapid detail removal exercises a pending 350 ms camera fit.
+    // Each new State must own/cancel its own request, never the next screen's.
+    for (var attempt = 0; attempt < 5; attempt++) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DriveDetailScreen(key: ValueKey(attempt), drive: drive),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)),
+      );
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 400)),
+      );
+      expect(tester.takeException(), isNull, reason: 'rapid removal $attempt');
+    }
   });
 }

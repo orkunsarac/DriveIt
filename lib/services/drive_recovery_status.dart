@@ -14,11 +14,15 @@ class DriveRecoveryStatus {
     this.session,
     this.failure,
     this.legacyPoints = const [],
+    this.producerRunning = false,
   });
   final DriveRecoveryKind kind;
   final GpsSession? session;
   final GpsFailure? failure;
   final List<Map<String, dynamic>> legacyPoints;
+  final bool producerRunning;
+  bool get requiresDecision =>
+      hasVerifiedSession && session?.state == 'recording' && !producerRunning;
   bool get canStartNewDrive => kind == DriveRecoveryKind.none;
   bool get hasVerifiedSession => kind == DriveRecoveryKind.verifiedSession;
 }
@@ -28,6 +32,7 @@ Future<DriveRecoveryStatus> inspectDriveRecovery({
   required Future<GpsSession?> Function() loadActive,
   required Future<bool> Function() legacyActive,
   required Future<List<Map<String, dynamic>>> Function() loadLegacy,
+  Future<bool> Function()? producerRunning,
 }) async {
   try {
     final session = await loadActive();
@@ -38,6 +43,9 @@ Future<DriveRecoveryStatus> inspectDriveRecovery({
       return DriveRecoveryStatus(
         DriveRecoveryKind.verifiedSession,
         session: session,
+        producerRunning:
+            session.state == 'recording' &&
+            (await producerRunning?.call() ?? false),
       );
     }
     if (await legacyActive()) {

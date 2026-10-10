@@ -21,10 +21,12 @@ import '../widgets/gps_recovery_notice.dart';
 class MapScreen extends StatefulWidget {
   final bool resumeDrive;
   final bool finishOnOpen;
+  final bool resumeIfServiceStopped;
   const MapScreen({
     super.key,
     this.resumeDrive = false,
     this.finishOnOpen = false,
+    this.resumeIfServiceStopped = false,
   });
 
   @override
@@ -732,13 +734,13 @@ class _MapScreenState extends State<MapScreen> {
     _recovering = widget.resumeDrive;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
-        await requestPermissions();
+        if (!widget.finishOnOpen) await requestPermissions();
         await _createArrowIcon();
         await _createStationaryIcon();
         await _createEndpointIcons();
         if (widget.resumeDrive) await _restoreSession();
         if (!mounted || _recoveryFailure != null) return;
-        await getCurrentLocation();
+        if (!widget.finishOnOpen) await getCurrentLocation();
       } catch (error) {
         _warnGps(error, GpsErrorCode.gpsUnavailable);
         if (widget.resumeDrive && mounted && _recovering) {
@@ -772,6 +774,11 @@ class _MapScreenState extends State<MapScreen> {
         throw status.failure ?? GpsFailure(GpsErrorCode.recovery);
       }
       final session = status.session!;
+      if (status.requiresDecision &&
+          !widget.resumeIfServiceStopped &&
+          !widget.finishOnOpen) {
+        throw GpsFailure(GpsErrorCode.recovery);
+      }
       elapsedTimer?.cancel();
       backgroundSyncTimer?.cancel();
       await positionStream?.cancel();
@@ -797,7 +804,7 @@ class _MapScreenState extends State<MapScreen> {
             .difference(driveStartTime!)
             .inSeconds;
       });
-      await ForegroundService.resumeRecording();
+      if (!widget.finishOnOpen) await ForegroundService.resumeRecording();
       elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && isDriving) {
           setState(
@@ -807,7 +814,7 @@ class _MapScreenState extends State<MapScreen> {
           );
         }
       });
-      if (session.state == 'recording') {
+      if (session.state == 'recording' && !widget.finishOnOpen) {
         positionStream =
             Geolocator.getPositionStream(
               locationSettings: AndroidSettings(

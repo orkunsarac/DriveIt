@@ -13,6 +13,7 @@ import 'package:driveit_project/services/gps_recording_writer.dart';
 import 'package:driveit_project/services/canonical_telemetry_pipeline.dart';
 import 'package:driveit_project/services/drive_telemetry_storage_service.dart';
 import 'package:driveit_project/services/gps_failure.dart';
+import 'package:driveit_project/services/foreground_service.dart';
 
 CanonicalTelemetryPoint sample(int i) => CanonicalTelemetryPoint(
   latitude: 40 + i * .00001,
@@ -120,6 +121,27 @@ void main() {
   Future<void> stopped() => store.stop(session.id, expectedSequence: 4);
   Future<Map<String, dynamic>> save() =>
       GpsSessionTransfer(store, sink).save(session.id, manifest);
+  test(
+    'save-only recovery stops committed journal without native GPS and transfers once',
+    () async {
+      final before = await store.db.query('points');
+      await store.requestStop(session.id);
+      await ForegroundService.finishCommittedJournal(store, session.id);
+      await ForegroundService.finishCommittedJournal(store, session.id);
+      expect(await store.db.query('points'), before);
+      expect((await store.session(session.id))!.state, 'stopped');
+      expect(
+        (await store.events(
+          session.id,
+        )).where((e) => e['kind'] == 'drained').single['sequence'],
+        4,
+      );
+      await save();
+      await save();
+      expect(await store.lifecycle(session.id), 'VERIFIED');
+      expect(await store.db.query('points'), before);
+    },
+  );
 
   test(
     'active, interrupted, pending-save, saving and verified lifecycle',

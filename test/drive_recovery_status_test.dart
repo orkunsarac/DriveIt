@@ -22,6 +22,126 @@ class CannotOpenFactory implements DatabaseFactory {
 }
 
 void main() {
+  for (final finish in [false, true]) {
+    testWidgets('explicit recovery choice finish=$finish keeps same session', (
+      tester,
+    ) async {
+      final session = GpsSession(
+        'same-session',
+        DateTime.utc(2026),
+        'recording',
+        null,
+      );
+      bool? requestedFinish, requestedResume;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DriveRecoveryScreen(
+            initialStatus: DriveRecoveryStatus(
+              DriveRecoveryKind.verifiedSession,
+              session: session,
+            ),
+            recoveredScreenBuilder: (finishOnOpen, resume) {
+              requestedFinish = finishOnOpen;
+              requestedResume = resume;
+              return const Scaffold(body: Text('Verified journal'));
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(requestedFinish, isNull);
+      await tester.tap(
+        find.text(finish ? 'Kaydet ve Bitir' : 'Sürüşe Devam Et'),
+      );
+      await tester.pumpAndSettle();
+      expect(requestedFinish, finish);
+      expect(requestedResume, !finish);
+      expect(tester.takeException(), isNull);
+    });
+  }
+  testWidgets('running producer returns directly without a recovery choice', (
+    tester,
+  ) async {
+    var opens = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DriveRecoveryScreen(
+          initialStatus: DriveRecoveryStatus(
+            DriveRecoveryKind.verifiedSession,
+            session: GpsSession(
+              'same-session',
+              DateTime.utc(2026),
+              'recording',
+              null,
+            ),
+            producerRunning: true,
+          ),
+          recoveredScreenBuilder: (finish, resume) {
+            expect(finish, false);
+            expect(resume, false);
+            opens++;
+            return const Scaffold(body: Text('Live drive'));
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(opens, 1);
+    expect(find.text('Sürüşe Devam Et'), findsNothing);
+  });
+  test(
+    'producer state distinguishes live UI restore from recovery decision',
+    () async {
+      final session = GpsSession(
+        'same-session',
+        DateTime.utc(2026),
+        'recording',
+        null,
+      );
+      for (final running in [true, false]) {
+        final status = await inspectDriveRecovery(
+          loadActive: () async => session,
+          legacyActive: () async => false,
+          loadLegacy: () async => [],
+          producerRunning: () async => running,
+        );
+        expect(status.session, same(session));
+        expect(status.requiresDecision, !running);
+        expect(status.producerRunning, running);
+        expect(status.canStartNewDrive, false);
+      }
+    },
+  );
+  testWidgets(
+    'stopped producer exposes both choices without starting a session',
+    (tester) async {
+      var selections = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DriveRecoveryScreen(
+            loadStatus: () async => DriveRecoveryStatus(
+              DriveRecoveryKind.verifiedSession,
+              session: GpsSession(
+                'same-session',
+                DateTime.utc(2026),
+                'recording',
+                null,
+              ),
+            ),
+            loadSessions: () async => [],
+            selectSession: (_) async {
+              selections++;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Sürüşe Devam Et'), findsOneWidget);
+      expect(find.text('Kaydet ve Bitir'), findsOneWidget);
+      expect(selections, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
   Future<DriveRecoveryStatus> inspect({
     GpsSession? session,
     bool legacy = false,

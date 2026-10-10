@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:hive/hive.dart';
 import 'package:driveit_project/models/drive_session.dart';
@@ -347,85 +348,131 @@ void main() {
       await store.close();
     }
   });
-  testWidgets(
-    'native v1 upgrade preserves journal; v3 lifecycle and stop receipt survive reopen',
-    (_) async {
-      final path = '${await getDatabasesPath()}/gps_upgrade_probe_$suffix.db';
-      final legacy = await databaseFactory.openDatabase(
-        path,
-        options: OpenDatabaseOptions(
-          version: 1,
-          onCreate: (db, _) async {
-            await db.execute(
-              'CREATE TABLE sessions (id TEXT PRIMARY KEY, started_us INTEGER NOT NULL, stopped_us INTEGER, state TEXT NOT NULL, error TEXT, saved_drive_id TEXT)',
-            );
-            await db.execute(
-              'CREATE TABLE current_session (singleton INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id))',
-            );
-            await db.execute(
-              'CREATE TABLE points (session_id TEXT NOT NULL REFERENCES sessions(id), sequence INTEGER NOT NULL, timestamp_us INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id,sequence), UNIQUE(session_id,timestamp_us))',
-            );
-          },
-        ),
-      );
-      await legacy.insert('sessions', {
-        'id': 'synthetic-v1',
-        'started_us': 1,
-        'state': 'recording',
-      });
-      await legacy.insert('current_session', {
-        'singleton': 1,
-        'session_id': 'synthetic-v1',
-      });
-      await legacy.close();
-      var store = await GpsSessionStore.open(
-        factory: databaseFactory,
-        path: path,
-      );
-      var writer = GpsRecordingWriter(
-        store,
-        'synthetic-v1',
-        onError: (_) => fail('write'),
-      );
-      RawTelemetryInput input(int sec) => RawTelemetryInput(
-        latitude: 40 + sec * .0001,
-        longitude: 29,
-        timestamp: DateTime.utc(2026).add(Duration(seconds: sec)),
-        speedMps: 11,
-        headingDegrees: 0,
-        altitudeMeters: 30,
-        accuracyMeters: 3,
-      );
-      await writer.restore();
-      await writer.add(input(0));
-      await writer.close();
-      await store.close();
-      store = await GpsSessionStore.open(factory: databaseFactory, path: path);
-      writer = GpsRecordingWriter(
-        store,
-        'synthetic-v1',
-        onError: (_) => fail('retry'),
-      );
-      await writer.restore();
-      await writer.add(input(120));
-      final requested = DateTime.now();
-      await store.requestStop('synthetic-v1', at: requested);
-      await writer.drain();
-      await store.stop('synthetic-v1', expectedSequence: 2);
-      await store.stop('synthetic-v1', expectedSequence: 2);
-      expect((await store.read('synthetic-v1')).last.point.breakBefore, true);
-      expect((await store.session('synthetic-v1'))!.stoppedAt, requested);
-      expect(
-        (await store.events(
+  for (final oldVersion in [1, 2]) {
+    testWidgets(
+      'native v$oldVersion upgrade preserves journal; v3 lifecycle and stop receipt survive reopen',
+      (_) async {
+        final path =
+            '${await getDatabasesPath()}/gps_upgrade_probe_${oldVersion}_$suffix.db';
+        final legacy = await databaseFactory.openDatabase(
+          path,
+          options: OpenDatabaseOptions(
+            version: oldVersion,
+            onCreate: (db, _) async {
+              await db.execute(
+                'CREATE TABLE sessions (id TEXT PRIMARY KEY, started_us INTEGER NOT NULL, stopped_us INTEGER, state TEXT NOT NULL, error TEXT, saved_drive_id TEXT)',
+              );
+              await db.execute(
+                'CREATE TABLE current_session (singleton INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id))',
+              );
+              await db.execute(
+                'CREATE TABLE points (session_id TEXT NOT NULL REFERENCES sessions(id), sequence INTEGER NOT NULL, timestamp_us INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id,sequence), UNIQUE(session_id,timestamp_us))',
+              );
+              if (oldVersion == 2) {
+                await db.execute(
+                  'CREATE TABLE session_events (session_id TEXT NOT NULL REFERENCES sessions(id), kind TEXT NOT NULL, occurred_us INTEGER NOT NULL, sequence INTEGER, PRIMARY KEY(session_id,kind))',
+                );
+              }
+            },
+          ),
+        );
+        await legacy.insert('sessions', {
+          'id': 'synthetic-v1',
+          'started_us': 1,
+          'state': 'recording',
+        });
+        await legacy.insert('current_session', {
+          'singleton': 1,
+          'session_id': 'synthetic-v1',
+        });
+        final oldPoint = CanonicalTelemetryPipeline().add(
+          RawTelemetryInput(
+            latitude: 40,
+            longitude: 29,
+            timestamp: DateTime.utc(2026),
+            speedMps: 11,
+            headingDegrees: 0,
+            altitudeMeters: 30,
+            accuracyMeters: 3,
+          ),
+        )!;
+        final oldPayload = jsonEncode(
+          GpsJournalPoint('synthetic-v1', 1, oldPoint).toMap(),
+        );
+        await legacy.insert('points', {
+          'session_id': 'synthetic-v1',
+          'sequence': 1,
+          'timestamp_us': oldPoint.timestamp.microsecondsSinceEpoch,
+          'payload': oldPayload,
+        });
+        if (oldVersion == 2) {
+          await legacy.insert('session_events', {
+            'session_id': 'synthetic-v1',
+            'kind': 'started',
+            'occurred_us': 1,
+            'sequence': 0,
+          });
+        }
+        await legacy.close();
+        var store = await GpsSessionStore.open(
+          factory: databaseFactory,
+          path: path,
+        );
+        expect((await store.db.query('points')).single['payload'], oldPayload);
+        if (oldVersion == 2) {
+          expect(
+            (await store.events('synthetic-v1')).single['kind'],
+            'started',
+          );
+        }
+        var writer = GpsRecordingWriter(
+          store,
           'synthetic-v1',
-        )).where((e) => e['kind'] == 'drained').single['sequence'],
-        2,
-      );
-      expect(await store.db.getVersion(), 3);
-      await writer.close();
-      await store.close();
-    },
-  );
+          onError: (_) => fail('write'),
+        );
+        RawTelemetryInput input(int sec) => RawTelemetryInput(
+          latitude: 40 + sec * .0001,
+          longitude: 29,
+          timestamp: DateTime.utc(2026).add(Duration(seconds: sec)),
+          speedMps: 11,
+          headingDegrees: 0,
+          altitudeMeters: 30,
+          accuracyMeters: 3,
+        );
+        await writer.restore();
+        await writer.add(input(0));
+        await writer.close();
+        await store.close();
+        store = await GpsSessionStore.open(
+          factory: databaseFactory,
+          path: path,
+        );
+        writer = GpsRecordingWriter(
+          store,
+          'synthetic-v1',
+          onError: (_) => fail('retry'),
+        );
+        await writer.restore();
+        await writer.add(input(120));
+        final requested = DateTime.now();
+        await store.requestStop('synthetic-v1', at: requested);
+        await writer.drain();
+        await store.stop('synthetic-v1', expectedSequence: 2);
+        await store.stop('synthetic-v1', expectedSequence: 2);
+        expect((await store.read('synthetic-v1')).last.point.breakBefore, true);
+        expect((await store.session('synthetic-v1'))!.stoppedAt, requested);
+        expect(
+          (await store.events(
+            'synthetic-v1',
+          )).where((e) => e['kind'] == 'drained').single['sequence'],
+          2,
+        );
+        expect(await store.db.getVersion(), 3);
+        await writer.close();
+        await store.close();
+      },
+    );
+  }
   testWidgets(
     'headless foreground engine writes and recreation retains prefix',
     (tester) async {

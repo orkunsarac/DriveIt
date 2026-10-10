@@ -15,12 +15,14 @@ class DriveWorldPublishSection extends StatefulWidget {
     this.publishService,
     this.sourceUploadService,
     this.processingService,
+    this.existingOnly = false,
   });
 
   final DriveSession drive;
   final WorldPublishService? publishService;
   final WorldPublishSourceUploadService? sourceUploadService;
   final WorldPublishProcessingService? processingService;
+  final bool existingOnly;
 
   @override
   State<DriveWorldPublishSection> createState() =>
@@ -102,6 +104,7 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
   }
 
   Future<void> _confirmPublish() async {
+    if (widget.existingOnly) return;
     if (_submitting || _loading) return;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -328,10 +331,7 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
         WorldPublishStatus.processing => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _status(
-              Icons.sync_rounded,
-              "DriveIt Gezegeni'ne işleniyor",
-            ),
+            _status(Icons.sync_rounded, "DriveIt Gezegeni'ne işleniyor"),
             if (publish.sourceReady) ...[
               const SizedBox(height: 8),
               TextButton(
@@ -345,10 +345,7 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
             if (_message != null)
               Text(
                 _message!,
-                style: const TextStyle(
-                  color: Color(0xffff9c8e),
-                  fontSize: 12,
-                ),
+                style: const TextStyle(color: Color(0xffff9c8e), fontSize: 12),
               ),
           ],
         ),
@@ -376,6 +373,13 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
           ],
         ),
       };
+    }
+    if (widget.existingOnly) {
+      return _status(
+        Icons.info_outline_rounded,
+        'Mevcut yayın bulunamadı. Parçalı yayın hazırlığına geri dön.',
+        color: Colors.white70,
+      );
     }
     if (widget.drive.distance < MyWorldRules.minimumValidDistanceMeters) {
       return _status(

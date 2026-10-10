@@ -6,6 +6,7 @@ import '../../drive_score/models/drive_score_algorithm_version.dart';
 import '../../my_world/config/my_world_rules.dart';
 import '../models/published_drive_source.dart';
 import '../models/world_publish.dart';
+import 'legacy_whole_drive_safety.dart';
 
 enum PublishedDriveSourceBuildStatus {
   success,
@@ -59,6 +60,11 @@ class PublishedDriveSourceBuilder {
     if (telemetry.driveSessionId != drive.id ||
         telemetry.dataVersion <= 0 ||
         telemetry.points.any((point) => !_isUsableTelemetryPoint(point))) {
+      return const PublishedDriveSourceBuildResult(
+        PublishedDriveSourceBuildStatus.invalidCanonicalTelemetry,
+      );
+    }
+    if (!LegacyWholeDriveSafety.canBuild(drive, telemetry)) {
       return const PublishedDriveSourceBuildResult(
         PublishedDriveSourceBuildStatus.invalidCanonicalTelemetry,
       );

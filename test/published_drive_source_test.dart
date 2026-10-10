@@ -53,19 +53,20 @@ DriveTelemetryRecord _telemetry({
   driveSessionId: driveId,
   dataVersion: DriveTelemetryRecord.currentDataVersion,
   createdAt: _end,
+  acquisitionMetadata: const {'reliabilityPolicyVersion': 1},
   points:
       points ??
       List.generate(
-        4,
+        201,
         (index) => CanonicalTelemetryPoint(
           latitude: 40.123456789123 + index * 0.000000000001,
           longitude: 29.987654321987 + index * 0.000000000001,
-          timestamp: _end.subtract(Duration(seconds: 3 - index)),
+          timestamp: _end.subtract(Duration(seconds: 200 - index)),
           speedMps: 8.123456789123 + index,
           headingDegrees: 91.23456789123 + index,
           altitudeMeters: 50.123456789123 + index,
-          accuracyMeters: 2.123456789123 + index,
-          distanceFromPreviousMeters: 7.123456789123 + index,
+          accuracyMeters: 2.123456789123 + index % 3,
+          distanceFromPreviousMeters: index == 0 ? 0 : 25.123456789123,
           accelerationMps2: -0.123456789123 + index,
         ),
       ),

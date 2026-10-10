@@ -55,17 +55,18 @@ DriveTelemetryRecord _telemetry() => DriveTelemetryRecord(
   driveSessionId: 'drive-id',
   dataVersion: 1,
   createdAt: DateTime.utc(2026, 9, 23, 12),
+  acquisitionMetadata: const {'reliabilityPolicyVersion': 1},
   points: List.generate(
-    3,
+    201,
     (index) => CanonicalTelemetryPoint(
       latitude: 40.123456789 + index * 0.000000001,
       longitude: 29.123456789 + index * 0.000000001,
-      timestamp: DateTime.utc(2026, 9, 23, 12, 0, index),
+      timestamp: DateTime.utc(2026, 9, 23, 12).add(Duration(seconds: index)),
       speedMps: 8.123456789 + index,
       headingDegrees: 90,
       altitudeMeters: 50,
       accuracyMeters: 3,
-      distanceFromPreviousMeters: 8,
+      distanceFromPreviousMeters: index == 0 ? 0 : 25,
       accelerationMps2: -0.123456789,
     ),
   ),
@@ -200,7 +201,7 @@ void main() {
       expect(sourceGateway.events, ['upload', 'attach']);
       final json = jsonDecode(utf8.decode(sourceGateway.bytes!)) as Map;
       expect((json['raw_route'] as List).length, 3);
-      expect((json['canonical_telemetry'] as List).length, 3);
+      expect((json['canonical_telemetry'] as List).length, 201);
       expect((json['raw_route'] as List).first['latitude'], 40.123456789);
       expect(
         (json['canonical_telemetry'] as List).first['speed_mps'],
@@ -212,7 +213,7 @@ void main() {
         'p_telemetry_version': 1,
         'p_drive_score_algorithm_version': 1,
         'p_raw_route_point_count': 3,
-        'p_telemetry_point_count': 3,
+        'p_telemetry_point_count': 201,
       });
     },
   );
@@ -300,6 +301,7 @@ void main() {
     final processingGateway = _ProcessingGateway(sourceGateway.events);
     final submit = WorldPublishSubmissionService(
       publishService: WorldPublishService(
+        telemetryLoader: (_) => _telemetry(),
         gateway: publishGateway,
         savedDriveLookup: (_) => _drive(),
       ),

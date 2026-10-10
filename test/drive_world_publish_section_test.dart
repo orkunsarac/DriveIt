@@ -10,6 +10,7 @@ import 'package:driveit_project/models/drive_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'support/legacy_publish_fixture.dart';
 
 class _Gateway implements WorldPublishGateway {
   bool available = true;
@@ -139,6 +140,7 @@ Future<void> _show(
           drive: drive,
           publishService: WorldPublishService(
             gateway: gateway,
+            telemetryLoader: legacyPublishFixture,
             savedDriveLookup: (_) => drive,
           ),
           sourceUploadService: uploadService ?? _UploadService(),
@@ -284,59 +286,61 @@ void main() {
     expect(find.text('İşlemeyi Başlat'), findsNothing);
   });
 
-  testWidgets('processing source-ready row resumes only function and refetches', (
-    tester,
-  ) async {
-    final gateway = _Gateway()..row = _row('processing', ready: true);
-    final processingGateway = _ProcessingGateway(gateway)
-      ..response = {
-        'ok': true,
-        'validation': {
-          'validated_road_id': 'road-1',
-          'valid_distance_meters': 6998.4,
-          'eligible_for_world': true,
-          'section_count': 1,
-        },
-      }
-      ..responseStatus = 'published'
-      ..hold = Completer<void>();
-    final uploader = _UploadService();
-    await _show(
-      tester,
-      gateway,
-      uploadService: uploader,
-      processingService: WorldPublishProcessingService(
-        gateway: processingGateway,
-      ),
-    );
+  testWidgets(
+    'processing source-ready row resumes only function and refetches',
+    (tester) async {
+      final gateway = _Gateway()..row = _row('processing', ready: true);
+      final processingGateway = _ProcessingGateway(gateway)
+        ..response = {
+          'ok': true,
+          'validation': {
+            'validated_road_id': 'road-1',
+            'valid_distance_meters': 6998.4,
+            'eligible_for_world': true,
+            'section_count': 1,
+          },
+        }
+        ..responseStatus = 'published'
+        ..hold = Completer<void>();
+      final uploader = _UploadService();
+      await _show(
+        tester,
+        gateway,
+        uploadService: uploader,
+        processingService: WorldPublishProcessingService(
+          gateway: processingGateway,
+        ),
+      );
 
-    expect(find.text("DriveIt Gezegeni'ne işleniyor"), findsOneWidget);
-    final resume = find.byKey(
-      const ValueKey('resume_world_publish_processing'),
-    );
-    expect(resume, findsOneWidget);
-    await tester.tap(resume);
-    await tester.pump();
-    await tester.pump();
+      expect(find.text("DriveIt Gezegeni'ne işleniyor"), findsOneWidget);
+      final resume = find.byKey(
+        const ValueKey('resume_world_publish_processing'),
+      );
+      expect(resume, findsOneWidget);
+      await tester.tap(resume);
+      await tester.pump();
+      await tester.pump();
 
-    expect(find.text('DriveIt Gezegeni işleniyor...'), findsOneWidget);
-    expect(find.text('İşlemeyi Sürdür'), findsNothing);
-    expect(processingGateway.calls, 1);
-    expect(gateway.insertCalls, 0);
-    expect(uploader.calls, 0);
+      expect(find.text('DriveIt Gezegeni işleniyor...'), findsOneWidget);
+      expect(find.text('İşlemeyi Sürdür'), findsNothing);
+      expect(processingGateway.calls, 1);
+      expect(gateway.insertCalls, 0);
+      expect(uploader.calls, 0);
 
-    processingGateway.hold!.complete();
-    await tester.pumpAndSettle();
-    expect(
-      gateway.lookupCalls,
-      3,
-      reason: 'initial lookup, recovery lookup, and post-invoke server refetch',
-    );
-    expect(find.text("DriveIt Gezegeni'nde"), findsOneWidget);
-    expect(processingGateway.calls, 1);
-    expect(gateway.insertCalls, 0);
-    expect(uploader.calls, 0);
-  });
+      processingGateway.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(
+        gateway.lookupCalls,
+        3,
+        reason:
+            'initial lookup, recovery lookup, and post-invoke server refetch',
+      );
+      expect(find.text("DriveIt Gezegeni'nde"), findsOneWidget);
+      expect(processingGateway.calls, 1);
+      expect(gateway.insertCalls, 0);
+      expect(uploader.calls, 0);
+    },
+  );
 
   testWidgets('retryable processing failure can be retried without upload', (
     tester,

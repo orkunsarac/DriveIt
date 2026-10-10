@@ -4,6 +4,7 @@ import 'package:driveit_project/features/world_publish/services/world_publish_se
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'support/legacy_publish_fixture.dart';
 
 class _FakeGateway implements WorldPublishGateway {
   bool available = true;
@@ -69,6 +70,7 @@ void main() {
     final saved = _drive();
     final service = WorldPublishService(
       gateway: gateway,
+      telemetryLoader: legacyPublishFixture,
       savedDriveLookup: (id) => id == saved.id ? saved : null,
     );
 
@@ -103,6 +105,7 @@ void main() {
       final service = WorldPublishService(
         gateway: gateway,
         savedDriveLookup: (_) => saved,
+        telemetryLoader: legacyPublishFixture,
       );
       expect(
         (await service.createPendingPublish(saved)).status,
@@ -154,6 +157,7 @@ void main() {
     final service = WorldPublishService(
       gateway: gateway,
       savedDriveLookup: (_) => drive,
+      telemetryLoader: legacyPublishFixture,
     );
     expect(
       (await service.createPendingPublish(drive)).status,

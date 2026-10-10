@@ -8,7 +8,7 @@ import '../models/route_point.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../features/drive_replay/drive_replay_screen.dart';
-import '../features/world_publish/widgets/drive_world_publish_section.dart';
+import '../features/world_publish/segments/planet_publication_section.dart';
 import '../features/world_publish/services/world_publish_service.dart';
 import '../models/drive_session.dart';
 import '../services/drive_storage_service.dart';
@@ -510,7 +510,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    DriveWorldPublishSection(
+                    PlanetPublicationSection(
                       drive: widget.drive,
                       publishService: widget.worldPublishService,
                     ),

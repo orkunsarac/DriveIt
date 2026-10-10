@@ -5,6 +5,9 @@ import '../../../features/my_world/config/my_world_rules.dart';
 import '../../../models/drive_session.dart';
 import '../../../services/drive_storage_service.dart';
 import '../models/world_publish.dart';
+import '../../../models/canonical_telemetry_point.dart';
+import '../../../services/drive_telemetry_storage_service.dart';
+import 'legacy_whole_drive_safety.dart';
 
 const worldPublishColumns =
     'id,user_id,local_drive_id,started_at,ended_at,distance_meters,'
@@ -88,11 +91,14 @@ class WorldPublishService {
   WorldPublishService({
     WorldPublishGateway? gateway,
     DriveSession? Function(String)? savedDriveLookup,
+    DriveTelemetryRecord? Function(String)? telemetryLoader,
   }) : _gateway = gateway ?? SupabaseWorldPublishGateway(),
-       _savedDriveLookup = savedDriveLookup ?? DriveStorageService.getDrive;
+       _savedDriveLookup = savedDriveLookup ?? DriveStorageService.getDrive,
+       _telemetryLoader = telemetryLoader ?? DriveTelemetryStorageService.get;
 
   final WorldPublishGateway _gateway;
   final DriveSession? Function(String) _savedDriveLookup;
+  final DriveTelemetryRecord? Function(String) _telemetryLoader;
 
   bool get isAvailable => _gateway.isAvailable;
   bool get hasSession => isAvailable && _gateway.currentUserId != null;
@@ -122,6 +128,11 @@ class WorldPublishService {
       );
     }
     if (saved.distance < MyWorldRules.minimumValidDistanceMeters) {
+      return const WorldPublishCreateResult(
+        WorldPublishCreateStatus.notEligible,
+      );
+    }
+    if (!LegacyWholeDriveSafety.canBuild(saved, _telemetryLoader(saved.id))) {
       return const WorldPublishCreateResult(
         WorldPublishCreateStatus.notEligible,
       );

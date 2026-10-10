@@ -4,8 +4,9 @@ import 'package:flutter/foundation.dart';
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
 import '../../../models/drive_session.dart';
 import '../../../models/canonical_telemetry_point.dart';
-import '../../../services/drive_telemetry_storage_service.dart';
-import '../../../services/drive_score_storage_service.dart';
+import '../../../services/world_source_access.dart';
+import '../../../services/local_lifecycle_journal.dart';
+import '../../../services/independent_deletion_service.dart';
 import '../config/my_world_rules.dart';
 import '../models/world_index_snapshot.dart';
 import '../models/world_map_read_model.dart';
@@ -60,10 +61,11 @@ class MyWorldRuntime {
   static MyWorldRebuildService rebuildService() => MyWorldRebuildService(
     repository: repository(),
     indexRepository: indexRepository(),
-    driveLoader: () async => Hive.box<DriveSession>('drives').values.toList(),
+    driveLoader: () async => WorldSourceAccess.drives(),
     telemetryLoader: _loadCanonicalTelemetry,
     driveEligibility: (driveId) =>
-        DriveScoreStorageService.get(driveId: driveId) != null,
+        !LocalLifecycleJournal.worldDeleted(driveId) &&
+        WorldSourceAccess.score(driveId) != null,
   );
 
   static MyWorldLifecycleService worldLifecycleService() =>
@@ -108,22 +110,24 @@ class MyWorldRuntime {
 
   static Future<List<CanonicalTelemetryPoint>> _loadCanonicalTelemetry(
     String driveSessionId,
-  ) async =>
-      DriveTelemetryStorageService.get(driveSessionId)?.points ?? const [];
+  ) async => await WorldSourceAccess.telemetry(driveSessionId);
 
   /// Save flow integration only enqueues local metadata. It never performs a
   /// network request, so normal drive saving remains independent from Mapbox.
-  static Future<void> enqueueSavedDrive(DriveSession drive) =>
-      validationService().enqueueDrive(drive);
+  static Future<void> enqueueSavedDrive(DriveSession drive) async {
+    if (LocalLifecycleJournal.worldDeleted(drive.id)) return;
+    await validationService().enqueueDrive(drive);
+  }
 
   static WorldPendingJobProcessor pendingJobProcessor() =>
       WorldPendingJobProcessor(
         repository: repository(),
         validation: validationService(),
         recordProcessing: recordProcessingService(),
-        driveLoader: (id) => Hive.box<DriveSession>('drives').get(id),
+        driveLoader: WorldSourceAccess.drive,
         driveEligibility: (driveId) =>
-            DriveScoreStorageService.get(driveId: driveId) != null,
+            !LocalLifecycleJournal.worldDeleted(driveId) &&
+            WorldSourceAccess.score(driveId) != null,
       );
 
   /// Reconciles persisted drives with the durable World queue before draining.
@@ -142,10 +146,20 @@ class MyWorldRuntime {
   static Future<void>? _drainInFlight;
 
   static Future<void> _drainPendingJobs() async {
+    try {
+      await IndependentDeletionService.recoverPending();
+    } catch (_) {
+      // Keep an incomplete intent and the existing index, never infer success.
+      if (kDebugMode) debugPrint('[LOCAL_LIFECYCLE] recovery_pending');
+      return;
+    }
     if (Hive.isBoxOpen('drives')) {
       final drives = Hive.box<DriveSession>('drives').values.toList();
       for (final drive in drives) {
-        if (DriveScoreStorageService.get(driveId: drive.id) == null) continue;
+        if (LocalLifecycleJournal.worldHasDeletion(drive.id) ||
+            WorldSourceAccess.score(drive.id) == null) {
+          continue;
+        }
         await enqueueSavedDrive(drive);
       }
     }
@@ -200,8 +214,8 @@ class MyWorldRuntime {
   static Future<void> _cleanupScorelessWorldTraces() async {
     try {
       final snapshot = await indexRepository().getActiveSnapshot();
-      final hasScorelessTrace = snapshot.processedDriveSessionIds.any(
-        (id) => DriveScoreStorageService.get(driveId: id) == null,
+      final hasScorelessTrace = snapshot.traces.any(
+        (trace) => WorldSourceAccess.score(trace.sourceDriveSessionId) == null,
       );
       if (!hasScorelessTrace) return;
       await rebuildService().rebuild(

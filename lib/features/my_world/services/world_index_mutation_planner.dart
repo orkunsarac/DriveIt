@@ -24,6 +24,7 @@ class WorldIndexMutationPlanner {
     required DateTime now,
     DriveScoreAlgorithmVersion algorithmVersion =
         DriveScoreAlgorithmVersion.v1,
+    List<ActiveWorldTrace> Function(List<ActiveWorldTrace>)? traceFilter,
   }) {
     final operationId = 'world:${challengerRoad.driveSessionId}:v${algorithmVersion.value}';
     final replacements = <String, List<_TraceInterval>>{};
@@ -111,9 +112,10 @@ class WorldIndexMutationPlanner {
           .where((interval) => interval.distance > _epsilon)
           .map((interval) => _traceForChallenger(interval, challengerRoad, now)),
     ];
-    final normalized = _sanitizeActiveTraces(
+    var normalized = _sanitizeActiveTraces(
       _mergeAdjacent([...retained, ...created], now),
     );
+    if (traceFilter != null) normalized = traceFilter(normalized);
     _assertNoDuplicateOwnership(normalized);
 
     final processed = <String>{

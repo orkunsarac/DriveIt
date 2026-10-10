@@ -38,7 +38,7 @@ void main() {
     )).needsRebuild, isFalse);
   });
 
-  test('active-drive deletion restores an empty world atomically', () async {
+  test('unprotected history deletion is blocked and leaves World unchanged', () async {
     final source = _Source(_road('drive-a'), _drive('drive-a'));
     final index = _MemoryIndex();
     final rebuild = MyWorldRebuildService(
@@ -56,12 +56,12 @@ void main() {
     );
     final info = await lifecycle.getDriveLifecycleInfo('drive-a');
     expect(info.hasActiveTrace, isTrue);
-    await lifecycle.deleteDriveSafely(
+    await expectLater(lifecycle.deleteDriveSafely(
       driveId: 'drive-a',
       deleteSource: () async => deleted = true,
-    );
-    expect(deleted, isTrue);
-    expect(index.snapshot.traces, isEmpty);
+    ), throwsStateError);
+    expect(deleted, isFalse);
+    expect(index.snapshot.traces, hasLength(1));
   });
 }
 

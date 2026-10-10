@@ -7,7 +7,7 @@ import '../models/active_world_trace.dart';
 import '../models/matched_road_point.dart';
 import '../../../models/canonical_telemetry_point.dart';
 import '../../drive_score/services/drive_score_calculator.dart';
-import '../../../services/drive_telemetry_storage_service.dart';
+import '../../../services/world_source_access.dart';
 
 typedef WorldDriveLoader = DriveSession? Function(String driveId);
 typedef WorldScoreLoader = DriveScoreRecord? Function(String driveId);
@@ -43,12 +43,9 @@ class WorldTraceDetailService {
   }) async {
     final detail = await load(trace.sourceDriveSessionId);
     if (detail == null || geometry.length < 2) return detail;
-    final telemetry =
-        await (telemetryLoader ??
-            ((id) async =>
-                DriveTelemetryStorageService.get(id)?.points ?? const []))(
-          trace.sourceDriveSessionId,
-        );
+    final telemetry = await (telemetryLoader ?? WorldSourceAccess.telemetry)(
+      trace.sourceDriveSessionId,
+    );
     double? segmentScore;
     int? segmentDurationSeconds;
     double? segmentAverageSpeed;

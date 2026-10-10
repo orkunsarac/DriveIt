@@ -5,14 +5,20 @@ import 'package:hive/hive.dart';
 import '../models/drive_session.dart';
 import '../models/route_point.dart';
 import '../models/canonical_telemetry_point.dart';
+import '../models/drive_score_record.dart';
 import '../features/my_world/services/my_world_runtime.dart';
-import '../features/my_world/persistence/my_world_hive.dart';
 import '../features/drive_score/services/drive_score_persistence_coordinator.dart';
 import 'drive_score_storage_service.dart';
 import 'drive_telemetry_storage_service.dart';
 import 'gps_session_runtime.dart';
 import 'gps_session_transfer.dart';
 import 'gps_hive_transfer_sink.dart';
+import 'local_source_bundle.dart';
+import 'career_contribution_repository.dart';
+import 'local_data_preparation_service.dart';
+import 'local_lifecycle_journal.dart';
+import 'independent_deletion_service.dart';
+import '../features/my_world/repositories/world_source_snapshot_repository.dart';
 
 class DriveStorageService {
   static Box<DriveSession> get _box => Hive.box<DriveSession>('drives');
@@ -26,6 +32,12 @@ class DriveStorageService {
     List<CanonicalTelemetryPoint>? telemetry,
     Map<String, dynamic> acquisitionMetadata = const {},
   }) async {
+    if (LocalLifecycleJournal.historyDeleted(drive.id)) {
+      throw StateError('Silinmiş sürüş tekrar kaydedilemez.');
+    }
+    if (Hive.isBoxOpen(CareerContributionRepository.boxName)) {
+      await LocalDataPreparationService.prepareLegacyCareer();
+    }
     final sessionId = acquisitionMetadata['sessionId'];
     if (sessionId is String) {
       final store = await openGpsJournal();
@@ -74,6 +86,24 @@ class DriveStorageService {
     } catch (_) {
       // Score v1 is a secondary, recoverable analysis. The persisted drive and
       // canonical telemetry must survive an analysis or score-box failure.
+    }
+    // Prepare only this explicitly saved drive, not the historic database.
+    // Failure propagates as retryable save preparation; durable source data
+    // and the existing transfer receipt are never removed on this path.
+    final source = LocalSourceBundle(
+      drive: drive,
+      telemetry: DriveTelemetryStorageService.get(drive.id),
+      score: DriveScoreStorageService.get(driveId: drive.id),
+    );
+    if (Hive.isBoxOpen(WorldSourceSnapshotRepository.boxName)) {
+      await WorldSourceSnapshotRepository(
+        Hive.box<dynamic>(WorldSourceSnapshotRepository.boxName),
+      ).prepare(source);
+    }
+    if (Hive.isBoxOpen(CareerContributionRepository.boxName)) {
+      await CareerContributionRepository(
+        Hive.box<dynamic>(CareerContributionRepository.boxName),
+      ).add(source);
     }
     try {
       await MyWorldRuntime.enqueueSavedDrive(drive);
@@ -162,19 +192,15 @@ class DriveStorageService {
 
   /// Sürüş sil
   static Future<void> deleteDrive(String id) async {
-    if (Hive.isBoxOpen(MyWorldHive.validatedRoadsBoxName) &&
-        Hive.isBoxOpen(MyWorldHive.indexSnapshotsBoxName)) {
-      await MyWorldRuntime.worldLifecycleService().deleteDriveSafely(
-        driveId: id,
-        deleteSource: () => _deleteDriveStorageOnly(id),
-      );
-      return;
-    }
-    await _deleteDriveStorageOnly(id);
+    await IndependentDeletionService.deleteHistory(
+      id,
+      removeHistory: () => _deleteDriveStorageOnly(id),
+    );
   }
 
   static Future<void> _deleteDriveStorageOnly(String id) async {
     await _box.delete(id);
+    await _box.flush();
     Object? cleanupError;
     StackTrace? cleanupStackTrace;
     final cleanupTasks = <Future<void>>[
@@ -188,6 +214,13 @@ class DriveStorageService {
       // These boxes are independent; wait for all cleanups together instead
       // of serialising their disk writes behind three awaits.
       await Future.wait(cleanupTasks);
+      await Future.wait([
+        if (Hive.isBoxOpen(DriveTelemetryHive.boxName))
+          Hive.box<DriveTelemetryRecord>(DriveTelemetryHive.boxName).flush(),
+        if (Hive.isBoxOpen(DriveScoreHive.boxName))
+          Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).flush(),
+        if (Hive.isBoxOpen('drive_names')) _namesBox.flush(),
+      ]);
     } catch (error, stackTrace) {
       cleanupError = error;
       cleanupStackTrace = stackTrace;

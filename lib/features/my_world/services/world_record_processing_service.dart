@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
 import '../../../models/canonical_telemetry_point.dart';
+import '../../../services/local_lifecycle_journal.dart';
 import '../models/active_world_trace.dart';
 import '../models/common_road_match.dart';
 import '../models/local_winning_road_region.dart';
@@ -81,6 +82,13 @@ class WorldRecordProcessingService {
     String driveSessionId, {
     DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
   }) async {
+    if (LocalLifecycleJournal.worldDeleted(driveSessionId)) {
+      return const WorldRecordProcessingResult(
+        outcome: WorldRecordProcessingOutcome.notReady,
+        traceCount: 0,
+        reason: 'Bu kişisel Dünya kaynağı silinmiş.',
+      );
+    }
     final record = await _repository.getProcessingRecord(driveSessionId);
     if (record?.state != WorldProcessingState.readyForWorldProcessing &&
         record?.state != WorldProcessingState.processing) {
@@ -137,6 +145,7 @@ class WorldRecordProcessingService {
         overlaps: overlaps,
         now: _clock(),
         algorithmVersion: algorithmVersion,
+        traceFilter: LocalLifecycleJournal.filterTraces,
       );
       await _indexRepository.commit(plan);
       await _markProcessed(driveSessionId, challenger.id);

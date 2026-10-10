@@ -4,6 +4,9 @@ import '../models/validated_road.dart';
 import '../models/world_pending_job.dart';
 import '../models/world_processing.dart';
 import 'my_world_repository.dart';
+import 'world_source_snapshot_repository.dart';
+import '../../../services/world_source_access.dart';
+import '../../../services/local_lifecycle_journal.dart';
 
 class HiveMyWorldRepository implements MyWorldSourceRepository {
   final Box<ValidatedRoad> _validatedRoads;
@@ -18,22 +21,50 @@ class HiveMyWorldRepository implements MyWorldSourceRepository {
 
   @override
   Future<void> saveValidatedRoad(ValidatedRoad road) =>
-      _validatedRoads.put(road.id, road);
+      LocalLifecycleJournal.serialized(() async {
+        if (LocalLifecycleJournal.worldHasDeletion(road.driveSessionId)) return;
+        await _validatedRoads.put(road.id, road);
+        await _validatedRoads.flush();
+        if (Hive.isBoxOpen(WorldSourceSnapshotRepository.boxName)) {
+          await WorldSourceSnapshotRepository(
+            Hive.box<dynamic>(WorldSourceSnapshotRepository.boxName),
+          ).attachRoad(road);
+        }
+      });
 
   @override
-  Future<ValidatedRoad?> getValidatedRoad(String id) async =>
-      _validatedRoads.get(id);
+  Future<ValidatedRoad?> getValidatedRoad(String id) async {
+    final stored = _validatedRoads.get(id);
+    if (stored != null) return stored;
+    for (final source in WorldSourceAccess.drives()) {
+      for (final road
+          in WorldSourceAccess.snapshot(source.id)?.roads ??
+              const <ValidatedRoad>[]) {
+        if (road.id == id) return road;
+      }
+    }
+    return null;
+  }
 
   @override
   Future<List<ValidatedRoad>> getValidatedRoadsForDrive(
     String driveSessionId,
-  ) async => _validatedRoads.values
+  ) async => (await getAllValidatedRoads())
       .where((road) => road.driveSessionId == driveSessionId)
       .toList(growable: false);
 
   @override
-  Future<List<ValidatedRoad>> getAllValidatedRoads() async =>
-      _validatedRoads.values.toList(growable: false);
+  Future<List<ValidatedRoad>> getAllValidatedRoads() async {
+    final roads = {for (final road in _validatedRoads.values) road.id: road};
+    for (final drive in WorldSourceAccess.drives()) {
+      for (final road
+          in WorldSourceAccess.snapshot(drive.id)?.roads ??
+              const <ValidatedRoad>[]) {
+        roads.putIfAbsent(road.id, () => road);
+      }
+    }
+    return roads.values.toList(growable: false);
+  }
 
   @override
   Future<void> deleteWorldDataForDrive(String driveSessionId) async {
@@ -54,6 +85,11 @@ class HiveMyWorldRepository implements MyWorldSourceRepository {
       _processing.delete(driveSessionId),
       if (jobKeys.isNotEmpty) _pendingJobs.deleteAll(jobKeys),
     ]);
+    await Future.wait([
+      _validatedRoads.flush(),
+      _processing.flush(),
+      _pendingJobs.flush(),
+    ]);
   }
 
   @override
@@ -66,12 +102,19 @@ class HiveMyWorldRepository implements MyWorldSourceRepository {
   ) async => _processing.get(driveSessionId);
 
   @override
-  Future<bool> enqueueIfAbsent(WorldPendingJob job) async {
-    final key = WorldPendingJob.idempotencyKey(job.driveSessionId, job.type);
-    if (_pendingJobs.containsKey(key)) return false;
-    await _pendingJobs.put(key, job);
-    return true;
-  }
+  Future<bool> enqueueIfAbsent(WorldPendingJob job) =>
+      LocalLifecycleJournal.serialized(() async {
+        if (LocalLifecycleJournal.worldHasDeletion(job.driveSessionId)) {
+          return false;
+        }
+        final key = WorldPendingJob.idempotencyKey(
+          job.driveSessionId,
+          job.type,
+        );
+        if (_pendingJobs.containsKey(key)) return false;
+        await _pendingJobs.put(key, job);
+        return true;
+      });
 
   @override
   Future<WorldPendingJob?> getPendingJob(
@@ -101,8 +144,9 @@ class HiveMyWorldRepository implements MyWorldSourceRepository {
   Future<List<WorldPendingJob>> getPendingJobs() async => _pendingJobs.values
       .where(
         (job) =>
-            job.status == WorldJobStatus.pending ||
-            job.status == WorldJobStatus.retryScheduled,
+            !LocalLifecycleJournal.worldHasDeletion(job.driveSessionId) &&
+            (job.status == WorldJobStatus.pending ||
+                job.status == WorldJobStatus.retryScheduled),
       )
       .toList(growable: false);
 }

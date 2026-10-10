@@ -8,12 +8,17 @@ import 'drive_storage_service.dart';
 class CareerStatisticsService {
   const CareerStatisticsService();
 
-  CareerStatistics calculate({List<DriveSession>? drives}) {
+  CareerStatistics calculate({
+    List<DriveSession>? drives,
+    DriveScoreRecord? Function(String)? scoreLoader,
+  }) {
     final source = drives ?? DriveStorageService.getAllDrives();
     if (source.isEmpty) return const CareerStatistics.empty();
     final scores = <DriveScoreRecord>[];
     for (final drive in source) {
-      final score = DriveScoreStorageService.get(driveId: drive.id);
+      final score = scoreLoader != null
+          ? scoreLoader(drive.id)
+          : DriveScoreStorageService.get(driveId: drive.id);
       if (score != null) scores.add(score);
     }
     final totalDistance = source.fold<double>(0, (sum, d) => sum + d.distance);
@@ -23,13 +28,18 @@ class CareerStatisticsService {
     );
     final totalMovingSeconds = source.fold<int>(
       0,
-      (sum, d) => sum +
+      (sum, d) =>
+          sum +
           (d.durationSeconds - d.stoppedSeconds < 0
               ? 0
               : d.durationSeconds - d.stoppedSeconds),
     );
-    final maxSpeedDrive = source.reduce((a, b) => a.maxSpeed >= b.maxSpeed ? a : b);
-    final longestDrive = source.reduce((a, b) => a.distance >= b.distance ? a : b);
+    final maxSpeedDrive = source.reduce(
+      (a, b) => a.maxSpeed >= b.maxSpeed ? a : b,
+    );
+    final longestDrive = source.reduce(
+      (a, b) => a.distance >= b.distance ? a : b,
+    );
     final longestDurationDrive = source.reduce(
       (a, b) => a.durationSeconds >= b.durationSeconds ? a : b,
     );
@@ -38,13 +48,15 @@ class CareerStatisticsService {
         : scores.reduce((a, b) => a.totalScore >= b.totalScore ? a : b);
     final averageScore = scores.isEmpty
         ? null
-        : scores.fold<double>(0, (sum, s) => sum + s.totalScore) / scores.length;
+        : scores.fold<double>(0, (sum, s) => sum + s.totalScore) /
+              scores.length;
     final latestScores = [...scores]
       ..sort((a, b) => b.calculatedAt.compareTo(a.calculatedAt));
     final recent = latestScores.take(5).toList();
     final recentAverage = recent.isEmpty
         ? null
-        : recent.fold<double>(0, (sum, s) => sum + s.totalScore) / recent.length;
+        : recent.fold<double>(0, (sum, s) => sum + s.totalScore) /
+              recent.length;
     final maxGDrive = source.reduce(
       (a, b) => a.maxAccelerationG >= b.maxAccelerationG ? a : b,
     );
@@ -52,9 +64,16 @@ class CareerStatisticsService {
       (a, b) => a.maxBrakingG >= b.maxBrakingG ? a : b,
     );
     final bestZeroToHundred = source
-        .where((d) => d.bestZeroToHundredSeconds != null && d.bestZeroToHundredSeconds! > 0)
+        .where(
+          (d) =>
+              d.bestZeroToHundredSeconds != null &&
+              d.bestZeroToHundredSeconds! > 0,
+        )
         .fold<DriveSession?>(null, (best, d) {
-          if (best == null || d.bestZeroToHundredSeconds! < best.bestZeroToHundredSeconds!) return d;
+          if (best == null ||
+              d.bestZeroToHundredSeconds! < best.bestZeroToHundredSeconds!) {
+            return d;
+          }
           return best;
         });
     return CareerStatistics(
@@ -75,7 +94,10 @@ class CareerStatisticsService {
       strongestBrakingDrive: strongestBrakeDrive,
       bestZeroToHundredDrive: bestZeroToHundred,
       totalStops: source.fold<int>(0, (sum, d) => sum + d.stopCount),
-      totalBrakingEvents: source.fold<int>(0, (sum, d) => sum + d.hardBrakeCount),
+      totalBrakingEvents: source.fold<int>(
+        0,
+        (sum, d) => sum + d.hardBrakeCount,
+      ),
       totalCorners: source.fold<int>(0, (sum, d) => sum + d.cornerCount),
       lifetimeAverageSpeedKmh: totalMovingSeconds <= 0
           ? 0
@@ -87,11 +109,15 @@ class CareerStatisticsService {
 class CareerStatistics {
   final List<DriveSession> drives;
   final int scoredDriveCount, totalStops, totalBrakingEvents, totalCorners;
-  final double totalDistanceMeters, averageDistanceMeters, averageDurationSeconds;
+  final double totalDistanceMeters,
+      averageDistanceMeters,
+      averageDurationSeconds;
   final int totalDurationSeconds, totalMovingSeconds;
   final double lifetimeAverageSpeedKmh;
   final DriveSession? maxSpeedDrive, longestDrive, longestDurationDrive;
-  final DriveSession? maxAccelerationDrive, strongestBrakingDrive, bestZeroToHundredDrive;
+  final DriveSession? maxAccelerationDrive,
+      strongestBrakingDrive,
+      bestZeroToHundredDrive;
   final DriveScoreRecord? bestScore;
   final double? averageScore, recentAverageScore;
 
@@ -119,24 +145,24 @@ class CareerStatistics {
   });
 
   const CareerStatistics.empty()
-      : drives = const [],
-        scoredDriveCount = 0,
-        totalStops = 0,
-        totalBrakingEvents = 0,
-        totalCorners = 0,
-        totalDistanceMeters = 0,
-        totalDurationSeconds = 0,
-        totalMovingSeconds = 0,
-        averageDistanceMeters = 0,
-        averageDurationSeconds = 0,
-        lifetimeAverageSpeedKmh = 0,
-        maxSpeedDrive = null,
-        longestDrive = null,
-        longestDurationDrive = null,
-        maxAccelerationDrive = null,
-        strongestBrakingDrive = null,
-        bestZeroToHundredDrive = null,
-        bestScore = null,
-        averageScore = null,
-        recentAverageScore = null;
+    : drives = const [],
+      scoredDriveCount = 0,
+      totalStops = 0,
+      totalBrakingEvents = 0,
+      totalCorners = 0,
+      totalDistanceMeters = 0,
+      totalDurationSeconds = 0,
+      totalMovingSeconds = 0,
+      averageDistanceMeters = 0,
+      averageDurationSeconds = 0,
+      lifetimeAverageSpeedKmh = 0,
+      maxSpeedDrive = null,
+      longestDrive = null,
+      longestDurationDrive = null,
+      maxAccelerationDrive = null,
+      strongestBrakingDrive = null,
+      bestZeroToHundredDrive = null,
+      bestScore = null,
+      averageScore = null,
+      recentAverageScore = null;
 }

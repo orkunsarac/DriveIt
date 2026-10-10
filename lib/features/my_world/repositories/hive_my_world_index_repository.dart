@@ -5,6 +5,7 @@ import '../models/world_index_mutation_plan.dart';
 import '../models/world_index_snapshot.dart';
 import '../config/my_world_rules.dart';
 import 'my_world_index_repository.dart';
+import '../../../services/local_lifecycle_journal.dart';
 
 /// Hive copy-on-write index storage. A failed snapshot write can leave an
 /// orphaned generation, but can never change the active pointer.
@@ -30,9 +31,15 @@ class HiveMyWorldIndexRepository
 
   @override
   Future<void> commit(WorldIndexMutationPlan plan) async {
+    await LocalLifecycleJournal.serialized(() => _commit(plan));
+  }
+
+  Future<void> _commit(WorldIndexMutationPlan plan) async {
     final active = await getActiveSnapshot();
     if (active.generation != plan.baseGeneration) {
-      throw StateError('World index changed before this operation could commit.');
+      throw StateError(
+        'World index changed before this operation could commit.',
+      );
     }
     if (plan.resultingSnapshot.generation != active.generation + 1) {
       throw ArgumentError.value(
@@ -42,6 +49,10 @@ class HiveMyWorldIndexRepository
       );
     }
     _validateSnapshot(plan.resultingSnapshot);
+    _checkDeletedSources(plan.resultingSnapshot);
+    if (LocalLifecycleJournal.available) {
+      await LocalLifecycleJournal.box.flush();
+    }
 
     // The pointer stays untouched until the whole immutable next generation
     // has been written successfully.
@@ -49,6 +60,7 @@ class HiveMyWorldIndexRepository
       plan.resultingSnapshot.generation,
       plan.resultingSnapshot,
     );
+    await _snapshots.flush();
     await _metadata.put(
       _activePointerKey,
       WorldIndexPointer(
@@ -56,12 +68,22 @@ class HiveMyWorldIndexRepository
         updatedAt: DateTime.now().toUtc(),
       ),
     );
+    await _metadata.flush();
   }
 
   @override
   Future<void> activateRecoverySnapshot(WorldIndexSnapshot snapshot) async {
+    await LocalLifecycleJournal.serialized(() => _activateRecovery(snapshot));
+  }
+
+  Future<void> _activateRecovery(WorldIndexSnapshot snapshot) async {
     _validateSnapshot(snapshot);
+    _checkDeletedSources(snapshot);
+    if (LocalLifecycleJournal.available) {
+      await LocalLifecycleJournal.box.flush();
+    }
     await _snapshots.put(snapshot.generation, snapshot);
+    await _snapshots.flush();
     await _metadata.put(
       _activePointerKey,
       WorldIndexPointer(
@@ -69,6 +91,7 @@ class HiveMyWorldIndexRepository
         updatedAt: DateTime.now().toUtc(),
       ),
     );
+    await _metadata.flush();
   }
 
   @override
@@ -105,14 +128,14 @@ class HiveMyWorldIndexRepository
 
   @override
   Future<double> activeDistanceForDrive(String driveSessionId) async =>
-      (await getActiveTracesForDrive(driveSessionId))
-          .fold<double>(0, (sum, trace) => sum + trace.distanceMeters);
+      (await getActiveTracesForDrive(
+        driveSessionId,
+      )).fold<double>(0, (sum, trace) => sum + trace.distanceMeters);
 
   @override
   Future<double> totalWorldDistance() async => (await getActiveSnapshot())
       .traces
       .fold<double>(0, (sum, trace) => sum + trace.distanceMeters);
-
 
   WorldIndexSnapshot _emptySnapshot() => WorldIndexSnapshot.empty(
     driveScoreAlgorithmVersion: 1,
@@ -124,7 +147,9 @@ class HiveMyWorldIndexRepository
   void _validateSnapshot(WorldIndexSnapshot snapshot) {
     final ids = <String>{};
     for (final trace in snapshot.traces) {
-      if (!ids.add(trace.id)) throw StateError('Duplicate active World trace id.');
+      if (!ids.add(trace.id)) {
+        throw StateError('Duplicate active World trace id.');
+      }
       if (!trace.startOffsetMeters.isFinite ||
           !trace.endOffsetMeters.isFinite ||
           trace.startOffsetMeters < 0 ||
@@ -132,6 +157,21 @@ class HiveMyWorldIndexRepository
           trace.distanceMeters < MyWorldRules.minimumActiveTraceMeters) {
         throw StateError('World index cannot contain an empty trace.');
       }
+    }
+  }
+
+  void _checkDeletedSources(WorldIndexSnapshot snapshot) {
+    final filtered = LocalLifecycleJournal.filterTraces(snapshot.traces);
+    if (filtered.length != snapshot.traces.length ||
+        List.generate(
+          filtered.length,
+          (i) =>
+              filtered[i].id != snapshot.traces[i].id ||
+              filtered[i].startOffsetMeters !=
+                  snapshot.traces[i].startOffsetMeters ||
+              filtered[i].endOffsetMeters != snapshot.traces[i].endOffsetMeters,
+        ).any((v) => v)) {
+      throw StateError('Silinmiş Dünya kaynağı yeniden etkinleştirilemez.');
     }
   }
 }

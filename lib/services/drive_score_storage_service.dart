@@ -1,6 +1,11 @@
 import 'package:hive/hive.dart';
 
 import '../models/drive_score_record.dart';
+import 'local_data_preparation_service.dart';
+import 'career_contribution_repository.dart';
+import 'local_lifecycle_journal.dart';
+import 'local_source_bundle.dart';
+import '../features/my_world/repositories/world_source_snapshot_repository.dart';
 
 class DriveScoreHive {
   static const String boxName = 'drive_scores';
@@ -32,8 +37,8 @@ class DriveScoreStorageService {
 
   static List<DriveScoreRecord> getAll() =>
       Hive.isBoxOpen(DriveScoreHive.boxName)
-          ? _box.values.toList(growable: false)
-          : const <DriveScoreRecord>[];
+      ? _box.values.toList(growable: false)
+      : const <DriveScoreRecord>[];
 
   static bool exists({
     required String driveId,
@@ -42,7 +47,34 @@ class DriveScoreStorageService {
 
   static Future<void> save(DriveScoreRecord record) async {
     _validate(record);
-    await _box.put(keyFor(record.driveId, record.algorithmVersion), record);
+    if (!LocalLifecycleJournal.historyDeleted(record.driveId)) {
+      await _box.put(keyFor(record.driveId, record.algorithmVersion), record);
+    }
+    if (Hive.isBoxOpen(CareerContributionRepository.boxName)) {
+      final career = CareerContributionRepository(
+        Hive.box<dynamic>(CareerContributionRepository.boxName),
+      );
+      await career.attachScore(record);
+    }
+    if (Hive.isBoxOpen(WorldSourceSnapshotRepository.boxName)) {
+      final world = WorldSourceSnapshotRepository(
+        Hive.box<dynamic>(WorldSourceSnapshotRepository.boxName),
+      );
+      final snapshot = world.get(record.driveId);
+      if (snapshot != null) {
+        final source =
+            LocalDataPreparationService.readSource(record.driveId) ?? snapshot;
+        await world.prepare(
+          LocalSourceBundle(
+            drive: source.drive,
+            telemetry: source.telemetry,
+            score: record,
+            roads: snapshot.roads,
+            ownerScope: snapshot.ownerScope,
+          ),
+        );
+      }
+    }
   }
 
   static Future<void> deleteForDrive(String driveId) async {
@@ -56,7 +88,11 @@ class DriveScoreStorageService {
 
   static void _validate(DriveScoreRecord record) {
     if (record.driveId.trim().isEmpty) {
-      throw ArgumentError.value(record.driveId, 'driveId', 'Must not be empty.');
+      throw ArgumentError.value(
+        record.driveId,
+        'driveId',
+        'Must not be empty.',
+      );
     }
     if (record.algorithmVersion != DriveScoreRecord.currentAlgorithmVersion) {
       throw ArgumentError.value(

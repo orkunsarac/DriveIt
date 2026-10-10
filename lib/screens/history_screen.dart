@@ -67,7 +67,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
 
     if (result != true) return;
-    await DriveStorageService.deleteDrive(drive.id);
+    try {
+      await DriveStorageService.deleteDrive(drive.id);
+    } on StateError catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message.toString())));
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Silme tamamlanamadı. Korunan verilerle tekrar deneyebilirsin.',
+          ),
+        ),
+      );
+      return;
+    }
     if (!mounted) return;
     _loadDrives();
     ScaffoldMessenger.of(context).showSnackBar(

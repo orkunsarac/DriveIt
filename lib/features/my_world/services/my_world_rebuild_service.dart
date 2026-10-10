@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../../../features/drive_score/models/drive_score_algorithm_version.dart';
 import '../../../models/canonical_telemetry_point.dart';
 import '../../../models/drive_session.dart';
+import '../../../services/local_lifecycle_journal.dart';
 import '../config/my_world_rules.dart';
 import '../models/validated_road.dart';
 import '../models/world_index_mutation_plan.dart';
@@ -87,10 +88,38 @@ class MyWorldRebuildService {
     final drives = await _driveLoader();
     final driveById = {for (final drive in drives) drive.id: drive};
     final roads = await _repository.getAllValidatedRoads();
+    // An absent legacy source is not evidence that its existing ownership may
+    // be discarded. Fail before any pointer write rather than silently shrink
+    // the World during a rebuild/deletion/version reconciliation.
+    final unresolvedActiveSource = base.traces.any(
+      (trace) =>
+          !excludedDriveIds.contains(trace.sourceDriveSessionId) &&
+          !LocalLifecycleJournal.worldDeleted(trace.sourceDriveSessionId) &&
+          (!driveById.containsKey(trace.sourceDriveSessionId) ||
+              !roads.any((road) => road.id == trace.validatedRoadId)),
+    );
+    if (unresolvedActiveSource) {
+      return WorldRebuildResult(
+        success: false,
+        totalDrivesScanned: drives.length,
+        drivesProcessed: 0,
+        drivesSkipped: drives.length,
+        missingValidationCount: 1,
+        resultingTraceCount: base.traces.length,
+        totalWorldDistanceMeters: base.traces.fold<double>(
+          0,
+          (sum, trace) => sum + trace.distanceMeters,
+        ),
+        targetAlgorithmVersion: targetVersion.value,
+        failureReason:
+            'Eski Dünya izinin bağımsız kaynağı eksik; mevcut index korunuyor.',
+      );
+    }
     final eligible =
         roads.where((road) {
           final drive = driveById[road.driveSessionId];
           return drive != null &&
+              !LocalLifecycleJournal.worldDeleted(road.driveSessionId) &&
               _driveEligibility(road.driveSessionId) &&
               road.processingVersion ==
                   MyWorldRules.validatedRoadProcessingVersion &&
@@ -174,6 +203,7 @@ class MyWorldRebuildService {
           overlaps: overlaps,
           now: _clock(),
           algorithmVersion: targetVersion,
+          traceFilter: LocalLifecycleJournal.filterTraces,
         );
         staged = plan.resultingSnapshot;
         processed++;

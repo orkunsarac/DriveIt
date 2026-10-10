@@ -11,6 +11,10 @@ import 'package:driveit_project/models/route_point.dart';
 import 'package:driveit_project/services/drive_score_storage_service.dart';
 import 'package:driveit_project/services/drive_storage_service.dart';
 import 'package:driveit_project/services/drive_telemetry_storage_service.dart';
+import 'package:driveit_project/services/local_lifecycle_journal.dart';
+import 'package:driveit_project/services/career_contribution_repository.dart';
+import 'package:driveit_project/features/my_world/repositories/world_source_snapshot_repository.dart';
+import 'package:driveit_project/features/my_world/persistence/my_world_hive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
 
@@ -393,10 +397,29 @@ void main() {
       await DriveScoreHive.openBox(Hive);
       expect(DriveScoreStorageService.get(driveId: id)?.totalScore, 525);
 
+      // Phase 3B deletion requires a verified independent Career baseline and
+      // available World stores even when this short drive has no active trace.
+      MyWorldHive.registerAdapters(Hive);
+      await MyWorldHive.openBoxes(Hive);
+      await WorldSourceSnapshotRepository.open(Hive);
+      await CareerContributionRepository.open(Hive);
+      await LocalLifecycleJournal.open(Hive);
+      await Hive.box('career_totals').put('initialized', true);
+      await Hive.box('career_totals').put('atomicTotals', {
+        'countedIds': [id],
+        'totalDistance': 44.0,
+        'totalDuration': 20,
+      });
       await DriveStorageService.deleteDrive(id);
       expect(Hive.box<DriveSession>('drives').get(id), isNull);
       expect(DriveTelemetryStorageService.get(id), isNull);
       expect(DriveScoreStorageService.get(driveId: id), isNull);
+      expect(
+        CareerContributionRepository(
+          Hive.box(CareerContributionRepository.boxName),
+        ).statistics()!.bestScore!.totalScore,
+        525,
+      );
     },
   );
 }

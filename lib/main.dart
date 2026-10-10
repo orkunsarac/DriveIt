@@ -21,6 +21,9 @@ import 'features/onboarding/screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/drive_recovery_screen.dart';
 import 'services/drive_recovery_status.dart';
+import 'services/career_contribution_repository.dart';
+import 'services/local_lifecycle_journal.dart';
+import 'features/my_world/repositories/world_source_snapshot_repository.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +49,10 @@ void main() async {
   await DriveTelemetryHive.openBox(Hive);
   await DriveScoreHive.openBox(Hive);
   await MyWorldHive.openBoxes(Hive);
+  // Additive stores only: no legacy backfill or consumer activation at startup.
+  await WorldSourceSnapshotRepository.open(Hive);
+  await CareerContributionRepository.open(Hive);
+  await LocalLifecycleJournal.open(Hive);
   await HiveMyWorldSettingsStore.openBox(Hive);
 
   // Apply World rule/index migrations before the first screen can read the

@@ -1,5 +1,6 @@
 import '../../../models/drive_session.dart';
 import '../../../models/canonical_telemetry_point.dart';
+import '../../../services/local_lifecycle_journal.dart';
 import '../config/my_world_rules.dart';
 import '../models/validated_road.dart';
 import '../models/world_pending_job.dart';
@@ -40,6 +41,7 @@ class MyWorldValidationService {
        _telemetryLoader = telemetryLoader;
 
   Future<void> enqueueDrive(DriveSession drive) async {
+    if (LocalLifecycleJournal.worldHasDeletion(drive.id)) return;
     final roads = await repository.getValidatedRoadsForDrive(drive.id);
     if (_currentRoad(roads) case final existing? when !existing.requiresRetry) {
       // A validated road is not enough to consider the drive complete: an
@@ -81,6 +83,14 @@ class MyWorldValidationService {
     DriveSession drive, {
     bool forceRebuild = false,
   }) async {
+    if (LocalLifecycleJournal.worldHasDeletion(drive.id)) {
+      return const MyWorldValidationResult(
+        state: WorldProcessingState.failedPermanent,
+        road: null,
+        providerCalled: false,
+        errorMessage: 'Bu kişisel Dünya kaynağı silinmiş.',
+      );
+    }
     final roads = await repository.getValidatedRoadsForDrive(drive.id);
     final existing = _currentRoad(roads);
     if (!forceRebuild && existing != null && !existing.requiresRetry) {

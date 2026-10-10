@@ -17,11 +17,13 @@ class WorldTraceDetailScreen extends StatefulWidget {
     required this.detail,
     required this.geometry,
     this.traceColor = const Color(0xff53d7ff),
+    this.onDeleteWorld,
   });
 
   final WorldTraceDetail detail;
   final List<MatchedRoadPoint> geometry;
   final Color traceColor;
+  final Future<void> Function()? onDeleteWorld;
 
   @override
   State<WorldTraceDetailScreen> createState() => _WorldTraceDetailScreenState();
@@ -35,6 +37,50 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
   final _accountIdentity = SupabaseAccountService.instance;
   BitmapDescriptor? _startIcon;
   BitmapDescriptor? _finishIcon;
+  bool _deleting = false;
+
+  Future<void> _deleteWorld() async {
+    if (_deleting) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Kişisel Dünya izini sil'),
+        content: const Text(
+          'Yalnızca seçilen kişisel iz silinecek. Diğer izler, sürüş geçmişi, Kariyer ve Gezegen yayınları korunur.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Vazgeç'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sil'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _deleting = true);
+    try {
+      await widget.onDeleteWorld!();
+      if (mounted) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error is StateError
+                  ? error.message.toString()
+                  : 'Dünya silme tamamlanamadı; tekrar deneyebilirsin.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _deleting = false);
+    }
+  }
 
   List<LatLng> get _points => widget.geometry
       .map((point) => LatLng(point.latitude, point.longitude))
@@ -183,6 +229,12 @@ class _WorldTraceDetailScreenState extends State<WorldTraceDetailScreen> {
         backgroundColor: const Color(0xff020a18),
         title: const Text('İz Detayı'),
         actions: [
+          if (widget.onDeleteWorld != null)
+            IconButton(
+              tooltip: 'Kişisel Dünya izini sil',
+              onPressed: _deleting ? null : _deleteWorld,
+              icon: const Icon(Icons.delete_outline),
+            ),
           IconButton(
             tooltip: 'Rotayı ekrana sığdır',
             onPressed: _fitRoute,

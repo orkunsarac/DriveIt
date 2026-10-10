@@ -16,10 +16,9 @@ import '../features/my_world/services/world_trace_detail_service.dart';
 import '../features/my_world/services/world_trace_visibility_policy.dart';
 import '../features/my_world/services/world_trace_presentation_service.dart';
 import '../features/my_world/models/world_trace_travel_direction.dart';
-import '../models/drive_score_record.dart';
 import '../models/drive_session.dart';
-import '../services/drive_score_storage_service.dart';
-import '../services/drive_storage_service.dart';
+import '../services/world_source_access.dart';
+import '../services/independent_deletion_service.dart';
 import '../theme/drive_map_visuals.dart';
 import 'drive_detail_screen.dart';
 import 'world_mode_selection_screen.dart';
@@ -103,11 +102,9 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     _detailService =
         widget.detailService ??
         WorldTraceDetailService(
-          driveLoader: DriveStorageService.getDrive,
-          scoreLoader: (driveId) => DriveScoreStorageService.get(
-            driveId: driveId,
-            algorithmVersion: DriveScoreRecord.currentAlgorithmVersion,
-          ),
+          driveLoader: WorldSourceAccess.drive,
+          scoreLoader: WorldSourceAccess.score,
+          telemetryLoader: WorldSourceAccess.telemetry,
           activeDistanceLoader:
               MyWorldRuntime.indexRepository().activeDistanceForDrive,
         );
@@ -711,9 +708,15 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
           detail: detail,
           geometry: item.geometry,
           traceColor: _palette[item.visualVariant % _palette.length],
+          onDeleteWorld: () =>
+              IndependentDeletionService.deleteWorldTrace(item.trace.id),
         ),
       ),
     );
+    if (mounted && widget.loadData == null) {
+      final refreshed = await MyWorldRuntime.readWorldData();
+      if (mounted) setState(() => _data = refreshed);
+    }
   }
 
   Future<void> _fitFocusTrace(ResolvedWorldTrace item) async {
@@ -797,7 +800,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
   DriveSession? _lastProcessedDrive(MyWorldMapData data) =>
       WorldTraceDetailService.latestProcessedDrive(
         processedDriveIds: data.processedDriveSessionIds,
-        drives: DriveStorageService.getAllDrives(),
+        drives: WorldSourceAccess.drives(),
       );
 
   Future<void> _fitResolvedTraces(

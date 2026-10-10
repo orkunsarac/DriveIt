@@ -16,6 +16,7 @@ import '../services/drive_diagnostic_export.dart';
 import '../theme/drive_map_visuals.dart';
 import '../widgets/drive_score_summary_section.dart';
 import '../services/drive_reliability_service.dart';
+import '../services/drive_route_presentation.dart';
 
 class DriveDetailScreen extends StatefulWidget {
   final DriveSession drive;
@@ -38,6 +39,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
   Timer? _fitRouteTimer;
   bool _mapActive = true;
   late final Set<Polyline> _polylines;
+  late final DriveRoutePresentation _routePresentation;
   Set<Marker> _markers = {};
   late final TextEditingController _nameController;
   bool _exporting = false;
@@ -114,7 +116,20 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
 
   void _createPolyline() {
     final segments = routeSegments(widget.drive.route);
+    _routePresentation = DriveRoutePresentation(widget.drive.route);
     _polylines = {
+      for (var i = 0; i < _routePresentation.gaps.length; i++)
+        Polyline(
+          polylineId: PolylineId('gps_gap_$i'),
+          points: _routePresentation.gaps[i]
+              .map((p) => LatLng(p.latitude, p.longitude))
+              .toList(),
+          color: const Color(0xffaab6c6),
+          width: 2,
+          patterns: [PatternItem.dash(12), PatternItem.gap(8)],
+          consumeTapEvents: false,
+          zIndex: -1,
+        ),
       for (var i = 0; i < segments.length; i++)
         if (segments[i].length > 1)
           Polyline(
@@ -409,6 +424,26 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             );
                           },
                         ),
+                        if (_routePresentation.gaps.isNotEmpty)
+                          const Positioned(
+                            left: 10,
+                            top: 10,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: Color(0xdd020c1d),
+                              ),
+                              child: Padding(
+                                padding: EdgeInsets.all(6),
+                                child: Text(
+                                  'Kesikli çizgi: GPS kaydı yok',
+                                  style: TextStyle(
+                                    color: Color(0xffaab6c6),
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         Positioned(
                           right: 12,
                           bottom: 12,

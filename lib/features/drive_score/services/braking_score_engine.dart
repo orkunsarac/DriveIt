@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../../../services/drive_time_analysis.dart';
 
 import '../config/braking_score_calibration.dart';
 import '../models/braking_score_models.dart';
@@ -214,6 +215,12 @@ class BrakingScoreEngine {
         .any(
           (feature) =>
               !feature.point.timestamp.isBefore(lookback) &&
+              (!analysis.reliableIntervalsOnly ||
+                  DriveTimeAnalysis.continuousSpan(
+                    feature.index,
+                    start,
+                    (i) => features[i].point,
+                  )) &&
               feature.smoothedAccelerationMps2 < -.08,
         );
     final coastingBonus = hasPreEventCoasting ? .08 : 0.0;
@@ -303,6 +310,14 @@ class BrakingScoreEngine {
       }
       for (final deceleration in decelerations) {
         if (deceleration.startTime.isBefore(acceleration.endTime)) continue;
+        if (analysis.reliableIntervalsOnly &&
+            !DriveTimeAnalysis.continuousSpan(
+              acceleration.endIndex,
+              deceleration.startIndex,
+              (i) => analysis.features[i].point,
+            )) {
+          continue;
+        }
         final gap = deceleration.startTime.difference(acceleration.endTime);
         final window = _brakeThrottleWindow(acceleration.maximumSpeedMps);
         if (gap > window) break;
@@ -392,6 +407,12 @@ class BrakingScoreEngine {
         .where((event) {
           final gap = stop.startTime.difference(event.endTime).abs();
           return event.endIndex <= stop.startIndex &&
+              (!analysis.reliableIntervalsOnly ||
+                  DriveTimeAnalysis.continuousSpan(
+                    event.endIndex,
+                    stop.startIndex,
+                    (i) => analysis.features[i].point,
+                  )) &&
               gap <= BrakingScoreCalibration.stopAssociationGap;
         })
         .cast<DrivingEvent?>()
@@ -453,6 +474,14 @@ class BrakingScoreEngine {
 
   int? _findApproachStart(DrivePhaseAnalysisResult analysis, int stopStart) {
     for (var index = stopStart; index >= 0; index--) {
+      if (analysis.reliableIntervalsOnly &&
+          index < stopStart &&
+          !DriveTimeAnalysis.reliableInterval(
+            analysis.features[index].point,
+            analysis.features[index + 1].point,
+          )) {
+        break;
+      }
       if (analysis.features[index].point.speedMps >=
           BrakingScoreCalibration.minimumMeaningfulStopApproachSpeedMps) {
         return index;

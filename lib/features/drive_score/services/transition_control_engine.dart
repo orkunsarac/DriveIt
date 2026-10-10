@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../../../services/drive_time_analysis.dart';
 import '../config/transition_control_calibration.dart';
 import '../models/driving_analysis_models.dart';
 import '../models/flow_acceleration_transition_models.dart';
@@ -12,6 +13,14 @@ class TransitionControlEngine {
       final x = events[i], mid = events[i + 1], target = events[i + 2];
       final type = _type(x, mid, target);
       if (type == null || !_eligible(x, mid, target)) continue;
+      if (a.reliableIntervalsOnly &&
+          !DriveTimeAnalysis.continuousSpan(
+            x.startIndex,
+            target.endIndex,
+            (i) => a.features[i].point,
+          )) {
+        continue;
+      }
       transitions.add(
         DrivingTransition(
           type: type,

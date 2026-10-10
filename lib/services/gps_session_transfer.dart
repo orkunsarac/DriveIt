@@ -2,6 +2,7 @@ import 'dart:convert';
 import '../models/canonical_telemetry_point.dart';
 import 'gps_failure.dart';
 import 'gps_session_store.dart';
+import 'drive_route_projection.dart';
 
 abstract interface class GpsTransferSink {
   Future<Map<String, dynamic>?> readDrive(String id);
@@ -86,8 +87,18 @@ class GpsSessionTransfer {
         }
       }
     }
-    if (jsonEncode(route) != jsonEncode(manifest['route']) ||
-        distance != manifest['distance']) {
+    final safeProjection = DriveRouteProjection(points);
+    final matchesSafe =
+        jsonEncode(safeProjection.encodedRoute) ==
+            jsonEncode(manifest['route']) &&
+        safeProjection.distanceMeters == manifest['distance'];
+    // An already durable old intent/Hive snapshot must remain byte-for-byte
+    // recoverable. New transfers use the shared quality-qualified projection.
+    final matchesExistingLegacy =
+        (priorIntent != null || priorDrive != null) &&
+        jsonEncode(route) == jsonEncode(manifest['route']) &&
+        distance == manifest['distance'];
+    if (!matchesSafe && !matchesExistingLegacy) {
       throw GpsFailure(GpsErrorCode.recovery);
     }
     final existing = await sink.readDrive(id);
@@ -102,6 +113,7 @@ class GpsSessionTransfer {
       final session = (await store.session(id))!;
       await sink.writeTelemetry(id, points, {
         'sessionId': id,
+        'reliabilityPolicyVersion': 1,
         'finalSequence': intent['final_sequence'],
         'startedAtMicros': session.startedAt.microsecondsSinceEpoch,
         'stopRequestedAtMicros': session.stoppedAt?.microsecondsSinceEpoch,

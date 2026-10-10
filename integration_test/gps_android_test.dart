@@ -16,6 +16,9 @@ import 'package:driveit_project/services/gps_session_store.dart';
 import 'package:driveit_project/services/gps_recording_writer.dart';
 import 'package:driveit_project/services/canonical_telemetry_pipeline.dart';
 import 'package:driveit_project/services/drive_recovery_status.dart';
+import 'package:driveit_project/services/drive_route_projection.dart';
+import 'package:driveit_project/services/drive_time_analysis.dart';
+import 'package:driveit_project/models/canonical_telemetry_point.dart';
 
 @pragma('vm:entry-point')
 void gpsProbeCallback() =>
@@ -75,6 +78,95 @@ class NativeGpsProbeTask extends TaskHandler {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets(
+    'native reliable timing survives SQLite to Hive with exact source points',
+    (_) async {
+      final root = Directory(
+        '${await getDatabasesPath()}/gps_reliability_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      await root.create();
+      Hive.init(root.path);
+      if (!Hive.isAdapterRegistered(0)) {
+        Hive.registerAdapter(DriveSessionAdapter());
+      }
+      if (!Hive.isAdapterRegistered(1)) {
+        Hive.registerAdapter(RoutePointAdapter());
+      }
+      DriveTelemetryHive.registerAdapters(Hive);
+      await Hive.openBox<DriveSession>('drives');
+      await DriveTelemetryHive.openBox(Hive);
+      final store = await GpsSessionStore.open(
+        factory: databaseFactory,
+        path: '${root.path}/journal.db',
+      );
+      try {
+        final s = await store.create();
+        final times = [
+          for (var t = 0; t <= 50; t += 5) t,
+          for (var t = 60; t <= 100; t += 5) t,
+        ];
+        final points = <CanonicalTelemetryPoint>[];
+        for (var i = 0; i < times.length; i++) {
+          final p = CanonicalTelemetryPoint(
+            latitude: 40 + i * .0001,
+            longitude: 29,
+            timestamp: s.startedAt.add(Duration(seconds: times[i])),
+            speedMps: 10,
+            headingDegrees: 0,
+            altitudeMeters: 0,
+            accuracyMeters: 3,
+            distanceFromPreviousMeters: i == 0 ? 0 : 50,
+            accelerationMps2: 0,
+            speedSource: 'native',
+            gapDurationMicros: times[i] == 60 ? 10000000 : 0,
+          );
+          points.add(p);
+          await store.append(s.id, i + 1, p);
+        }
+        final stop = s.startedAt.add(const Duration(seconds: 200));
+        await store.requestStop(s.id, at: stop);
+        await store.stop(s.id, expectedSequence: points.length);
+        final projection = DriveRouteProjection(points);
+        final transfer = GpsSessionTransfer(store, GpsHiveTransferSink());
+        await transfer.save(
+          s.id,
+          driveTransferManifest(
+            DriveSession(
+              id: s.id,
+              date: DateTime.now(),
+              distance: projection.distanceMeters,
+              durationSeconds: 200,
+              averageSpeed: 36,
+              maxSpeed: 36,
+              mapImagePath: '',
+              route: projection.route,
+            ),
+          ),
+        );
+        final restored = DriveTelemetryStorageService.get(s.id)!;
+        expect(restored.acquisitionMetadata['reliabilityPolicyVersion'], 1);
+        expect(
+          restored.acquisitionMetadata['stopRequestedAtMicros'],
+          stop.microsecondsSinceEpoch,
+        );
+        expect(
+          jsonEncode(
+            restored.points.map(GpsSessionTransfer.pointContent).toList(),
+          ),
+          jsonEncode(points.map(GpsSessionTransfer.pointContent).toList()),
+        );
+        final timing = DriveTimeAnalysis.fromRecord(restored);
+        expect(timing.measuredMicros, 90000000);
+        expect(timing.coverage, .45);
+        expect(timing.scoreEligible, false);
+        expect(projection.distanceMeters, timing.distanceMeters);
+        expect(await transfer.verify(s.id), true);
+      } finally {
+        await store.close();
+        await Hive.close();
+      }
+    },
+  );
   testWidgets(
     'native Phase 4 stopped journal transfers/verifies Hive and isolated retention',
     (_) async {

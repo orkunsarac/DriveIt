@@ -59,8 +59,7 @@ void main() {
         applicable: false,
         sampleSufficient: false,
         contributionUsed: 112.5,
-        contributionSource:
-            DriveScoreContributionSource.neutralNotApplicable,
+        contributionSource: DriveScoreContributionSource.neutralNotApplicable,
       ),
       const DriveScoreCategoryRecord(
         categoryKey: 'corneringPerformance',
@@ -69,8 +68,7 @@ void main() {
         applicable: true,
         sampleSufficient: false,
         contributionUsed: 112.5,
-        contributionSource:
-            DriveScoreContributionSource.neutralInsufficient,
+        contributionSource: DriveScoreContributionSource.neutralInsufficient,
       ),
     ];
     return DriveScoreRecord(
@@ -116,39 +114,121 @@ void main() {
     ],
   );
 
-  test('score record preserves actual and neutral contribution sources', () async {
-    final value = record(total: 525);
-    await DriveScoreStorageService.save(value);
-
-    final restored = DriveScoreStorageService.get(driveId: 'drive-1');
-    expect(restored?.algorithmVersion, 1);
-    expect(restored?.telemetryDataVersion, 1);
-    expect(restored?.calculatedAt, DateTime(2026, 8, 12));
-    expect(restored?.totalScore, 525);
-    expect(restored?.categories, hasLength(3));
-    expect(
-      restored?.categories[0].contributionSource,
-      DriveScoreContributionSource.actual,
-    );
-    expect(
-      restored?.categories[1].contributionSource,
-      DriveScoreContributionSource.neutralNotApplicable,
-    );
-    expect(
-      restored?.categories[2].contributionSource,
-      DriveScoreContributionSource.neutralInsufficient,
-    );
-  });
-
-  test('deterministic key overwrites instead of creating a duplicate v1 score',
+  for (final elapsed in [120, 150, 151]) {
+    test(
+      'new session global coverage gate: 120 measured / $elapsed elapsed',
       () async {
-    await DriveScoreStorageService.save(record(total: 525));
-    await DriveScoreStorageService.save(record(total: 525));
+        final t = DateTime.utc(2026);
+        await DriveTelemetryStorageService.save(
+          driveSessionId: 'new',
+          points: List.generate(
+            25,
+            (i) => CanonicalTelemetryPoint(
+              latitude: 40,
+              longitude: 29,
+              timestamp: t.add(Duration(seconds: i * 5)),
+              speedMps: 10,
+              headingDegrees: 0,
+              altitudeMeters: 0,
+              accuracyMeters: 3,
+              distanceFromPreviousMeters: i == 0 ? 0 : 50,
+              accelerationMps2: 0,
+              speedSource: 'native',
+            ),
+          ),
+          acquisitionMetadata: {
+            'reliabilityPolicyVersion': 1,
+            'startedAtMicros': t.microsecondsSinceEpoch,
+            'stopRequestedAtMicros': t
+                .add(Duration(seconds: elapsed))
+                .microsecondsSinceEpoch,
+          },
+        );
+        final result = await const DriveScorePersistenceCoordinator()
+            .calculateAndPersistForDrive('new');
+        expect(result != null, elapsed <= 150);
+        expect(
+          DriveScoreStorageService.get(driveId: 'new') != null,
+          elapsed <= 150,
+        );
+      },
+    );
+  }
+  test(
+    'high coverage but too few moving samples writes no numeric or zero score',
+    () async {
+      final points = telemetry();
+      await DriveTelemetryStorageService.save(
+        driveSessionId: 'short',
+        points: points,
+        acquisitionMetadata: {
+          'reliabilityPolicyVersion': 1,
+          'startedAtMicros': points.first.timestamp.microsecondsSinceEpoch,
+          'stopRequestedAtMicros': points.last.timestamp.microsecondsSinceEpoch,
+        },
+      );
+      expect(
+        await const DriveScorePersistenceCoordinator()
+            .calculateAndPersistForDrive('short'),
+        isNull,
+      );
+      expect(DriveScoreStorageService.getAll(), isEmpty);
+    },
+  );
+  test(
+    'previous persisted score is never recomputed or removed by new policy',
+    () async {
+      final original = record(total: 525);
+      await DriveScoreStorageService.save(original);
+      await DriveTelemetryStorageService.save(
+        driveSessionId: 'drive-1',
+        points: telemetry(),
+        acquisitionMetadata: {'reliabilityPolicyVersion': 1},
+      );
+      final result = await const DriveScorePersistenceCoordinator()
+          .calculateAndPersistForDrive('drive-1');
+      expect(result!.totalScore, original.totalScore);
+      expect(result.calculatedAt, original.calculatedAt);
+    },
+  );
+  test(
+    'score record preserves actual and neutral contribution sources',
+    () async {
+      final value = record(total: 525);
+      await DriveScoreStorageService.save(value);
 
-    final box = Hive.box<DriveScoreRecord>(DriveScoreHive.boxName);
-    expect(box.length, 1);
-    expect(box.get('drive-1:v1')?.totalScore, 525);
-  });
+      final restored = DriveScoreStorageService.get(driveId: 'drive-1');
+      expect(restored?.algorithmVersion, 1);
+      expect(restored?.telemetryDataVersion, 1);
+      expect(restored?.calculatedAt, DateTime(2026, 8, 12));
+      expect(restored?.totalScore, 525);
+      expect(restored?.categories, hasLength(3));
+      expect(
+        restored?.categories[0].contributionSource,
+        DriveScoreContributionSource.actual,
+      );
+      expect(
+        restored?.categories[1].contributionSource,
+        DriveScoreContributionSource.neutralNotApplicable,
+      );
+      expect(
+        restored?.categories[2].contributionSource,
+        DriveScoreContributionSource.neutralInsufficient,
+      );
+    },
+  );
+
+  test(
+    'deterministic key overwrites instead of creating a duplicate v1 score',
+    () async {
+      await DriveScoreStorageService.save(record(total: 525));
+      await DriveScoreStorageService.save(record(total: 525));
+
+      final box = Hive.box<DriveScoreRecord>(DriveScoreHive.boxName);
+      expect(box.length, 1);
+      expect(box.get('drive-1:v1')?.totalScore, 525);
+    },
+  );
 
   test('missing canonical telemetry does not create a score record', () async {
     final result = await const DriveScorePersistenceCoordinator()
@@ -158,19 +238,21 @@ void main() {
     expect(DriveScoreStorageService.exists(driveId: 'legacy-drive'), isFalse);
   });
 
-  test('in-memory calculator scores local telemetry without Hive persistence',
-      () {
-    const calculator = DriveScoreCalculator();
-    final box = Hive.box<DriveScoreRecord>(DriveScoreHive.boxName);
-    final result = calculator.calculate(
-      telemetry: telemetry(),
-      algorithmVersion: DriveScoreAlgorithmVersion.v1,
-    );
+  test(
+    'in-memory calculator scores local telemetry without Hive persistence',
+    () {
+      const calculator = DriveScoreCalculator();
+      final box = Hive.box<DriveScoreRecord>(DriveScoreHive.boxName);
+      final result = calculator.calculate(
+        telemetry: telemetry(),
+        algorithmVersion: DriveScoreAlgorithmVersion.v1,
+      );
 
-    expect(result.algorithmVersion, 1);
-    expect(result.totalScore, inInclusiveRange(0, 1000));
-    expect(box.length, 0);
-  });
+      expect(result.algorithmVersion, 1);
+      expect(result.totalScore, inInclusiveRange(0, 1000));
+      expect(box.length, 0);
+    },
+  );
 
   test('calculator is deterministic for a local telemetry subset', () {
     const calculator = DriveScoreCalculator();
@@ -196,53 +278,57 @@ void main() {
     );
   });
 
-  test('calculator rejects insufficient telemetry without a fabricated score',
-      () {
-    const calculator = DriveScoreCalculator();
+  test(
+    'calculator rejects insufficient telemetry without a fabricated score',
+    () {
+      const calculator = DriveScoreCalculator();
 
-    expect(
-      () => calculator.calculate(telemetry: telemetry().take(1)),
-      throwsA(isA<InsufficientDriveScoreTelemetryException>()),
-    );
-  });
+      expect(
+        () => calculator.calculate(telemetry: telemetry().take(1)),
+        throwsA(isA<InsufficientDriveScoreTelemetryException>()),
+      );
+    },
+  );
 
-  test('invalid non-finite score record is rejected before persistence', () async {
-    final invalid = DriveScoreRecord(
-      driveId: 'invalid',
-      algorithmVersion: 1,
-      telemetryDataVersion: 1,
-      calculatedAt: DateTime.now(),
-      totalScore: double.nan,
-      overallConfidence: 1,
-      categories: const [],
-    );
+  test(
+    'invalid non-finite score record is rejected before persistence',
+    () async {
+      final invalid = DriveScoreRecord(
+        driveId: 'invalid',
+        algorithmVersion: 1,
+        telemetryDataVersion: 1,
+        calculatedAt: DateTime.now(),
+        totalScore: double.nan,
+        overallConfidence: 1,
+        categories: const [],
+      );
 
-    await expectLater(
-      DriveScoreStorageService.save(invalid),
-      throwsArgumentError,
-    );
-    expect(DriveScoreStorageService.exists(driveId: 'invalid'), isFalse);
-  });
+      await expectLater(
+        DriveScoreStorageService.save(invalid),
+        throwsArgumentError,
+      );
+      expect(DriveScoreStorageService.exists(driveId: 'invalid'), isFalse);
+    },
+  );
 
-  test('score persistence failure does not remove a saved DriveSession',
-      () async {
-    await Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).close();
-    final savedDrive = drive('saved-despite-score-failure');
+  test(
+    'score persistence failure does not remove a saved DriveSession',
+    () async {
+      await Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).close();
+      final savedDrive = drive('saved-despite-score-failure');
 
-    await DriveStorageService.saveDrive(savedDrive);
+      await DriveStorageService.saveDrive(savedDrive);
 
-    expect(
-      Hive.box<DriveSession>('drives').get(savedDrive.id)?.id,
-      savedDrive.id,
-    );
-  });
+      expect(
+        Hive.box<DriveSession>('drives').get(savedDrive.id)?.id,
+        savedDrive.id,
+      );
+    },
+  );
 
   test('new saved drive persists telemetry then a v1 score record', () async {
     final savedDrive = drive('new-drive');
-    await DriveStorageService.saveDrive(
-      savedDrive,
-      telemetry: telemetry(),
-    );
+    await DriveStorageService.saveDrive(savedDrive, telemetry: telemetry());
 
     expect(Hive.box<DriveSession>('drives').get(savedDrive.id), isNotNull);
     expect(DriveTelemetryStorageService.get(savedDrive.id), isNotNull);
@@ -252,10 +338,7 @@ void main() {
   test('coordinator persists the same v1 result as the calculator', () async {
     const id = 'coordinator-calculator-parity';
     final points = telemetry();
-    await DriveTelemetryStorageService.save(
-      driveSessionId: id,
-      points: points,
-    );
+    await DriveTelemetryStorageService.save(driveSessionId: id, points: points);
 
     const calculator = DriveScoreCalculator();
     final expected = calculator.calculate(telemetry: points);
@@ -266,49 +349,54 @@ void main() {
     expect(persisted?.algorithmVersion, expected.algorithmVersion);
   });
 
-  test('missing score with telemetry recovers once without duplicates', () async {
-    const id = 'recoverable-drive';
-    await DriveTelemetryStorageService.save(
-      driveSessionId: id,
-      points: telemetry(),
-    );
+  test(
+    'missing score with telemetry recovers once without duplicates',
+    () async {
+      const id = 'recoverable-drive';
+      await DriveTelemetryStorageService.save(
+        driveSessionId: id,
+        points: telemetry(),
+      );
 
-    final coordinator = const DriveScorePersistenceCoordinator();
-    final first = await coordinator.calculateAndPersistForDrive(id);
-    final second = await coordinator.calculateAndPersistForDrive(id);
+      final coordinator = const DriveScorePersistenceCoordinator();
+      final first = await coordinator.calculateAndPersistForDrive(id);
+      final second = await coordinator.calculateAndPersistForDrive(id);
 
-    expect(first, isNotNull);
-    expect(second?.totalScore, first?.totalScore);
-    expect(Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).length, 1);
-  });
+      expect(first, isNotNull);
+      expect(second?.totalScore, first?.totalScore);
+      expect(Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).length, 1);
+    },
+  );
 
-  test('persisted score survives box reopen and drive deletion cleans it up',
-      () async {
-    const id = 'restart-and-delete';
-    await DriveScoreStorageService.save(
-      DriveScoreRecord(
-        driveId: id,
-        algorithmVersion: 1,
-        telemetryDataVersion: 1,
-        calculatedAt: DateTime(2026, 8, 12),
-        totalScore: 525,
-        overallConfidence: 1 / 3,
-        categories: record(total: 525).categories,
-      ),
-    );
-    await DriveTelemetryStorageService.save(
-      driveSessionId: id,
-      points: telemetry(),
-    );
-    await Hive.box<DriveSession>('drives').put(id, drive(id));
+  test(
+    'persisted score survives box reopen and drive deletion cleans it up',
+    () async {
+      const id = 'restart-and-delete';
+      await DriveScoreStorageService.save(
+        DriveScoreRecord(
+          driveId: id,
+          algorithmVersion: 1,
+          telemetryDataVersion: 1,
+          calculatedAt: DateTime(2026, 8, 12),
+          totalScore: 525,
+          overallConfidence: 1 / 3,
+          categories: record(total: 525).categories,
+        ),
+      );
+      await DriveTelemetryStorageService.save(
+        driveSessionId: id,
+        points: telemetry(),
+      );
+      await Hive.box<DriveSession>('drives').put(id, drive(id));
 
-    await Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).close();
-    await DriveScoreHive.openBox(Hive);
-    expect(DriveScoreStorageService.get(driveId: id)?.totalScore, 525);
+      await Hive.box<DriveScoreRecord>(DriveScoreHive.boxName).close();
+      await DriveScoreHive.openBox(Hive);
+      expect(DriveScoreStorageService.get(driveId: id)?.totalScore, 525);
 
-    await DriveStorageService.deleteDrive(id);
-    expect(Hive.box<DriveSession>('drives').get(id), isNull);
-    expect(DriveTelemetryStorageService.get(id), isNull);
-    expect(DriveScoreStorageService.get(driveId: id), isNull);
-  });
+      await DriveStorageService.deleteDrive(id);
+      expect(Hive.box<DriveSession>('drives').get(id), isNull);
+      expect(DriveTelemetryStorageService.get(id), isNull);
+      expect(DriveScoreStorageService.get(driveId: id), isNull);
+    },
+  );
 }

@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../../../services/drive_time_analysis.dart';
 
 import '../config/tempo_performance_calibration.dart';
 import '../models/driving_analysis_models.dart';
@@ -20,18 +21,39 @@ class TempoPerformanceEngine {
     var movingDistanceMeters = 0.0;
     var totalDistanceMeters = 0.0;
     var ignoredSamples = 0;
+    var measuredMicroseconds = 0;
 
     for (var index = 0; index < features.length; index++) {
-      totalDistanceMeters += features[index].point.distanceFromPreviousMeters;
+      if (!analysis.reliableIntervalsOnly) {
+        totalDistanceMeters += features[index].point.distanceFromPreviousMeters;
+      }
       if (index == features.length - 1) continue;
       final current = features[index];
       final next = features[index + 1];
       final elapsed = next.point.timestamp.difference(current.point.timestamp);
-      if (elapsed <= Duration.zero) {
+      if (elapsed <= Duration.zero ||
+          (analysis.reliableIntervalsOnly &&
+              (!DriveTimeAnalysis.reliableInterval(current.point, next.point) ||
+                  !DriveTimeAnalysis.reliableSpeed(current.point) ||
+                  !DriveTimeAnalysis.reliableSpeed(next.point)))) {
         ignoredSamples++;
         continue;
       }
-      if (_isStoppedInterval(analysis, index)) {
+      measuredMicroseconds += elapsed.inMicroseconds;
+      if (analysis.reliableIntervalsOnly) {
+        totalDistanceMeters += next.point.distanceFromPreviousMeters;
+      }
+      if (analysis.reliableIntervalsOnly) {
+        if (DriveTimeAnalysis.stationaryInterval(current.point, next.point)) {
+          stoppedMicroseconds += elapsed.inMicroseconds;
+        } else if (DriveTimeAnalysis.movingInterval(
+          current.point,
+          next.point,
+        )) {
+          movingMicroseconds += elapsed.inMicroseconds;
+          movingDistanceMeters += next.point.distanceFromPreviousMeters;
+        }
+      } else if (_isStoppedInterval(analysis, index)) {
         stoppedMicroseconds += elapsed.inMicroseconds;
       } else {
         movingMicroseconds += elapsed.inMicroseconds;
@@ -39,9 +61,11 @@ class TempoPerformanceEngine {
       }
     }
 
-    final totalElapsed = features.last.point.timestamp.difference(
-      features.first.point.timestamp,
-    );
+    final totalElapsed = analysis.reliableIntervalsOnly
+        ? Duration(microseconds: measuredMicroseconds)
+        : features.last.point.timestamp.difference(
+            features.first.point.timestamp,
+          );
     final movingDuration = Duration(microseconds: movingMicroseconds);
     final stoppedDuration = Duration(microseconds: stoppedMicroseconds);
     final totalDistanceKm = totalDistanceMeters / 1000;
@@ -193,6 +217,14 @@ class TempoPerformanceEngine {
       for (final neighbour in <int>[index - 1, index + 1]) {
         if (neighbour < 0 || neighbour >= features.length) continue;
         if (!features[neighbour].point.hasSpeedEvidence) continue;
+        final lo = math.min(index, neighbour), hi = math.max(index, neighbour);
+        if (analysis.reliableIntervalsOnly &&
+            !DriveTimeAnalysis.reliableInterval(
+              features[lo].point,
+              features[hi].point,
+            )) {
+          continue;
+        }
         final neighbourSpeed = features[neighbour].point.speedMps;
         if ((neighbourSpeed - speed).abs() <=
             TempoPerformanceCalibration.maxSpeedNeighbourToleranceMps) {

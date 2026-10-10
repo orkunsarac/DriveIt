@@ -7,7 +7,10 @@ import '../models/driving_analysis_models.dart';
 class DriveFeatureExtractor {
   const DriveFeatureExtractor();
 
-  List<TelemetryFeature> extract(List<CanonicalTelemetryPoint> points) {
+  List<TelemetryFeature> extract(
+    List<CanonicalTelemetryPoint> points, {
+    bool isolateSegments = false,
+  }) {
     if (points.isEmpty) return const <TelemetryFeature>[];
 
     final window = ListQueue<int>();
@@ -21,6 +24,18 @@ class DriveFeatureExtractor {
 
     for (var index = 0; index < points.length; index++) {
       final point = points[index];
+      if (isolateSegments &&
+          (point.breakBefore ||
+              !point.hasSpeedEvidence ||
+              (index > 0 && !points[index - 1].hasSpeedEvidence))) {
+        window.clear();
+        speedSum = 0;
+        speedSquareSum = 0;
+        lowSpeedCount = 0;
+        smoothedAcceleration = 0;
+        stationaryDuration = 0;
+        movingDuration = 0;
+      }
       window.addLast(index);
       speedSum += point.speedMps;
       speedSquareSum += point.speedMps * point.speedMps;

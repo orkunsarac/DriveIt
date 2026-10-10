@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../../../services/drive_time_analysis.dart';
 
 import '../../../models/canonical_telemetry_point.dart';
 import '../config/drive_detection_calibration.dart';
@@ -16,11 +17,19 @@ class DrivePhaseAnalyzer {
   DrivePhaseAnalysisResult analyze({
     required String driveSessionId,
     required Iterable<CanonicalTelemetryPoint> telemetry,
+    bool reliableIntervalsOnly = false,
   }) {
-    final points = telemetry.toList(growable: false);
-    final features = featureExtractor.extract(points);
+    final input = telemetry.toList(growable: false);
+    final points = reliableIntervalsOnly
+        ? DriveTimeAnalysis.analysisTimeline(input)
+        : input;
+    final features = featureExtractor.extract(
+      points,
+      isolateSegments: reliableIntervalsOnly,
+    );
     if (features.isEmpty) {
       return DrivePhaseAnalysisResult(
+        reliableIntervalsOnly: reliableIntervalsOnly,
         driveSessionId: driveSessionId,
         features: const [],
         phaseTimeline: const [],
@@ -161,9 +170,12 @@ class DrivePhaseAnalyzer {
         });
 
     return DrivePhaseAnalysisResult(
+      reliableIntervalsOnly: reliableIntervalsOnly,
       driveSessionId: driveSessionId,
       features: List.unmodifiable(features),
-      phaseTimeline: List.unmodifiable(_compressPhases(phases, features)),
+      phaseTimeline: List.unmodifiable(
+        _compressPhases(phases, features, reliableIntervalsOnly),
+      ),
       corneringTimeline: List.unmodifiable(
         cornerRuns.map(
           (run) => DrivingPhaseInterval(
@@ -516,11 +528,16 @@ class DrivePhaseAnalyzer {
   List<DrivingPhaseInterval> _compressPhases(
     List<DrivingPhase> phases,
     List<TelemetryFeature> features,
+    bool isolateSegments,
   ) {
     final result = <DrivingPhaseInterval>[];
     var start = 0;
     for (var index = 1; index <= phases.length; index++) {
-      if (index < phases.length && phases[index] == phases[start]) continue;
+      if (index < phases.length &&
+          phases[index] == phases[start] &&
+          (!isolateSegments || !features[index].point.breakBefore)) {
+        continue;
+      }
       result.add(
         DrivingPhaseInterval(
           phase: phases[start],

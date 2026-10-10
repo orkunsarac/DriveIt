@@ -1,6 +1,7 @@
 import '../../../models/drive_score_record.dart';
 import '../../../services/drive_score_storage_service.dart';
 import '../../../services/drive_telemetry_storage_service.dart';
+import '../../../services/drive_time_analysis.dart';
 import '../models/drive_score_algorithm_version.dart';
 import 'drive_score_calculator.dart';
 
@@ -25,10 +26,20 @@ class DriveScorePersistenceCoordinator {
     final telemetry = DriveTelemetryStorageService.get(driveId);
     if (telemetry == null || telemetry.points.length < 2) return null;
 
-    final result = calculator.calculate(
-      telemetry: telemetry.points,
-      algorithmVersion: DriveScoreAlgorithmVersion.v1,
-    );
+    // Existing snapshots were returned above unchanged. Only newly acquired
+    // sessions carry this policy marker; unknown legacy timing is not invented.
+    if (telemetry.acquisitionMetadata['reliabilityPolicyVersion'] == 1 &&
+        !DriveTimeAnalysis.fromRecord(telemetry).scoreEligible) {
+      return null;
+    }
+
+    final result =
+        telemetry.acquisitionMetadata['reliabilityPolicyVersion'] == 1
+        ? calculator.calculateReliable(telemetry: telemetry.points)
+        : calculator.calculate(
+            telemetry: telemetry.points,
+            algorithmVersion: DriveScoreAlgorithmVersion.v1,
+          );
     final record = DriveScoreRecord.fromResult(
       driveId: driveId,
       telemetryDataVersion: telemetry.dataVersion,
@@ -38,5 +49,4 @@ class DriveScorePersistenceCoordinator {
     await DriveScoreStorageService.save(record);
     return record;
   }
-
 }

@@ -45,6 +45,28 @@ double distanceToRect(Offset point, Rect rect) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets(
+    'globally unscoreable drive renders poster without a numeric score',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: PosterCanvas(
+              drive: sampleDrive(),
+              score: null,
+              startName: '',
+              endName: '',
+              showMaxSpeed: true,
+              backgroundPath: '',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(PosterCanvas), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('route thumbnail renders real, empty, and degenerate routes', (
     tester,

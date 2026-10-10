@@ -42,8 +42,7 @@ class DriveScoreCalculator {
 
   DriveScoreResult calculate({
     required Iterable<CanonicalTelemetryPoint> telemetry,
-    DriveScoreAlgorithmVersion algorithmVersion =
-        DriveScoreAlgorithmVersion.v1,
+    DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
   }) {
     final points = telemetry.toList(growable: false);
     if (points.length < 2) {
@@ -54,7 +53,7 @@ class DriveScoreCalculator {
     }
 
     return switch (algorithmVersion) {
-      DriveScoreAlgorithmVersion.v1 => _calculateV1(points),
+      DriveScoreAlgorithmVersion.v1 => _calculateV1(points, false),
     };
   }
 
@@ -66,10 +65,29 @@ class DriveScoreCalculator {
     algorithmVersion: DriveScoreAlgorithmVersion.fromValue(algorithmVersion),
   );
 
-  DriveScoreResult _calculateV1(List<CanonicalTelemetryPoint> telemetry) {
+  /// Opt-in for new local sessions; the existing common-road calculator
+  /// contract and legacy results remain unchanged.
+  DriveScoreResult calculateReliable({
+    required Iterable<CanonicalTelemetryPoint> telemetry,
+  }) {
+    final points = telemetry.toList(growable: false);
+    if (points.length < 2) {
+      throw const InsufficientDriveScoreTelemetryException();
+    }
+    if (points.any((p) => !p.hasValidCoordinate)) {
+      throw const InvalidDriveScoreTelemetryException();
+    }
+    return _calculateV1(points, true);
+  }
+
+  DriveScoreResult _calculateV1(
+    List<CanonicalTelemetryPoint> telemetry,
+    bool reliableIntervalsOnly,
+  ) {
     final analysis = phaseAnalyzer.analyze(
       driveSessionId: 'in-memory-drive-score',
       telemetry: telemetry,
+      reliableIntervalsOnly: reliableIntervalsOnly,
     );
     final braking = brakingEngine.score(analysis);
     final tempo = tempoEngine.score(analysis);
@@ -83,7 +101,8 @@ class DriveScoreCalculator {
         score: braking.totalScore,
         maximum: 350,
         applicable: !_allBrakingSignalsNotApplicable(braking),
-        sampleSufficient: braking.analyzedDecelerationEventCount > 0 ||
+        sampleSufficient:
+            braking.analyzedDecelerationEventCount > 0 ||
             braking.analyzedStopEventCount > 0,
       ),
       'tempoPerformance': DriveScoreCategoryStatus(

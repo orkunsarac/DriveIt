@@ -14,6 +14,7 @@ import 'package:driveit_project/services/canonical_telemetry_pipeline.dart';
 import 'package:driveit_project/services/drive_telemetry_storage_service.dart';
 import 'package:driveit_project/services/gps_failure.dart';
 import 'package:driveit_project/services/foreground_service.dart';
+import 'package:driveit_project/services/drive_route_projection.dart';
 
 CanonicalTelemetryPoint sample(int i) => CanonicalTelemetryPoint(
   latitude: 40 + i * .00001,
@@ -121,6 +122,58 @@ void main() {
   Future<void> stopped() => store.stop(session.id, expectedSequence: 4);
   Future<Map<String, dynamic>> save() =>
       GpsSessionTransfer(store, sink).save(session.id, manifest);
+  for (final existingIntent in [false, true]) {
+    test(
+      'short gap projection and existing legacy intent preserved: $existingIntent',
+      () async {
+        final gapPoint = CanonicalTelemetryPoint.fromMap({
+          ...sample(9).toMap(),
+          'gapDurationMicros': 6000000,
+        })!;
+        await store.append(session.id, 5, gapPoint);
+        final sourceBefore = await store.db.query('points');
+        await store.stop(session.id, expectedSequence: 5);
+        final points = (await store.read(
+          session.id,
+        )).map((p) => p.point).toList();
+        final projection = DriveRouteProjection(points);
+        if (existingIntent) {
+          // Actual durable pre-phase-2 manifest: retain its old short-gap delta.
+          final oldRoute =
+              List<Map<String, dynamic>>.from(manifest['route'] as List)..add({
+                'latitude': gapPoint.latitude,
+                'longitude': gapPoint.longitude,
+                'breakBefore': false,
+              });
+          manifest = {...manifest, 'route': oldRoute, 'distance': 3.0};
+          await store.beginTransfer(
+            session.id,
+            session.id,
+            jsonEncode(manifest),
+          );
+        } else {
+          manifest = {
+            ...manifest,
+            'route': projection.encodedRoute,
+            'distance': projection.distanceMeters,
+          };
+        }
+        final expected = jsonEncode(manifest);
+        await save();
+        await save();
+        expect(
+          jsonEncode(
+            driveTransferManifest(
+              Hive.box<DriveSession>('drives').get(session.id)!,
+            ),
+          ),
+          expected,
+        );
+        expect(await store.db.query('points'), sourceBefore);
+        expect(await GpsSessionTransfer(store, sink).verify(session.id), true);
+      },
+    );
+  }
   test(
     'save-only recovery stops committed journal without native GPS and transfers once',
     () async {

@@ -4,6 +4,8 @@ import '../features/drive_score/models/drive_score_result.dart';
 import '../features/drive_score/services/drive_score_persistence_coordinator.dart';
 import '../models/drive_score_record.dart';
 import '../services/drive_score_storage_service.dart';
+import '../services/drive_reliability_service.dart';
+import '../services/drive_time_analysis.dart';
 
 typedef DriveScoreRecordLoader =
     Future<DriveScoreRecord?> Function(String driveId);
@@ -17,10 +19,12 @@ class DriveScoreSummarySection extends StatefulWidget {
     super.key,
     required this.driveId,
     this.loader,
+    this.reliabilityLoader,
   });
 
   final String driveId;
   final DriveScoreRecordLoader? loader;
+  final DriveTimeAnalysis? Function(String)? reliabilityLoader;
 
   @override
   State<DriveScoreSummarySection> createState() =>
@@ -29,6 +33,7 @@ class DriveScoreSummarySection extends StatefulWidget {
 
 class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
   late Future<DriveScoreRecord?> _record;
+  DriveTimeAnalysis? _timing;
 
   @override
   void initState() {
@@ -40,14 +45,18 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
   void didUpdateWidget(covariant DriveScoreSummarySection oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.driveId != widget.driveId ||
-        oldWidget.loader != widget.loader) {
+        oldWidget.loader != widget.loader ||
+        oldWidget.reliabilityLoader != widget.reliabilityLoader) {
       _record = _load();
     }
   }
 
-  Future<DriveScoreRecord?> _load() => Future.sync(
-    () => (widget.loader ?? _readStoredRecord)(widget.driveId),
-  );
+  Future<DriveScoreRecord?> _load() => Future.sync(() {
+    _timing = (widget.reliabilityLoader ?? DriveReliabilityService.get)(
+      widget.driveId,
+    );
+    return (widget.loader ?? _readStoredRecord)(widget.driveId);
+  });
 
   Future<DriveScoreRecord?> _readStoredRecord(String driveId) async {
     final existing = DriveScoreStorageService.get(driveId: driveId);
@@ -56,8 +65,9 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
     // This one-time recovery path is only reached for an absent v1 record.
     // The coordinator itself safely returns null for telemetry-less legacy
     // drives, and does not recompute a score when a record already exists.
-    return const DriveScorePersistenceCoordinator()
-        .calculateAndPersistForDrive(driveId);
+    return const DriveScorePersistenceCoordinator().calculateAndPersistForDrive(
+      driveId,
+    );
   }
 
   @override
@@ -89,6 +99,14 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
         }
         final record = snapshot.data;
         if (record == null) {
+          if (_timing != null) {
+            return _unavailable(
+              'Puanlanamadı — Yetersiz GPS verisi',
+              detail: _timing!.timingKnown
+                  ? 'GPS kapsaması: ${(_timing!.coverage! * 100).toStringAsFixed(2)}%'
+                  : 'Güvenilir başlangıç/bitiş zamanı mevcut değil.',
+            );
+          }
           return _unavailable(
             'Drive Score v1 mevcut değil',
             detail: 'Bu sürüş yeni skor sistemi öncesinde kaydedildi.',
@@ -115,6 +133,15 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
           ),
         ),
         const SizedBox(height: 14),
+        if (_timing?.timingKnown == true) ...[
+          Text(
+            'GPS kapsaması: ${(_timing!.coverage! * 100).toStringAsFixed(2)}%',
+            style: _secondaryText,
+          ),
+          if (_timing!.partial)
+            const Text('Eksik GPS verisiyle hesaplandı', style: _secondaryText),
+          const SizedBox(height: 8),
+        ],
         const Divider(color: Color(0xff1b3658), height: 1),
         const SizedBox(height: 5),
         for (final definition in _categories) ...[
@@ -128,10 +155,7 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
     ),
   );
 
-  DriveScoreCategoryRecord? _findCategory(
-    DriveScoreRecord record,
-    String key,
-  ) {
+  DriveScoreCategoryRecord? _findCategory(DriveScoreRecord record, String key) {
     for (final category in record.categories) {
       if (category.categoryKey == key) return category;
     }

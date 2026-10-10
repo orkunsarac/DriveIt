@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:driveit_project/features/drive_score/models/drive_score_result.dart';
 import 'package:driveit_project/models/drive_score_record.dart';
 import 'package:driveit_project/widgets/drive_score_summary_section.dart';
+import 'package:driveit_project/services/drive_time_analysis.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -40,8 +41,7 @@ void main() {
         applicable: false,
         sampleSufficient: false,
         contributionUsed: 112.5,
-        contributionSource:
-            DriveScoreContributionSource.neutralNotApplicable,
+        contributionSource: DriveScoreContributionSource.neutralNotApplicable,
       ),
       DriveScoreCategoryRecord(
         categoryKey: 'drivingEndurance',
@@ -50,8 +50,7 @@ void main() {
         applicable: true,
         sampleSufficient: false,
         contributionUsed: 112.5,
-        contributionSource:
-            DriveScoreContributionSource.neutralInsufficient,
+        contributionSource: DriveScoreContributionSource.neutralInsufficient,
       ),
       DriveScoreCategoryRecord(
         categoryKey: 'drivingSmoothness',
@@ -69,8 +68,7 @@ void main() {
         applicable: true,
         sampleSufficient: false,
         contributionUsed: 37.5,
-        contributionSource:
-            DriveScoreContributionSource.neutralInsufficient,
+        contributionSource: DriveScoreContributionSource.neutralInsufficient,
       ),
       DriveScoreCategoryRecord(
         categoryKey: 'transitionControl',
@@ -97,8 +95,9 @@ void main() {
     );
   }
 
-  testWidgets('uses persisted total rounding and category display states',
-      (tester) async {
+  testWidgets('uses persisted total rounding and category display states', (
+    tester,
+  ) async {
     await pump(tester, loader: (_) async => record());
     await tester.pumpAndSettle();
 
@@ -112,16 +111,58 @@ void main() {
     expect(find.text('38 / 50'), findsNothing);
   });
 
-  testWidgets('renders a safe legacy state when no record exists',
+  for (final sufficient in [false, true]) {
+    testWidgets(
+      'GPS reliability $sufficient has safe N/A or partial warning UI',
       (tester) async {
+        final timing = DriveTimeAnalysis(
+          totalMicros: 200000000,
+          measuredMicros: sufficient ? 160000000 : 100000000,
+          movingMicros: 100000000,
+          stationaryMicros: 0,
+          distanceMeters: 1000,
+          movingDistanceMeters: 1000,
+          movingSamples: 21,
+          stopCount: 0,
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SingleChildScrollView(
+                child: DriveScoreSummarySection(
+                  driveId: 'new',
+                  loader: (_) async => sufficient ? record() : null,
+                  reliabilityLoader: (_) => timing,
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            sufficient
+                ? 'Eksik GPS verisiyle hesaplandı'
+                : 'Puanlanamadı — Yetersiz GPS verisi',
+          ),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+  testWidgets('renders a safe legacy state when no record exists', (
+    tester,
+  ) async {
     await pump(tester, loader: (_) async => null);
     await tester.pumpAndSettle();
 
     expect(find.text('Drive Score v1 mevcut değil'), findsOneWidget);
   });
 
-  testWidgets('renders loading then safely renders storage errors',
-      (tester) async {
+  testWidgets('renders loading then safely renders storage errors', (
+    tester,
+  ) async {
     final completer = Completer<DriveScoreRecord?>();
     await pump(tester, loader: (_) => completer.future);
 

@@ -15,6 +15,7 @@ import '../services/drive_storage_service.dart';
 import '../services/drive_diagnostic_export.dart';
 import '../theme/drive_map_visuals.dart';
 import '../widgets/drive_score_summary_section.dart';
+import '../services/drive_reliability_service.dart';
 
 class DriveDetailScreen extends StatefulWidget {
   final DriveSession drive;
@@ -314,6 +315,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final timing = DriveReliabilityService.get(widget.drive.id);
     final width = MediaQuery.sizeOf(context).width;
     final mapHeight = (width * 0.77).clamp(250.0, 360.0).toDouble();
     return Scaffold(
@@ -492,7 +494,7 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                             icon: Icons.directions_car_filled_rounded,
                             title: 'Ortalama seyir hızı',
                             value:
-                                '${widget.drive.drivingAverageSpeed.toStringAsFixed(1)} km/h',
+                                '${(timing?.timingKnown == true ? timing!.movingAverageSpeedKmh : widget.drive.drivingAverageSpeed).toStringAsFixed(1)} km/h',
                             color: const Color(0xff4be0ca),
                           ),
                           _DetailStat(
@@ -504,10 +506,28 @@ class _DriveDetailScreenState extends State<DriveDetailScreen> {
                           ),
                           _DetailStat(
                             icon: Icons.timer_outlined,
-                            title: 'Sürüş süresi',
+                            title: timing?.timingKnown == true
+                                ? 'Toplam süre'
+                                : 'Sürüş süresi',
                             value: _duration(),
                             color: const Color(0xffa66eff),
                           ),
+                          if (timing?.timingKnown == true) ...[
+                            _DetailStat(
+                              icon: Icons.gps_fixed,
+                              title: 'GPS ile ölçülen süre',
+                              value:
+                                  '${(timing!.measuredMicros / 1000000).toStringAsFixed(1)} sn',
+                              color: const Color(0xff4be0ca),
+                            ),
+                            _DetailStat(
+                              icon: Icons.gps_off,
+                              title: 'Veri kaybı süresi',
+                              value:
+                                  '${(timing.lostMicros! / 1000000).toStringAsFixed(1)} sn',
+                              color: const Color(0xffff9c3e),
+                            ),
+                          ],
                           _DetailStat(
                             icon: Icons.bolt_rounded,
                             title: 'Maksimum hız',

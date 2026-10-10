@@ -167,6 +167,7 @@ class DrivingEvent {
 }
 
 class DrivePhaseAnalysisResult {
+  final bool reliableIntervalsOnly;
   final String driveSessionId;
   final List<TelemetryFeature> features;
   final List<DrivingPhaseInterval> phaseTimeline;
@@ -175,6 +176,7 @@ class DrivePhaseAnalysisResult {
   final List<DrivingEvent> events;
 
   const DrivePhaseAnalysisResult({
+    this.reliableIntervalsOnly = false,
     required this.driveSessionId,
     required this.features,
     required this.phaseTimeline,

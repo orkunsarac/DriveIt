@@ -17,6 +17,8 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../services/gps_failure.dart';
 import '../services/drive_recovery_status.dart';
 import '../widgets/gps_recovery_notice.dart';
+import '../services/drive_time_analysis.dart';
+import '../services/drive_route_projection.dart';
 
 class MapScreen extends StatefulWidget {
   final bool resumeDrive;
@@ -679,14 +681,21 @@ class _MapScreenState extends State<MapScreen> {
       driveStartTime!,
     );
 
-    if (driveDuration.inSeconds > 0) {
-      averageSpeed =
-          (routeService.distance / 1000) / (driveDuration.inSeconds / 3600);
-    }
+    final timing = DriveTimeAnalysis.analyze(
+      _canonicalTelemetry,
+      metadata: {
+        'startedAtMicros': session?.startedAt.microsecondsSinceEpoch,
+        'stopRequestedAtMicros': session?.stoppedAt?.microsecondsSinceEpoch,
+      },
+    );
+    averageSpeed = timing.averageSpeedKmh;
+    stoppedSeconds = timing.stationaryMicros ~/ 1000000;
+    stopCount = timing.stopCount;
 
     if (!mounted) return;
 
-    final route = routeService.getRouteForSave();
+    final projection = DriveRouteProjection(_canonicalTelemetry);
+    final route = projection.route;
     if (route.isEmpty && routeBeforeStop.isNotEmpty) {
       route.addAll(routeBeforeStop);
     }
@@ -698,7 +707,7 @@ class _MapScreenState extends State<MapScreen> {
 
     await DriveSummaryDialog.show(
       context,
-      totalDistance: routeService.distance,
+      totalDistance: projection.distanceMeters,
       driveDuration: driveDuration,
       averageSpeed: averageSpeed,
       maxSpeed: maxSpeed,
@@ -711,6 +720,7 @@ class _MapScreenState extends State<MapScreen> {
       driveSessionId: _gpsSessionId,
       acquisitionMetadata: {
         'sessionId': _gpsSessionId,
+        'reliabilityPolicyVersion': 1,
         'startedAtMicros': session?.startedAt.microsecondsSinceEpoch,
         'stopRequestedAtMicros': session?.stoppedAt?.microsecondsSinceEpoch,
         'finalSequence': _lastGpsSequence,

@@ -5,6 +5,8 @@ import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/owned_gps_session_coordinator.dart';
 import 'package:driveit_project/services/gps_session_store.dart';
 import 'package:driveit_project/services/gps_failure.dart';
+import 'package:driveit_project/services/drive_source_provenance.dart';
+import 'package:driveit_project/services/gps_session_transfer.dart';
 import 'package:driveit_project/models/canonical_telemetry_point.dart';
 
 const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -14,7 +16,7 @@ class FakeAuth {
   GpsOwner owner = const GpsOwner.guest();
 }
 
-class ScopedSink implements OwnedGpsTransferSink {
+class ScopedSink implements OwnedGpsTransferSink, ProvenanceGpsTransferSink {
   ScopedSink(this.targetStore);
   @override
   final String targetStore;
@@ -22,6 +24,16 @@ class ScopedSink implements OwnedGpsTransferSink {
   List<CanonicalTelemetryPoint>? points;
   int writes = 0;
   bool failFlush = false;
+  String? sourceIdentity;
+  @override
+  Future<String?> readSourceIdentity(String id) async => sourceIdentity;
+  @override
+  Future<void> persistSourceIdentity(String id, String value) async {
+    if (sourceIdentity != null && sourceIdentity != value) {
+      throw StateError('synthetic source identity conflict');
+    }
+    sourceIdentity = value;
+  }
   @override
   Future<Map<String, dynamic>?> readDrive(String id) async => drive;
   @override
@@ -41,6 +53,7 @@ class ScopedSink implements OwnedGpsTransferSink {
   ) async {
     writes++;
     points = value;
+    sourceIdentity = metadata['sourceIdentity'] as String?;
   }
 
   @override
@@ -93,8 +106,13 @@ void main() {
 
   test('guest pinned at start', () async {
     final s = await coordinator.start();
+    final binding = (await sidecar.get('local-journal-v1', s.id))!;
+    expect(binding.provenance.isProven, isTrue);
+    expect(binding.provenance.sourceIdentity, matches(RegExp(
+      r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    )));
     expect(
-      (await sidecar.get('local-journal-v1', s.id))!.owner.kind,
+      binding.owner.kind,
       GpsOwnerKind.guest,
     );
     auth.owner = GpsOwner.account(a);
@@ -129,6 +147,9 @@ void main() {
     () async {
       auth.owner = GpsOwner.account(a);
       final s = await coordinator.start();
+      final sourceIdentity =
+          (await sidecar.get('local-journal-v1', s.id))!
+              .provenance.sourceIdentity;
       await sidecar.close();
       await journal.close();
       journal = await GpsSessionStore.open(
@@ -141,7 +162,9 @@ void main() {
       );
       auth.owner = GpsOwner.account(b);
       expect((await journal.active())!.id, s.id);
-      expect((await sidecar.recoveryOwner('local-journal-v1', s.id)).userId, a);
+      final recovered = (await sidecar.get('local-journal-v1', s.id))!;
+      expect(recovered.owner.userId, a);
+      expect(recovered.provenance.sourceIdentity, sourceIdentity);
     },
   );
   test('ownership commit/flush failure prevents journal creation', () async {
@@ -196,6 +219,30 @@ void main() {
       );
     },
   );
+  test('planned identity recovers crash between journal create and sidecar bind', () async {
+    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    final pending = await sidecar.prepare(
+      'local-journal-v1',
+      GpsOwner.account(a),
+      plannedSessionId: sessionId,
+    );
+    final sourceIdentity = pending.provenance.sourceIdentity;
+    final session = await journal.create(id: sessionId);
+    expect(session.id, sessionId);
+    await sidecar.close();
+    sidecar = await GpsOwnershipStore.open(
+      factory: databaseFactoryFfiNoIsolate,
+      path: '${root.path}/owners.db',
+    );
+    final recovered = await sidecar.recoverBinding(
+      'local-journal-v1',
+      sessionId,
+      journalSessionExists: await journal.session(sessionId) != null,
+    );
+    expect(recovered?.state, 'ready');
+    expect(recovered?.provenance.sourceIdentity, sourceIdentity);
+    expect(recovered?.owner.userId, a);
+  });
   test(
     'journal creation failure preserves unbound reservation without rebinding old session',
     () async {
@@ -383,6 +430,67 @@ void main() {
   test('account UUID validation and unknown schema fail closed', () async {
     expect(() => GpsOwner.account('display-name'), throwsArgumentError);
     expect(() => GpsOwnershipManifest({'version': 99}), throwsStateError);
+  });
+
+  test('same source identity survives ownership transfer without regeneration', () async {
+    auth.owner = GpsOwner.account(a);
+    final session = await coordinator.start();
+    final before = (await sidecar.get('local-journal-v1', session.id))!;
+    final sourceIdentity = before.provenance.sourceIdentity;
+    await stop(session);
+    final sink = ScopedSink(before.targetStore);
+    await coordinator.save(session.id, proposal(session), sink);
+    expect(sink.sourceIdentity, sourceIdentity);
+    expect(
+      (await sidecar.get('local-journal-v1', session.id))!
+          .provenance.sourceIdentity,
+      sourceIdentity,
+    );
+  });
+
+  test('schema v1 reservations upgrade as unproven and are not rewritten', () async {
+    final legacyPath = '${root.path}/owners_v1.db';
+    final db = await databaseFactoryFfiNoIsolate.openDatabase(
+      legacyPath,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: (db, _) async {
+          await db.execute('''CREATE TABLE ownership (
+            reservation_id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version=1),
+            journal_id TEXT NOT NULL, session_id TEXT,
+            kind TEXT NOT NULL, user_id TEXT, target_store TEXT NOT NULL,
+            state TEXT NOT NULL, created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL,
+            UNIQUE(journal_id,session_id))''');
+          await db.execute('''CREATE TABLE transfers (
+            operation_id TEXT PRIMARY KEY, journal_id TEXT NOT NULL, session_id TEXT NOT NULL,
+            target_store TEXT NOT NULL, state TEXT NOT NULL,
+            created_us INTEGER NOT NULL, verified_us INTEGER,
+            UNIQUE(journal_id,session_id))''');
+          await db.insert('ownership', {
+            'reservation_id': 'legacy-reservation',
+            'version': 1,
+            'journal_id': 'local-journal-v1',
+            'session_id': 'old-session',
+            'kind': 'guest',
+            'target_store': const GpsOwner.guest().targetStore,
+            'state': 'ready',
+            'created_us': 1,
+            'updated_us': 1,
+          });
+        },
+      ),
+    );
+    await db.close();
+    final upgraded = await GpsOwnershipStore.open(
+      factory: databaseFactoryFfiNoIsolate,
+      path: legacyPath,
+    );
+    final manifest = (await upgraded.get('local-journal-v1', 'old-session'))!;
+    expect(manifest.provenance.status, DriveProvenanceStatus.unproven);
+    expect(manifest.provenance.sourceIdentity, isNull);
+    expect((await upgraded.db.query('ownership')).single['reservation_id'],
+        'legacy-reservation');
+    await upgraded.close();
   });
   test(
     'real child exits after sidecar intent; reopen preserves destination',

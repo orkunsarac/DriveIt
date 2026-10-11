@@ -6,10 +6,18 @@ import '../services/local_owner_lifecycle.dart';
 import '../widgets/neon_route_preview.dart';
 import 'drive_detail_screen.dart';
 import '../widgets/local_owner_view.dart';
+import '../services/device_drive_archive.dart';
+import 'device_drive_archive_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key, this.ownerLease, this.ownedDetailBuilder});
+  const HistoryScreen({
+    super.key,
+    this.ownerLease,
+    this.ownedDetailBuilder,
+    this.deviceArchive,
+  });
   final LocalOwnerLease? ownerLease;
+  final DeviceDriveArchiveAccess? deviceArchive;
 
   /// No legacy detail fallback: all nested detail consumers must be scoped.
   final Widget Function(LocalOwnerLease, String)? ownedDetailBuilder;
@@ -87,6 +95,31 @@ class _HistoryScreenState extends State<HistoryScreen> {
       context,
     ).push(MaterialPageRoute(builder: (_) => DriveDetailScreen(drive: drive)));
     if (mounted) _loadDrives();
+  }
+
+  Future<void> _openArchive() async {
+    final lease = widget.ownerLease;
+    final access = widget.deviceArchive;
+    if (lease == null || access == null) return;
+    try {
+      final archive = await access.open(lease);
+      if (!mounted || !lease.isCurrent) {
+        archive.dispose();
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DeviceDriveArchiveScreen(archive: archive),
+        ),
+      );
+    } on StateError {
+      if (!mounted || !lease.isCurrent) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cihaz arşivi için güvenli yerel doğrulama gerekli.'),
+        ),
+      );
+    }
   }
 
   Future<void> _deleteDrive(DriveSession drive) async {
@@ -199,6 +232,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
         child: Column(
           children: [
             _HistoryHeader(count: _drives.length),
+            if (widget.ownerLease != null)
+              ListTile(
+                title: const Text('Cihazdaki Eski Sürüşler'),
+                subtitle: widget.deviceArchive == null
+                    ? const Text('Güvenli cihaz doğrulaması henüz hazır değil')
+                    : const Text('Ayrı, salt okunur cihaz arşivi'),
+                onTap: widget.deviceArchive == null ? null : _openArchive,
+              ),
             Expanded(
               child: _drives.isEmpty
                   ? const _EmptyHistory()

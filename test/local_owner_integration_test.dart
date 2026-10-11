@@ -367,9 +367,29 @@ void main() {
     },
   );
   testWidgets(
-    'Career missing owner baseline shows protected error, never reads shared history',
+    'new empty owner Career is zero, never reads shared history or needs legacy baseline',
     (tester) async {
       await tester.runAsync(runtime.start);
+      await tester.pumpWidget(
+        MaterialApp(home: CareerScreen(ownerLease: runtime.lease)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Kariyer verisi okunamadı. Kayıtların korunuyor.'),
+        findsNothing,
+      );
+      expect(runtime.lease.career().totalDistanceMeters, 0);
+      expect(tester.takeException(), null);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'unresolved cumulative owner Career is protected, not silently zeroed',
+    (tester) async {
+      await tester.runAsync(() async {
+        await runtime.start();
+        await runtime.lease.put('career_totals', 'legacy', {'distance': 1000});
+      });
       await tester.pumpWidget(
         MaterialApp(home: CareerScreen(ownerLease: runtime.lease)),
       );

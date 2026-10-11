@@ -1,4 +1,5 @@
 import '../../../models/drive_score_record.dart';
+import '../../../models/canonical_telemetry_point.dart';
 import '../../../services/drive_score_storage_service.dart';
 import '../../../services/drive_telemetry_storage_service.dart';
 import '../../../services/drive_time_analysis.dart';
@@ -22,8 +23,24 @@ class DriveScorePersistenceCoordinator {
       algorithmVersion: DriveScoreAlgorithmVersion.v1.value,
     );
     if (existing != null) return existing;
-
     final telemetry = DriveTelemetryStorageService.get(driveId);
+    return calculateAndPersist(
+      driveId: driveId,
+      existing: existing,
+      telemetry: telemetry,
+      persist: DriveScoreStorageService.save,
+    );
+  }
+
+  /// Same calculator/coverage policy, but explicit storage dependencies. No
+  /// scoped caller must reach global Hive for either the read or the write.
+  Future<DriveScoreRecord?> calculateAndPersist({
+    required String driveId,
+    required DriveScoreRecord? existing,
+    required DriveTelemetryRecord? telemetry,
+    required Future<void> Function(DriveScoreRecord) persist,
+  }) async {
+    if (existing != null) return existing;
     if (telemetry == null || telemetry.points.length < 2) return null;
 
     // Existing snapshots were returned above unchanged. Only newly acquired
@@ -46,7 +63,7 @@ class DriveScorePersistenceCoordinator {
       calculatedAt: DateTime.now(),
       result: result,
     );
-    await DriveScoreStorageService.save(record);
+    await persist(record);
     return record;
   }
 }

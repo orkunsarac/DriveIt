@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:math';
 import 'package:sqflite_common/sqlite_api.dart';
+import 'drive_source_provenance.dart';
 
 enum GpsOwnerKind { guest, account, legacyUnassigned }
 
@@ -43,9 +43,29 @@ class GpsOwnershipManifest {
   GpsOwner get owner => GpsOwner.fromRow(row);
   String get reservationId => row['reservation_id'] as String;
   String get journalId => row['journal_id'] as String;
-  String? get sessionId => row['session_id'] as String?;
+  String? get sessionId =>
+      (row['session_id'] ?? row['planned_session_id']) as String?;
   String get state => row['state'] as String;
   String get targetStore => row['target_store'] as String;
+  DriveSourceProvenance get provenance {
+    final id = row['source_identity'] as String?;
+    final version = row['source_identity_version'] as int?;
+    if (id == null || version == null) {
+      return DriveSourceProvenance.unproven(ownerScope: targetStore);
+    }
+    try {
+      return DriveSourceProvenance.proven(
+        sourceIdentity: id,
+        ownerScope: targetStore,
+        identityVersion: version,
+      );
+    } on ArgumentError {
+      return DriveSourceProvenance.conflict(
+        ownerScope: targetStore,
+        conflictCode: 'source_identity_invalid',
+      );
+    }
+  }
 }
 
 /// Dormant sidecar. NOT opened by main, auth, task_handler or legacy transfer.
@@ -63,7 +83,7 @@ class GpsOwnershipStore {
     final db = await factory.openDatabase(
       path,
       options: OpenDatabaseOptions(
-        version: 1,
+        version: 3,
         singleInstance: false,
         onConfigure: (db) async {
           final mode = await db.rawQuery('PRAGMA journal_mode=WAL');
@@ -83,10 +103,21 @@ class GpsOwnershipStore {
           kind TEXT NOT NULL CHECK(kind IN ('guest','account','legacy_unassigned')),
           user_id TEXT, target_store TEXT NOT NULL,
           state TEXT NOT NULL CHECK(state IN ('prepared','ready')),
+          source_identity TEXT, source_identity_version INTEGER,
+          planned_session_id TEXT,
           created_us INTEGER NOT NULL, updated_us INTEGER NOT NULL,
           UNIQUE(journal_id,session_id),
           CHECK((kind='account' AND user_id IS NOT NULL) OR (kind!='account' AND user_id IS NULL)),
           CHECK((state='prepared' AND session_id IS NULL) OR (state='ready' AND session_id IS NOT NULL)))''',
+          );
+          await db.execute(
+            '''CREATE UNIQUE INDEX ownership_source_identity_unique
+            ON ownership(source_identity) WHERE source_identity IS NOT NULL''',
+          );
+          await db.execute(
+            '''CREATE UNIQUE INDEX ownership_planned_session_unique
+            ON ownership(journal_id,planned_session_id)
+            WHERE planned_session_id IS NOT NULL''',
           );
           await db.execute('''CREATE TABLE transfers (
           operation_id TEXT PRIMARY KEY, journal_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -98,6 +129,12 @@ class GpsOwnershipStore {
           WHEN NEW.reservation_id!=OLD.reservation_id OR NEW.journal_id!=OLD.journal_id
           OR NEW.kind!=OLD.kind OR NEW.user_id IS NOT OLD.user_id
           OR NEW.target_store!=OLD.target_store OR NEW.version!=OLD.version
+          OR NEW.source_identity IS NOT OLD.source_identity
+          OR NEW.source_identity_version IS NOT OLD.source_identity_version
+          OR (OLD.planned_session_id IS NULL AND NEW.planned_session_id IS NOT NULL)
+          OR (OLD.planned_session_id IS NOT NULL AND
+              (NEW.state!='ready' OR NEW.session_id IS NOT OLD.planned_session_id
+               OR NEW.planned_session_id IS NOT NULL))
           OR OLD.state='ready'
           BEGIN SELECT RAISE(ABORT,'Ownership is immutable'); END''',
           );
@@ -115,20 +152,73 @@ class GpsOwnershipStore {
           BEGIN SELECT RAISE(ABORT,'Transfer destination is immutable'); END''',
           );
         },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            // Historical reservations have no source-identity evidence and
+            // deliberately remain NULL/unproven. Never derive IDs from keys.
+            await db.execute(
+              'ALTER TABLE ownership ADD COLUMN source_identity TEXT',
+            );
+            await db.execute(
+              'ALTER TABLE ownership ADD COLUMN source_identity_version INTEGER',
+            );
+            await db.execute(
+              '''CREATE UNIQUE INDEX ownership_source_identity_unique
+              ON ownership(source_identity) WHERE source_identity IS NOT NULL''',
+            );
+            await db.execute('DROP TRIGGER IF EXISTS ownership_immutable');
+            await db.execute(
+              '''CREATE TRIGGER ownership_immutable BEFORE UPDATE ON ownership
+              WHEN NEW.reservation_id!=OLD.reservation_id OR NEW.journal_id!=OLD.journal_id
+              OR NEW.kind!=OLD.kind OR NEW.user_id IS NOT OLD.user_id
+              OR NEW.target_store!=OLD.target_store OR NEW.version!=OLD.version
+              OR NEW.source_identity IS NOT OLD.source_identity
+              OR NEW.source_identity_version IS NOT OLD.source_identity_version
+              OR OLD.state='ready'
+              BEGIN SELECT RAISE(ABORT,'Ownership is immutable'); END''',
+            );
+          }
+          if (oldVersion < 3) {
+            await db.execute(
+              'ALTER TABLE ownership ADD COLUMN planned_session_id TEXT',
+            );
+            await db.execute(
+              '''CREATE UNIQUE INDEX ownership_planned_session_unique
+              ON ownership(journal_id,planned_session_id)
+              WHERE planned_session_id IS NOT NULL''',
+            );
+            await db.execute('DROP TRIGGER IF EXISTS ownership_immutable');
+            await db.execute(
+              '''CREATE TRIGGER ownership_immutable BEFORE UPDATE ON ownership
+              WHEN NEW.reservation_id!=OLD.reservation_id OR NEW.journal_id!=OLD.journal_id
+              OR NEW.kind!=OLD.kind OR NEW.user_id IS NOT OLD.user_id
+              OR NEW.target_store!=OLD.target_store OR NEW.version!=OLD.version
+              OR NEW.source_identity IS NOT OLD.source_identity
+              OR NEW.source_identity_version IS NOT OLD.source_identity_version
+              OR (OLD.planned_session_id IS NULL AND NEW.planned_session_id IS NOT NULL)
+              OR (OLD.planned_session_id IS NOT NULL AND
+                  (NEW.state!='ready' OR NEW.session_id IS NOT OLD.planned_session_id
+                   OR NEW.planned_session_id IS NOT NULL))
+              OR OLD.state='ready'
+              BEGIN SELECT RAISE(ABORT,'Ownership is immutable'); END''',
+            );
+          }
+        },
       ),
     );
     return GpsOwnershipStore(db);
   }
 
-  Future<GpsOwnershipManifest> prepare(String journalId, GpsOwner owner) async {
+  Future<GpsOwnershipManifest> prepare(
+    String journalId,
+    GpsOwner owner, {
+    String? plannedSessionId,
+  }) async {
     if (journalId.isEmpty || owner.kind == GpsOwnerKind.legacyUnassigned) {
       throw StateError('New session needs explicit ownership');
     }
-    final random = Random.secure();
-    final id = List.generate(
-      16,
-      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
-    ).join();
+    final id = DriveSourceProvenance.newUuidV4();
+    final sourceIdentity = DriveSourceProvenance.newUuidV4();
     final now = DateTime.now().microsecondsSinceEpoch;
     final row = <String, Object?>{
       'reservation_id': id,
@@ -138,6 +228,9 @@ class GpsOwnershipStore {
       'kind': owner.wireKind,
       'user_id': owner.userId,
       'target_store': owner.targetStore,
+      'source_identity': sourceIdentity,
+      'source_identity_version': 1,
+      'planned_session_id': plannedSessionId,
       'state': 'prepared',
       'created_us': now,
       'updated_us': now,
@@ -172,11 +265,16 @@ class GpsOwnershipStore {
         }
         return;
       }
+      final plannedSessionId = row['planned_session_id'] as String?;
+      if (plannedSessionId != null && plannedSessionId != sessionId) {
+        throw StateError('Planned session identity conflict');
+      }
       await tx.update(
         'ownership',
         {
           'session_id': sessionId,
           'state': 'ready',
+          'planned_session_id': null,
           'updated_us': DateTime.now().microsecondsSinceEpoch,
         },
         where: 'reservation_id=?',
@@ -190,14 +288,34 @@ class GpsOwnershipStore {
   Future<GpsOwnershipManifest?> get(String journalId, String sessionId) async {
     final rows = await db.query(
       'ownership',
-      where: 'journal_id=? AND session_id=?',
-      whereArgs: [journalId, sessionId],
+      where: 'journal_id=? AND (session_id=? OR planned_session_id=?)',
+      whereArgs: [journalId, sessionId, sessionId],
     );
-    return rows.isEmpty ? null : GpsOwnershipManifest(rows.single);
+    if (rows.isEmpty) return null;
+    if (rows.length != 1) throw StateError('Ownership binding conflict');
+    return GpsOwnershipManifest(rows.single);
   }
 
-  Future<GpsOwner> recoveryOwner(String journalId, String sessionId) async =>
-      (await get(journalId, sessionId))?.owner ?? const GpsOwner.legacy();
+  Future<GpsOwner> recoveryOwner(String journalId, String sessionId) async {
+    final manifest = await get(journalId, sessionId);
+    return manifest?.state == 'ready'
+        ? manifest!.owner
+        : const GpsOwner.legacy();
+  }
+
+  /// Completes the durable pre-journal reservation only if the journal proves
+  /// that the preselected session ID actually exists. This repairs a crash
+  /// after journal creation but before the original ready-state commit.
+  Future<GpsOwnershipManifest?> recoverBinding(
+    String journalId,
+    String sessionId, {
+    required bool journalSessionExists,
+  }) async {
+    final manifest = await get(journalId, sessionId);
+    if (manifest == null || manifest.state == 'ready') return manifest;
+    if (!journalSessionExists || manifest.sessionId != sessionId) return null;
+    return bind(manifest.reservationId, sessionId);
+  }
 
   Future<String> beginTransfer(
     GpsOwnershipManifest manifest,
@@ -274,4 +392,5 @@ class GpsOwnershipStore {
   }
 
   Future<void> close() => db.close();
+
 }

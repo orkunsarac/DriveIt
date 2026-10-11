@@ -13,6 +13,7 @@ import '../../models/drive_session.dart';
 import '../../services/drive_score_storage_service.dart';
 import '../../services/drive_storage_service.dart';
 import '../../services/local_owner_lifecycle.dart';
+import '../../services/legacy_account_import.dart';
 import '../../widgets/local_owner_view.dart';
 import 'poster_background.dart';
 import 'poster_canvas.dart';
@@ -22,11 +23,20 @@ import 'poster_store.dart';
 import 'drive_route_thumbnail.dart';
 
 class PosterCenterScreen extends StatelessWidget {
-  const PosterCenterScreen({super.key});
+  const PosterCenterScreen({super.key, this.ownerLease, this.verifiedLegacy});
+  final LocalOwnerLease? ownerLease;
+  final VerifiedLegacyImport? verifiedLegacy;
 
   @override
-  Widget build(BuildContext context) {
-    final drives = DriveStorageService.getAllDrives()
+  Widget build(BuildContext context) => ownerLease == null
+      ? _build(context, null)
+      : LocalOwnerView(
+          lease: ownerLease!,
+          builder: (context) => _build(context, ownerLease),
+        );
+
+  Widget _build(BuildContext context, LocalOwnerLease? lease) {
+    final drives = (lease?.drives() ?? DriveStorageService.getAllDrives())
       ..sort((a, b) => b.date.compareTo(a.date));
     return Scaffold(
       backgroundColor: const Color(0xff020a18),
@@ -37,7 +47,10 @@ class PosterCenterScreen extends StatelessWidget {
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute<void>(
-                builder: (_) => const SavedPostersScreen(),
+                builder: (_) => SavedPostersScreen(
+                  ownerLease: lease,
+                  verifiedLegacy: verifiedLegacy,
+                ),
               ),
             ),
             child: const Text('Posterlerim'),
@@ -60,13 +73,16 @@ class PosterCenterScreen extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 12),
                 child: _DriveSelectionCard(
                   drive: drive,
-                  score: DriveScoreStorageService.get(
-                    driveId: drive.id,
-                  )?.totalScore,
+                  score:
+                      (lease == null
+                              ? DriveScoreStorageService.get(driveId: drive.id)
+                              : lease.score(drive.id))
+                          ?.totalScore,
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute<void>(
-                      builder: (_) => PosterEditorScreen(drive: drive),
+                      builder: (_) =>
+                          PosterEditorScreen(drive: drive, ownerLease: lease),
                     ),
                   ),
                 ),
@@ -251,7 +267,12 @@ String _fallbackEndpoint(DriveSession drive, bool start) {
   return value == '—' ? (start ? 'Başlangıç' : 'Bitiş') : value;
 }
 
-Future<void> offerDrivePoster(BuildContext context, DriveSession drive) async {
+Future<void> offerDrivePoster(
+  BuildContext context,
+  DriveSession drive, {
+  LocalOwnerLease? ownerLease,
+}) async {
+  ownerLease?.requireDrive(drive.id);
   final create = await showModalBottomSheet<bool>(
     context: context,
     backgroundColor: const Color(0xff091b30),
@@ -282,10 +303,15 @@ Future<void> offerDrivePoster(BuildContext context, DriveSession drive) async {
       ),
     ),
   );
-  if (create == true && context.mounted) {
+  if (create == true &&
+      context.mounted &&
+      (ownerLease == null || ownerLease.isCurrent)) {
     await Navigator.push(
       context,
-      MaterialPageRoute<void>(builder: (_) => PosterEditorScreen(drive: drive)),
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            PosterEditorScreen(drive: drive, ownerLease: ownerLease),
+      ),
     );
   }
 }
@@ -299,21 +325,23 @@ class PosterEditorScreen extends StatefulWidget {
     this.backgroundGenerator = const UnconfiguredPosterBackgroundGenerator(),
     this.savedPoster,
     this.savedBackgroundPath,
+    this.ownerLease,
   });
   final DriveSession drive;
   final PosterBackgroundGenerator backgroundGenerator;
   final SavedDrivePoster? savedPoster;
   final String? savedBackgroundPath;
+  final LocalOwnerLease? ownerLease;
 
   @override
   State<PosterEditorScreen> createState() => _PosterEditorScreenState();
 }
 
 class _PosterEditorScreenState extends State<PosterEditorScreen> {
-  late final _start = TextEditingController(
-    text: _endpoint(widget.drive, true),
-  );
-  late final _end = TextEditingController(text: _endpoint(widget.drive, false));
+  late final DriveSession _drive =
+      widget.ownerLease?.requireDrive(widget.drive.id) ?? widget.drive;
+  late final _start = TextEditingController(text: _endpoint(_drive, true));
+  late final _end = TextEditingController(text: _endpoint(_drive, false));
   final _brand = TextEditingController();
   final _model = TextEditingController();
   final _year = TextEditingController();
@@ -323,7 +351,7 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
   PosterScenePreset _scene = PosterScenePreset.nightCoastalRoad;
   PosterBackgroundSourceType? _sourceType;
   PosterBackgroundRequest? _aiRequest;
-  PosterStore? _posterStore;
+  Future<PosterStore>? _posterStore;
   SavedDrivePoster? _saved;
   String? _backgroundPath;
   String? _error;
@@ -344,9 +372,11 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     super.initState();
     _layout =
         widget.savedPoster?.layout ??
-        automaticPosterLayout(projectPosterRoute(widget.drive.route));
+        automaticPosterLayout(projectPosterRoute(_drive.route));
     final saved = widget.savedPoster;
-    if (saved != null && widget.savedBackgroundPath != null) {
+    if (saved != null && widget.ownerLease != null) {
+      _initializeOwnedSavedPoster(saved);
+    } else if (saved != null && widget.savedBackgroundPath != null) {
       _start.text = saved.startLabel;
       _end.text = saved.endLabel;
       _showMaxSpeed = saved.showMaxSpeed;
@@ -366,13 +396,67 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     }
   }
 
+  Future<void> _initializeOwnedSavedPoster(SavedDrivePoster expected) async {
+    try {
+      _requireOwner();
+      final store = await _getStore();
+      _requireOwner();
+      final stored = store.all.where((poster) => poster.id == expected.id);
+      if (stored.length != 1 ||
+          stored.single.driveId != expected.driveId ||
+          expected.driveId != _drive.id ||
+          stored.single.fileName != expected.fileName ||
+          stored.single.backgroundFileName != expected.backgroundFileName) {
+        throw StateError('Poster does not belong to the active owner');
+      }
+      final background = store.backgroundFile(stored.single);
+      if (background == null || !await background.exists()) {
+        throw StateError('Owner poster background unavailable');
+      }
+      _requireOwner();
+      setState(() {
+        _saved = stored.single;
+        _start.text = stored.single.startLabel;
+        _end.text = stored.single.endLabel;
+        _showMaxSpeed = stored.single.showMaxSpeed;
+        _showLocation = stored.single.showLocation;
+        _showDate = stored.single.showDate;
+        _showScore = stored.single.showScore;
+        _showRoute = stored.single.showRoute;
+        _themeId = posterThemeIdFromName(stored.single.themeId);
+        _logoVariant = posterLogoVariantFromName(stored.single.logoVariant);
+        _routeSelected = stored.single.showRoute;
+        _sourceType = stored.single.backgroundSourceType;
+        _backgroundPath = background.path;
+        _stage = _PosterEditorStage.preview;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Bu poster etkin hesaba ait değil veya dosyası açılamıyor.';
+        _stage = _PosterEditorStage.background;
+      });
+    }
+  }
+
   Future<void> _recoverPhoto() async {
     if (!Platform.isAndroid) return;
     try {
       final lost = await _picker.retrieveLostData();
       if (!mounted || lost.files?.isNotEmpty != true) return;
+      final file = lost.files!.first;
+      final store = widget.ownerLease == null ? null : await _getStore();
+      final path = store == null
+          ? file.path
+          : await store.stageBackgroundStream(
+              file.openRead(),
+              extension: file.name.toLowerCase().endsWith('.png')
+                  ? 'png'
+                  : 'jpg',
+            );
+      _requireOwner();
       setState(() {
-        _backgroundPath = lost.files!.first.path;
+        _backgroundPath = path;
         _sourceType = PosterBackgroundSourceType.customImage;
       });
     } catch (_) {
@@ -380,17 +464,23 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     }
   }
 
+  void _requireOwner() => widget.ownerLease?.requireCurrent();
+
+  Future<PosterStore> _getStore() => _posterStore ??= widget.ownerLease == null
+      ? PosterStore.open()
+      : widget.ownerLease!.posters();
+
   Future<void> _resolveNames() async {
-    if (widget.drive.route.isEmpty) return;
+    if (_drive.route.isEmpty) return;
     final initialStart = _start.text;
     final initialEnd = _end.text;
     try {
       final result = await PosterStore.channel
           .invokeMapMethod<String, String>('endpointNames', {
-            'startLat': widget.drive.route.first.latitude,
-            'startLng': widget.drive.route.first.longitude,
-            'endLat': widget.drive.route.last.latitude,
-            'endLng': widget.drive.route.last.longitude,
+            'startLat': _drive.route.first.latitude,
+            'startLng': _drive.route.first.longitude,
+            'endLat': _drive.route.last.latitude,
+            'endLng': _drive.route.last.longitude,
           })
           .timeout(const Duration(seconds: 8));
       if (!mounted || result == null) return;
@@ -419,8 +509,19 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
         requestFullMetadata: false,
       );
       if (image == null || !mounted) return;
+      _requireOwner();
+      final store = widget.ownerLease == null ? null : await _getStore();
+      final sourcePath = store == null
+          ? image.path
+          : await store.stageBackgroundStream(
+              image.openRead(),
+              extension: image.name.toLowerCase().endsWith('.png')
+                  ? 'png'
+                  : 'jpg',
+            );
+      _requireOwner();
       final cropped = await ImageCropper().cropImage(
-        sourcePath: image.path,
+        sourcePath: sourcePath,
         aspectRatio: const CropAspectRatio(ratioX: 9, ratioY: 16),
         compressQuality: 96,
         maxWidth: 1440,
@@ -439,17 +540,26 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
         ],
       );
       if (!mounted || cropped == null) return;
+      _requireOwner();
+      final stagedPath = store == null
+          ? cropped.path
+          : await store.stageBackgroundFile(cropped.path);
+      _requireOwner();
       setState(() {
-        _backgroundPath = cropped.path;
+        _backgroundPath = stagedPath;
         _sourceType = source;
         _aiRequest = null;
         _stage = _PosterEditorStage.preview;
         _saved = null;
       });
     } catch (_) {
-      setState(() {
-        _error = 'Görsel seçilemedi. Yeniden deneyin.';
-      });
+      if (mounted) {
+        setState(() {
+          _error = widget.ownerLease != null && !widget.ownerLease!.isCurrent
+              ? 'Hesap değişti. Lütfen posteri yeniden açın.'
+              : 'Görsel seçilemedi. Yeniden deneyin.';
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -484,16 +594,23 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
       _error = null;
     });
     try {
+      _requireOwner();
       final result = await widget.backgroundGenerator.generate(request);
       if (!mounted) return;
+      _requireOwner();
       if (!result.isSuccess) {
         setState(
           () => _error = result.errorMessage ?? 'Arka plan üretilemedi.',
         );
         return;
       }
+      final store = widget.ownerLease == null ? null : await _getStore();
+      final backgroundPath = store == null
+          ? result.imagePath
+          : await store.stageBackgroundFile(result.imagePath!);
+      _requireOwner();
       setState(() {
-        _backgroundPath = result.imagePath;
+        _backgroundPath = backgroundPath;
         _sourceType = PosterBackgroundSourceType.aiGenerated;
         _aiRequest = request;
         _stage = _PosterEditorStage.preview;
@@ -509,13 +626,17 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
   }
 
   PosterCanvas _canvas({bool editing = false}) => PosterCanvas(
-    drive: widget.drive,
-    score: DriveScoreStorageService.get(driveId: widget.drive.id)?.totalScore,
+    drive: _drive,
+    score:
+        (widget.ownerLease == null
+                ? DriveScoreStorageService.get(driveId: _drive.id)
+                : widget.ownerLease!.score(_drive.id))
+            ?.totalScore,
     startName: _start.text.trim().isEmpty
-        ? _endpoint(widget.drive, true)
+        ? _endpoint(_drive, true)
         : _start.text.trim(),
     endName: _end.text.trim().isEmpty
-        ? _endpoint(widget.drive, false)
+        ? _endpoint(_drive, false)
         : _end.text.trim(),
     showMaxSpeed: _showMaxSpeed,
     showLocation: _showLocation,
@@ -555,8 +676,7 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
   Future<ui.Image> _renderPosterImage() async {
     if (!mounted || _backgroundPath == null) throw StateError('Arka plan yok');
     debugPrint(
-      '[POSTER_SAVE] render.start driveId=${widget.drive.id} '
-      'background=$_backgroundPath target=1080x1920',
+      '[POSTER_SAVE] render.start driveId=${_drive.id} target=1080x1920',
     );
     await precacheImage(FileImage(File(_backgroundPath!)), context);
     debugPrint('[POSTER_SAVE] render.backgroundReady');
@@ -629,14 +749,15 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
       return _saved!;
     }
     final png = await _renderPosterPng();
-    final store = _posterStore ??= await PosterStore.open();
+    _requireOwner();
+    final store = await _getStore();
     debugPrint(
       '[POSTER_SAVE] store.open directory=${store.directory.path} '
       'boxOpen=${store.box.isOpen}',
     );
     final saved = await store.save(
       PosterSaveRequest(
-        driveId: widget.drive.id,
+        driveId: _drive.id,
         png: png,
         backgroundSourceType: _sourceType!,
         backgroundPath: _backgroundPath,
@@ -653,6 +774,7 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
         layout: _layout,
       ),
     );
+    _requireOwner();
     debugPrint(
       '[POSTER_SAVE] complete id=${saved.id} '
       'path=${store.file(saved).path} hive=${store.box.containsKey(saved.id)}',
@@ -701,8 +823,10 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     setState(() => _busy = true);
     try {
       final poster = await _ensureSaved();
-      final store = _posterStore ??= await PosterStore.open();
+      final store = await _getStore();
+      _requireOwner();
       await action(store, poster);
+      _requireOwner();
     } catch (error, stackTrace) {
       debugPrint('[POSTER_SAVE] failed error=$error');
       debugPrintStack(label: '[POSTER_SAVE] stack', stackTrace: stackTrace);
@@ -724,8 +848,10 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
     setState(() => _busy = true);
     try {
       final png = await _renderPosterPng();
-      final store = _posterStore ??= await PosterStore.open();
+      final store = await _getStore();
+      _requireOwner();
       final uri = await store.savePngToGallery(png);
+      _requireOwner();
       debugPrint('[POSTER_SAVE] gallery.success uri=$uri');
       _message('Poster galeriye kaydedildi.');
     } catch (error, stackTrace) {
@@ -772,7 +898,13 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => widget.ownerLease == null
+      ? _build(context)
+      : !widget.ownerLease!.isCurrent
+      ? const OwnerAccessUnavailable()
+      : LocalOwnerView(lease: widget.ownerLease!, builder: _build);
+
+  Widget _build(BuildContext context) => Scaffold(
     backgroundColor: const Color(0xff020a18),
     appBar: AppBar(title: const Text('Sürüş Posteri')),
     body: SafeArea(
@@ -983,7 +1115,7 @@ class _PosterEditorScreenState extends State<PosterEditorScreen> {
                 ? null
                 : () => _draftChanged(
                     () => _layout = automaticPosterLayout(
-                      projectPosterRoute(widget.drive.route),
+                      projectPosterRoute(_drive.route),
                     ),
                   ),
             child: const Text('Sıfırla'),
@@ -1152,9 +1284,15 @@ class _RouteEditingScrollPhysics extends AlwaysScrollableScrollPhysics {
 }
 
 class SavedPostersScreen extends StatefulWidget {
-  const SavedPostersScreen({super.key, this.store, this.ownerLease});
+  const SavedPostersScreen({
+    super.key,
+    this.store,
+    this.ownerLease,
+    this.verifiedLegacy,
+  });
   final Future<PosterStore>? store;
   final LocalOwnerLease? ownerLease;
+  final VerifiedLegacyImport? verifiedLegacy;
   @override
   State<SavedPostersScreen> createState() => _SavedPostersScreenState();
 }
@@ -1232,48 +1370,140 @@ class _SavedPostersScreenState extends State<SavedPostersScreen> {
         }
         final store = snapshot.data!;
         final posters = store.all;
-        if (posters.isEmpty) {
+        final verifiedLegacy = widget.verifiedLegacy;
+        final legacyAllowed =
+            _owner != null &&
+            verifiedLegacy != null &&
+            verifiedLegacy.isForLease(_owner);
+        final legacyPosters = legacyAllowed
+            ? verifiedLegacy
+                  .keys('drive_posters')
+                  .map((key) => verifiedLegacy.read<Map>('drive_posters', key))
+                  .whereType<Map>()
+                  .map(SavedDrivePoster.fromMap)
+                  .where((poster) {
+                    final source = verifiedLegacy.read<DriveSession>(
+                      'drives',
+                      poster.driveId,
+                    );
+                    return source != null && source.id == poster.driveId;
+                  })
+                  .toList(growable: false)
+            : const <SavedDrivePoster>[];
+        if (posters.isEmpty && legacyPosters.isEmpty) {
           return const Center(child: Text('Henüz kaydedilmiş poster yok.'));
         }
-        return ListView.builder(
-          itemCount: posters.length,
-          itemBuilder: (context, index) {
-            final poster = posters[index];
-            return ListTile(
-              leading: Image.file(
-                store.file(poster),
-                width: 44,
-                errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
-              ),
-              title: Text(
-                DateFormat('dd.MM.yyyy · HH:mm').format(poster.createdAt),
-              ),
-              subtitle: Text(
-                '${poster.backgroundSourceType.name} · Sürüş ${poster.driveId}',
-              ),
-              trailing: IconButton(
-                key: ValueKey('poster_delete_${poster.id}'),
-                tooltip: 'Sil',
-                icon: const Icon(Icons.delete_outline),
-                color: const Color(0xffaab8d5),
-                onPressed: () => _confirmDelete(store, poster),
-              ),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                  builder: (_) => _SavedPosterViewer(
-                    store: store,
-                    poster: poster,
-                    ownerLease: _owner,
+        return ListView(
+          children: [
+            for (final poster in posters)
+              ListTile(
+                leading: Image.file(
+                  store.file(poster),
+                  width: 44,
+                  errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
+                ),
+                title: Text(
+                  DateFormat('dd.MM.yyyy · HH:mm').format(poster.createdAt),
+                ),
+                subtitle: Text(
+                  '${poster.backgroundSourceType.name} · Sürüş ${poster.driveId}',
+                ),
+                trailing: IconButton(
+                  key: ValueKey('poster_delete_${poster.id}'),
+                  tooltip: 'Sil',
+                  icon: const Icon(Icons.delete_outline),
+                  color: const Color(0xffaab8d5),
+                  onPressed: () => _confirmDelete(store, poster),
+                ),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => _SavedPosterViewer(
+                      store: store,
+                      poster: poster,
+                      ownerLease: _owner,
+                    ),
                   ),
                 ),
               ),
-            );
-          },
+            if (legacyPosters.isNotEmpty) ...[
+              const ListTile(
+                title: Text('Doğrulanmış eski posterler'),
+                subtitle: Text(
+                  'Salt okunur · Bu hesaba ait doğrulanmış içe aktarma',
+                ),
+              ),
+              for (final poster in legacyPosters)
+                _verifiedLegacyTile(verifiedLegacy!, poster),
+            ],
+          ],
         );
       },
     ),
   );
+
+  Widget _verifiedLegacyTile(
+    VerifiedLegacyImport verified,
+    SavedDrivePoster poster,
+  ) => FutureBuilder<File>(
+    future: verified.posterFile(poster.id),
+    builder: (context, snapshot) {
+      final file = snapshot.data;
+      return ListTile(
+        key: ValueKey('verified_legacy_poster_${poster.id}'),
+        leading: file == null
+            ? const Icon(Icons.image_outlined)
+            : Image.file(
+                file,
+                width: 44,
+                errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
+              ),
+        title: Text(DateFormat('dd.MM.yyyy · HH:mm').format(poster.createdAt)),
+        subtitle: const Text('Doğrulanmış içe aktarma · Salt okunur'),
+        onTap: file == null
+            ? null
+            : () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => _VerifiedLegacyPosterViewer(
+                    source: verified,
+                    file: file,
+                    lease: _owner!,
+                  ),
+                ),
+              ),
+      );
+    },
+  );
+}
+
+class _VerifiedLegacyPosterViewer extends StatelessWidget {
+  const _VerifiedLegacyPosterViewer({
+    required this.source,
+    required this.file,
+    required this.lease,
+  });
+  final VerifiedLegacyImport source;
+  final File file;
+  final LocalOwnerLease lease;
+
+  @override
+  Widget build(BuildContext context) => !source.isForLease(lease)
+      ? const OwnerAccessUnavailable()
+      : LocalOwnerView(
+          lease: lease,
+          builder: (context) => Scaffold(
+            appBar: AppBar(title: const Text('Doğrulanmış eski poster')),
+            body: Center(
+              child: InteractiveViewer(
+                child: Image.file(
+                  file,
+                  errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
+                ),
+              ),
+            ),
+          ),
+        );
 }
 
 class _SavedPosterViewer extends StatelessWidget {
@@ -1295,24 +1525,40 @@ class _SavedPosterViewer extends StatelessWidget {
     appBar: AppBar(
       title: const Text('Sürüş Posteri'),
       actions: [
-        if (poster.backgroundFileName != null && ownerLease == null)
+        if (poster.backgroundFileName != null)
           TextButton(
             child: const Text('Düzenle'),
             onPressed: () async {
-              final drives = DriveStorageService.getAllDrives().where(
-                (drive) => drive.id == poster.driveId,
-              );
-              final path =
-                  '${store.directory.path}/${poster.backgroundFileName}';
-              if (drives.isEmpty || !await File(path).exists()) return;
+              DriveSession drive;
+              String path;
+              final lease = ownerLease;
+              if (lease != null) {
+                try {
+                  drive = lease.requireDrive(poster.driveId);
+                  final background = store.backgroundFile(poster);
+                  if (background == null || !await background.exists()) return;
+                  path = background.path;
+                  lease.requireCurrent();
+                } catch (_) {
+                  return;
+                }
+              } else {
+                final drives = DriveStorageService.getAllDrives().where(
+                  (drive) => drive.id == poster.driveId,
+                );
+                path = '${store.directory.path}/${poster.backgroundFileName}';
+                if (drives.isEmpty || !await File(path).exists()) return;
+                drive = drives.first;
+              }
               if (!context.mounted) return;
               await Navigator.push(
                 context,
                 MaterialPageRoute<void>(
                   builder: (_) => PosterEditorScreen(
-                    drive: drives.first,
+                    drive: drive,
                     savedPoster: poster,
                     savedBackgroundPath: path,
+                    ownerLease: ownerLease,
                   ),
                 ),
               );

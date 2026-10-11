@@ -6,6 +6,7 @@ import '../features/my_world/models/matched_road_point.dart';
 import '../features/my_world/models/matched_road_section.dart';
 import 'gps_hive_transfer_sink.dart';
 import 'gps_session_transfer.dart';
+import 'drive_source_provenance.dart';
 
 /// Private local payload only. No inferred timestamps, account assignment,
 /// external file dependency, new Hive type IDs, or network credentials.
@@ -16,15 +17,17 @@ class LocalSourceBundle {
     this.score,
     this.roads = const [],
     this.ownerScope = 'unassigned',
+    this.sourceProvenance,
   });
   final DriveSession drive;
   final DriveTelemetryRecord? telemetry;
   final DriveScoreRecord? score;
   final List<ValidatedRoad> roads;
   final String ownerScope;
+  final DriveSourceProvenance? sourceProvenance;
 
   Map<String, dynamic> toMap() => {
-    'version': 1,
+    'version': sourceProvenance == null ? 1 : 2,
     'ownerScope': ownerScope,
     'drive': {...driveTransferManifest(drive), 'mapImagePath': ''},
     'telemetry': telemetry == null
@@ -50,15 +53,22 @@ class LocalSourceBundle {
             'categories': score!.categories.map((c) => c.toMap()).toList(),
           },
     'roads': roads.map(_roadMap).toList(),
+    if (sourceProvenance != null)
+      'sourceProvenance': sourceProvenance!.toMap(),
   };
 
   factory LocalSourceBundle.fromMap(Map<String, dynamic> m) {
-    if (m['version'] != 1) throw StateError('Unsupported source version');
+    if (m['version'] != 1 && m['version'] != 2) {
+      throw StateError('Unsupported source version');
+    }
     final t = m['telemetry'] as Map?;
     final s = m['score'] as Map?;
     return LocalSourceBundle(
       drive: driveFromTransferManifest(Map<String, dynamic>.from(m['drive'])),
       ownerScope: m['ownerScope'] as String,
+      sourceProvenance: m['sourceProvenance'] == null
+          ? null
+          : DriveSourceProvenance.fromMap(m['sourceProvenance'] as Map),
       telemetry: t == null
           ? null
           : DriveTelemetryRecord(
@@ -100,6 +110,26 @@ class LocalSourceBundle {
         (score != null && score!.driveId != drive.id) ||
         roads.any((r) => r.driveSessionId != drive.id)) {
       throw StateError('Source identity mismatch');
+    }
+    if (sourceProvenance != null &&
+        (sourceProvenance!.ownerScope != ownerScope ||
+            (sourceProvenance!.status == DriveProvenanceStatus.proven &&
+                !sourceProvenance!.isProven))) {
+      throw StateError('Source provenance scope or identity mismatch');
+    }
+    if (telemetry != null) {
+      final transferProvenance = DriveSourceProvenance.fromTransferMetadata(
+        telemetry!.acquisitionMetadata,
+        ownerScope: ownerScope,
+      );
+      if (transferProvenance.status == DriveProvenanceStatus.conflict ||
+          (transferProvenance.isProven &&
+              (sourceProvenance == null ||
+                  !sourceProvenance!.isProven ||
+                  transferProvenance.sourceIdentity !=
+                      sourceProvenance!.sourceIdentity))) {
+        throw StateError('Telemetry provenance is incomplete or conflicting');
+      }
     }
     if (!drive.distance.isFinite ||
         drive.distance < 0 ||

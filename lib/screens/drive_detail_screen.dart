@@ -35,10 +35,11 @@ class OwnedDriveDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) => LocalOwnerView(
     lease: lease,
     builder: (_) {
-      final drive = lease.read<DriveSession>('drives', driveId);
-      if (drive == null || drive.id != driveId) {
+      final drives = lease.drives().where((d) => d.id == driveId);
+      if (drives.isEmpty) {
         return const OwnerAccessUnavailable();
       }
+      final drive = lease.requireDrive(driveId);
       return DriveDetailScreen(
         key: ValueKey(
           [lease.owner.targetStore, lease.epoch, driveId].join(':'),

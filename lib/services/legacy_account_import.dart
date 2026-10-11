@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import '../config/local_ownership_gate.dart';
 import '../models/drive_session.dart';
@@ -388,7 +389,15 @@ class LegacyAccountImporter {
         await copier.verify(file);
       }
       lease.requireCurrent();
-      return VerifiedLegacyImport._(store, lease, workspace, files, copier);
+      return VerifiedLegacyImport._(
+        store,
+        lease,
+        workspace,
+        files,
+        copier,
+        claim.namespace,
+        claim.fingerprint,
+      );
     } catch (_) {
       await store.close();
       rethrow;
@@ -405,13 +414,19 @@ class VerifiedLegacyImport {
     this._workspace,
     this._assets,
     this._copier,
+    this.sourceNamespace,
+    this.fingerprint,
   );
   final OwnerScopedLocalStore _store;
   final LocalOwnerLease _lease;
   final Directory _workspace;
   final List<ImportAsset> _assets;
   final OwnerAssetTransfer _copier;
+  final String sourceNamespace;
+  final String fingerprint;
   bool _closed = false;
+  bool isForLease(LocalOwnerLease lease) =>
+      !_closed && identical(_lease, lease) && lease.isCurrent;
   void _check() {
     if (_closed) throw const ImportFailure('import_reader_closed');
     _lease.requireCurrent();
@@ -425,6 +440,65 @@ class VerifiedLegacyImport {
   List<Object> keys(String group) {
     _check();
     return _store.keys(_lease.owner, group);
+  }
+
+  /// Adapter-preserving export for the dormant owner revision planner. Every
+  /// legacy row is tagged with the immutable claim identity; callers cannot
+  /// supply or rewrite its provenance.
+  List<VerifiedImportRevisionRecord> revisionRecords() {
+    _check();
+    final output = <VerifiedImportRevisionRecord>[];
+    for (final group in OwnerScopedLocalStore.groups) {
+      for (final key in keys(group)) {
+        final value = read<Object?>(group, key);
+        if (value == null) {
+          throw const ImportFailure('verified_partition_null_record');
+        }
+        output.add(
+          VerifiedImportRevisionRecord(
+            group: group,
+            key: key,
+            sourceIdentity: jsonEncode([
+              'legacy_source_v1',
+              sourceNamespace,
+              fingerprint,
+              group,
+              key,
+            ]),
+            payload: _store.encode(value),
+            sourceNamespace: sourceNamespace,
+            sourceFingerprint: fingerprint,
+          ),
+        );
+      }
+    }
+    return List.unmodifiable(output);
+  }
+
+  List<VerifiedImportRevisionAsset> revisionAssets() {
+    _check();
+    return List.unmodifiable(
+      _assets.map(
+        (asset) => VerifiedImportRevisionAsset(
+          id: asset.id,
+          sha256: asset.hash,
+          bytes: asset.bytes,
+          relativePath: asset.relativePath,
+        ),
+      ),
+    );
+  }
+
+  Future<void> verifyRevisionAsset(String id, String relativePath) async {
+    _check();
+    final matches = _assets.where(
+      (asset) => asset.id == id && asset.relativePath == relativePath,
+    );
+    if (matches.length != 1) {
+      throw const ImportFailure('file_not_in_verified_manifest');
+    }
+    await _copier.verify(matches.single);
+    _check();
   }
 
   Future<File> file(String reference) async {
@@ -451,4 +525,34 @@ class VerifiedLegacyImport {
     _closed = true;
     await _store.close();
   }
+}
+
+class VerifiedImportRevisionRecord {
+  const VerifiedImportRevisionRecord({
+    required this.group,
+    required this.key,
+    required this.sourceIdentity,
+    required this.payload,
+    required this.sourceNamespace,
+    required this.sourceFingerprint,
+  });
+  final String group;
+  final Object key;
+  final String sourceIdentity;
+  final Uint8List payload;
+  final String sourceNamespace;
+  final String sourceFingerprint;
+}
+
+class VerifiedImportRevisionAsset {
+  const VerifiedImportRevisionAsset({
+    required this.id,
+    required this.sha256,
+    required this.bytes,
+    required this.relativePath,
+  });
+  final String id;
+  final String sha256;
+  final int bytes;
+  final String relativePath;
 }

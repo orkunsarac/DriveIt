@@ -1,8 +1,29 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// Flutter's `test`/integration_test runner forwards Dart defines as the
+// `dart-defines` Gradle property, but does not reliably forward arbitrary
+// project properties. Detect the explicit test-only define as well as the
+// direct Gradle property. Normal builds have neither, so their IDs are intact.
+val isolatedTestDartDefines = providers.gradleProperty("dart-defines").orNull
+    ?.split(',')
+    ?.mapNotNull { encoded ->
+        runCatching {
+            String(
+                Base64.getDecoder().decode(encoded),
+                Charsets.UTF_8,
+            )
+        }.getOrNull()
+    }
+    .orEmpty()
+val driveItIsolatedTest =
+    providers.gradleProperty("driveItIsolatedTest").orNull == "true" ||
+        "DRIVEIT_ISOLATED_ANDROID_TEST=true" in isolatedTestDartDefines
 
 android {
     namespace = "com.example.driveit_project"
@@ -27,6 +48,11 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            if (driveItIsolatedTest) {
+                applicationIdSuffix = ".isolated_test"
+            }
+        }
         release {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.

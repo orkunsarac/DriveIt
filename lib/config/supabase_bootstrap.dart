@@ -20,12 +20,23 @@ abstract final class SupabaseConfig {
 /// Initializes Supabase only when both public client values are supplied.
 /// Failure is non-fatal so all local DriveIt features remain available.
 abstract final class SupabaseBootstrap {
+  /// Explicit kill switch for isolated Android integration-test builds. Even
+  /// if somebody accidentally supplies real dart-defines, tests stay offline.
+  static const isIsolatedAndroidTest =
+      bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST');
+
   static bool _initialized = false;
 
   static bool get isInitialized => _initialized;
 
   static Future<bool> initializeIfConfigured() async {
     if (_initialized) return true;
+    if (isIsolatedAndroidTest) {
+      if (kDebugMode) {
+        debugPrint('[SUPABASE] Disabled in isolated Android integration tests.');
+      }
+      return false;
+    }
     if (!SupabaseConfig.isConfigured) {
       if (kDebugMode) {
         debugPrint(

@@ -141,8 +141,9 @@ class DriveTelemetryRecordAdapter extends TypeAdapter<DriveTelemetryRecord> {
         final point = points[index];
         points[index] = CanonicalTelemetryPoint.fromMap({
           ...point.toMap(),
-          'timeMicros': point.timestamp.microsecondsSinceEpoch,
-          'timeIsUtc': point.timestamp.isUtc,
+          'timeMicros':
+              entry['timeMicros'] ?? point.timestamp.microsecondsSinceEpoch,
+          'timeIsUtc': entry['timeIsUtc'] ?? point.timestamp.isUtc,
           'speedSource': entry['speedSource'],
           'accelerationReliable': entry['accelerationReliable'],
         })!;
@@ -163,11 +164,17 @@ class DriveTelemetryRecordAdapter extends TypeAdapter<DriveTelemetryRecord> {
     final quality = <Map<String, dynamic>>[
       for (var i = 0; i < object.points.length; i++)
         if (object.points[i].speedSource != 'legacy' ||
-            !object.points[i].accelerationReliable)
+            !object.points[i].accelerationReliable ||
+            object.acquisitionMetadata['preserveCanonicalTimestampV1'] == true)
           {
             'index': i,
             'speedSource': object.points[i].speedSource,
             'accelerationReliable': object.points[i].accelerationReliable,
+            if (object.acquisitionMetadata['preserveCanonicalTimestampV1'] ==
+                true) ...{
+              'timeMicros': object.points[i].timestamp.microsecondsSinceEpoch,
+              'timeIsUtc': object.points[i].timestamp.isUtc,
+            },
           },
     ];
     writer

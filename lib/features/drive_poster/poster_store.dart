@@ -159,6 +159,7 @@ class PosterStore {
   PosterStore(
     Box<dynamic> box,
     this.directory, {
+    this.trustedRoot,
     this.temporaryDirectory,
     this.requireAccess,
     this.requireDrive,
@@ -168,6 +169,11 @@ class PosterStore {
   static const channel = MethodChannel('driveit/posters');
   final Box<dynamic> box;
   final Directory directory;
+
+  /// Canonical account/owner storage root. System aliases above this boundary
+  /// (for example Android's /data/user/0 -> /data/data) are trusted; links
+  /// from this root down to poster files are still rejected.
+  final Directory? trustedRoot;
   final Directory? temporaryDirectory;
   final void Function()? requireAccess;
   final void Function(String)? requireDrive;
@@ -182,27 +188,46 @@ class PosterStore {
     );
     if (requireAccess != null) {
       OwnerAssetTransfer.validatePath(reference);
-      final base = directory.absolute.path.replaceAll(
-        '/',
-        Platform.pathSeparator,
-      );
-      final path = candidate.absolute.path.replaceAll(
-        '/',
-        Platform.pathSeparator,
-      );
-      if (!OwnerAssetTransfer.within(base, path)) {
+      final root = trustedRoot;
+      if (root == null) throw const ImportFailure('poster_owner_root_missing');
+      final canonicalRoot = root.resolveSymbolicLinksSync();
+      final canonicalBase = directory.resolveSymbolicLinksSync();
+      final originalBase = directory.absolute.path;
+      final requestedPath = candidate.absolute.path;
+      String? relative;
+      if (OwnerAssetTransfer.within(originalBase, requestedPath)) {
+        relative = requestedPath.substring(originalBase.length + 1);
+      } else if (OwnerAssetTransfer.within(canonicalBase, requestedPath)) {
+        relative = requestedPath.substring(canonicalBase.length + 1);
+      }
+      if (relative == null) {
         throw const ImportFailure('poster_owner_path_mismatch');
       }
-      var component = candidate.absolute.path;
+      final resolvedCandidate = File(
+        '$canonicalBase${Platform.pathSeparator}$relative',
+      );
+      final resolvedPath = resolvedCandidate.absolute.path;
+      if (!OwnerAssetTransfer.within(canonicalRoot, resolvedPath)) {
+        throw const ImportFailure('poster_owner_path_mismatch');
+      }
+      var component = resolvedPath;
+      bool isRoot(String value) => Platform.isWindows
+          ? value.toLowerCase() == canonicalRoot.toLowerCase()
+          : value == canonicalRoot;
       while (true) {
         if (FileSystemEntity.typeSync(component, followLinks: false) ==
             FileSystemEntityType.link) {
           throw const ImportFailure('unsafe_symlink');
         }
+        if (isRoot(component)) break;
         final parent = Directory(component).parent.path;
-        if (parent == component) break;
+        if (parent == component ||
+            !OwnerAssetTransfer.within(canonicalRoot, component)) {
+          throw const ImportFailure('poster_owner_path_mismatch');
+        }
         component = parent;
       }
+      return resolvedCandidate;
     }
     return candidate;
   }
@@ -211,7 +236,10 @@ class PosterStore {
     _check();
     if (requireAccess != null) {
       _resolve(file.path);
-      await OwnerAssetTransfer.noLinks(file.absolute.path);
+      await OwnerAssetTransfer.noLinks(
+        file.absolute.path,
+        trustedRoot: trustedRoot?.path,
+      );
       _check();
     }
   }
@@ -250,6 +278,99 @@ class PosterStore {
     final reference = poster.backgroundFileName;
     if (reference == null || reference.isEmpty) return null;
     return _resolve(reference);
+  }
+
+  /// Persists a picker/provider stream into this owner's private staging area.
+  /// The provider URI is never retained in metadata or passed to later screens.
+  Future<String> stageBackgroundStream(
+    Stream<List<int>> source, {
+    String extension = 'jpg',
+  }) => _run(() => _stageBackgroundStream(source, extension: extension));
+
+  Future<String> _stageBackgroundStream(
+    Stream<List<int>> source, {
+    required String extension,
+  }) async {
+    _check();
+    final root = trustedRoot;
+    final tempRoot = temporaryDirectory;
+    if (requireAccess == null || root == null || tempRoot == null) {
+      throw const ImportFailure('poster_owner_staging_unavailable');
+    }
+    if (extension != 'jpg' && extension != 'png' && extension != 'webp') {
+      throw const ImportFailure('poster_background_extension_invalid');
+    }
+    await tempRoot.create(recursive: true);
+    final canonicalRoot = root.resolveSymbolicLinksSync();
+    final canonicalTemp = tempRoot.resolveSymbolicLinksSync();
+    if (!OwnerAssetTransfer.within(canonicalRoot, canonicalTemp)) {
+      throw const ImportFailure('poster_owner_path_mismatch');
+    }
+    await OwnerAssetTransfer.noLinks(
+      canonicalTemp,
+      trustedRoot: canonicalRoot,
+    );
+    final name = 'picked-${DateTime.now().microsecondsSinceEpoch}.$extension';
+    final destination = File('${tempRoot.path}/$name');
+    final partial = File('${destination.path}.tmp');
+    var committed = false;
+    try {
+      final sink = partial.openWrite();
+      var length = 0;
+      try {
+        await for (final chunk in source) {
+          length += chunk.length;
+          sink.add(chunk);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+      _check();
+      if (length == 0 || !await partial.exists() || await partial.length() != length) {
+        throw const ImportFailure('poster_background_copy_incomplete');
+      }
+      if (await destination.exists()) {
+        throw const ImportFailure('poster_background_target_conflict');
+      }
+      final partialHash = await OwnerAssetTransfer.hashFile(partial);
+      await partial.rename(destination.path);
+      committed = true;
+      final committedHash = await OwnerAssetTransfer.hashFile(destination);
+      if (partialHash != committedHash) {
+        throw const ImportFailure('poster_background_hash_mismatch');
+      }
+      await OwnerAssetTransfer.noLinks(
+        destination.path,
+        trustedRoot: canonicalRoot,
+      );
+      return destination.path;
+    } catch (_) {
+      if (await partial.exists()) await partial.delete();
+      if (committed && await destination.exists()) await destination.delete();
+      rethrow;
+    }
+  }
+
+  Future<String> stageBackgroundFile(String sourcePath) async {
+    _check();
+    final source = File(sourcePath);
+    final canonicalRoot = trustedRoot?.resolveSymbolicLinksSync();
+    if (requireAccess == null || canonicalRoot == null) {
+      throw const ImportFailure('poster_owner_staging_unavailable');
+    }
+    final canonicalSource = source.resolveSymbolicLinksSync();
+    if (!OwnerAssetTransfer.within(canonicalRoot, canonicalSource)) {
+      throw const ImportFailure('poster_background_source_untrusted');
+    }
+    await OwnerAssetTransfer.noLinks(
+      canonicalSource,
+      trustedRoot: canonicalRoot,
+    );
+    return stageBackgroundStream(
+      source.openRead(),
+      extension: sourcePath.toLowerCase().endsWith('.png') ? 'png' : 'jpg',
+    );
   }
 
   /// Removes only the app-private poster record and its local files.
@@ -346,6 +467,8 @@ class PosterStore {
           ? 'png'
           : 'jpg';
       backgroundName = '$id-background.$extension';
+    } else if (sourcePath != null && requireAccess != null) {
+      throw const ImportFailure('poster_background_missing');
     }
     final poster = SavedDrivePoster(
       id: id,
@@ -369,7 +492,17 @@ class PosterStore {
     final output = file(poster);
     await _validateAccess(output);
     if (sourcePath != null && requireAccess != null) {
-      await _validateAccess(_resolve(sourcePath));
+      final ownerRoot = trustedRoot?.resolveSymbolicLinksSync();
+      final source = File(sourcePath);
+      final canonicalSource = source.resolveSymbolicLinksSync();
+      if (ownerRoot == null ||
+          !OwnerAssetTransfer.within(ownerRoot, canonicalSource)) {
+        throw const ImportFailure('poster_background_source_untrusted');
+      }
+      await OwnerAssetTransfer.noLinks(
+        canonicalSource,
+        trustedRoot: ownerRoot,
+      );
     }
     final temporary = File('${output.path}.tmp');
     File? backgroundOutput;
@@ -385,7 +518,7 @@ class PosterStore {
       );
       if (backgroundName != null) {
         backgroundOutput = File('${directory.path}/$backgroundName');
-        await File(sourcePath!).copy(backgroundOutput.path);
+        await _copyFileVerified(File(sourcePath!), backgroundOutput);
         debugPrint(
           '[POSTER_SAVE] background.copy.done path=${backgroundOutput.path}',
         );
@@ -432,7 +565,41 @@ class PosterStore {
     }
   }
 
-  Future<String> savePngToGallery(Uint8List png) async {
+  Future<void> _copyFileVerified(File source, File destination) async {
+    final temporary = File('${destination.path}.tmp');
+    try {
+      final sourceHash = await OwnerAssetTransfer.hashFile(source);
+      final sink = temporary.openWrite();
+      var length = 0;
+      try {
+        await for (final chunk in source.openRead()) {
+          length += chunk.length;
+          sink.add(chunk);
+        }
+        await sink.flush();
+      } finally {
+        await sink.close();
+      }
+      if (length == 0 ||
+          await temporary.length() != length ||
+          length != sourceHash.$2) {
+        throw const ImportFailure('poster_background_copy_incomplete');
+      }
+      final temporaryHash = await OwnerAssetTransfer.hashFile(temporary);
+      if (temporaryHash != sourceHash) {
+        throw const ImportFailure('poster_background_hash_mismatch');
+      }
+      await temporary.rename(destination.path);
+      if (await OwnerAssetTransfer.hashFile(destination) != sourceHash) {
+        throw const ImportFailure('poster_background_copy_incomplete');
+      }
+    } catch (_) {
+      if (await temporary.exists()) await temporary.delete();
+      rethrow;
+    }
+  }
+
+  Future<String> savePngToGallery(Uint8List png) => _run(() async {
     _check();
     _requirePngBytes(png);
     final tempRoot = temporaryDirectory ?? await getTemporaryDirectory();
@@ -460,14 +627,15 @@ class PosterStore {
     } finally {
       if (await temporary.exists()) await temporary.delete();
     }
-  }
+  });
 
-  Future<String> saveToGallery(SavedDrivePoster poster) async {
+  Future<String> saveToGallery(SavedDrivePoster poster) => _run(() async {
+    _check();
     final source = file(poster);
     await _validateAccess(source);
     await _requireValidPngFile(source);
     return _saveFileToGallery(source, 'DriveIt_Poster_${poster.id}.png');
-  }
+  });
 
   Future<String> _saveFileToGallery(File source, String name) async {
     _check();
@@ -485,7 +653,8 @@ class PosterStore {
     return uri;
   }
 
-  Future<void> share(SavedDrivePoster poster) async {
+  Future<void> share(SavedDrivePoster poster) => _run(() async {
+    _check();
     final source = file(poster);
     await _validateAccess(source);
     await _requireValidPngFile(source);
@@ -496,7 +665,7 @@ class PosterStore {
       'name': 'DriveIt_Poster_${poster.id}.png',
     });
     debugPrint('[POSTER_SAVE] android.share.done path=${source.path}');
-  }
+  });
 
   static void _requirePngBytes(Uint8List png) {
     if (png.length < 8 ||

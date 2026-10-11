@@ -428,7 +428,7 @@ class GpsSessionStore {
     return rows.isEmpty ? null : GpsSession.fromRow(rows.single);
   });
 
-  Future<GpsSession> create() => gpsWrite(
+  Future<GpsSession> create({String? id}) => gpsWrite(
     () => db.transaction((tx) async {
       final current = await tx.query('current_session');
       final unfinished = await tx.query(
@@ -440,24 +440,34 @@ class GpsSessionStore {
         throw StateError('Önce tamamlanmamış sürüşü kurtar.');
       }
       final random = Random.secure();
-      final id = List.generate(
-        16,
-        (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
-      ).join();
+      final sessionId =
+          id ??
+          List.generate(
+            16,
+            (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+          ).join();
+      if (sessionId.isEmpty ||
+          (await tx.query('sessions', where: 'id=?', whereArgs: [sessionId]))
+              .isNotEmpty) {
+        throw GpsFailure(GpsErrorCode.recovery);
+      }
       final now = DateTime.now();
       await tx.insert('sessions', {
-        'id': id,
+        'id': sessionId,
         'started_us': now.microsecondsSinceEpoch,
         'state': 'recording',
       });
-      await tx.insert('current_session', {'singleton': 1, 'session_id': id});
+      await tx.insert('current_session', {
+        'singleton': 1,
+        'session_id': sessionId,
+      });
       await tx.insert('session_events', {
-        'session_id': id,
+        'session_id': sessionId,
         'kind': 'started',
         'occurred_us': now.microsecondsSinceEpoch,
         'sequence': 0,
       });
-      return GpsSession(id, now, 'recording', null);
+      return GpsSession(sessionId, now, 'recording', null);
     }),
   );
   Future<List<GpsJournalPoint>> read(

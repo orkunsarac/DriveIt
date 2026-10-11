@@ -14,7 +14,8 @@ class LegacyClaim {
   bool get completed => row['state'] == 'completed';
 }
 
-/// A separate v1 WAL/FULL ledger, never an acquisition-journal migration.
+/// Separate WAL/FULL claim ledger (claims schema v1, database schema v2),
+/// never an acquisition-journal migration.
 /// The source namespace (derived from canonical source path) is UNIQUE across
 /// owners and fingerprints. Reservation cannot be reassigned or deleted.
 class LegacyClaimLedger {
@@ -28,7 +29,7 @@ class LegacyClaimLedger {
       path,
       options: OpenDatabaseOptions(
         singleInstance: false,
-        version: 1,
+        version: 2,
         onConfigure: (db) async {
           final wal = await db.rawQuery('PRAGMA journal_mode=WAL');
           await db.execute('PRAGMA synchronous=FULL');
@@ -86,6 +87,10 @@ class LegacyClaimLedger {
               );
             }
           }
+          await _createOwnerRevisionSchema(db);
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) await _createOwnerRevisionSchema(db);
         },
       ),
     );
@@ -200,4 +205,145 @@ class LegacyClaimLedger {
     );
   });
   Future<void> close() => db.close();
+
+  /// Completed imports are discoverable by immutable target UUID. This is
+  /// discovery only; callers must still reopen and verify each partition.
+  Future<List<LegacyClaim>> completedForOwner(String ownerUuid) async {
+    final owner = GpsOwner.account(ownerUuid);
+    final rows = await db.query(
+      'claims',
+      where: "owner_uuid=? AND state='completed'",
+      whereArgs: [owner.userId],
+      orderBy: 'completed_us, source_namespace',
+    );
+    return rows.map(LegacyClaim.new).toList(growable: false);
+  }
+
+  static Future<void> _createOwnerRevisionSchema(DatabaseExecutor db) async {
+    await db.execute('''CREATE TABLE IF NOT EXISTS owner_revisions (
+      revision_id TEXT PRIMARY KEY,
+      version INTEGER NOT NULL CHECK(version=1),
+      owner_uuid TEXT NOT NULL,
+      base_revision_id TEXT,
+      source_revision TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      source_namespace TEXT NOT NULL,
+      import_fingerprint TEXT NOT NULL,
+      plan_fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('preparing','verified','published')),
+      record_count INTEGER NOT NULL,
+      asset_count INTEGER NOT NULL,
+      evidence TEXT,
+      created_us INTEGER NOT NULL,
+      updated_us INTEGER NOT NULL,
+      UNIQUE(owner_uuid,source_namespace,import_fingerprint,plan_fingerprint),
+      CHECK((state='preparing' AND evidence IS NULL) OR
+        (state IN ('verified','published') AND evidence IS NOT NULL)))''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS owner_revision_records (
+      revision_id TEXT NOT NULL REFERENCES owner_revisions(revision_id),
+      record_id TEXT NOT NULL,
+      group_name TEXT NOT NULL,
+      logical_key TEXT NOT NULL,
+      source_identity TEXT NOT NULL,
+      origin TEXT NOT NULL CHECK(origin IN ('owner','legacy')),
+      content_sha256 TEXT NOT NULL,
+      payload BLOB NOT NULL,
+      PRIMARY KEY(revision_id,record_id),
+      UNIQUE(revision_id,group_name,source_identity,logical_key))''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS owner_revision_assets (
+      revision_id TEXT NOT NULL REFERENCES owner_revisions(revision_id),
+      source_namespace TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      bytes INTEGER NOT NULL CHECK(bytes>=0),
+      relative_path TEXT NOT NULL,
+      PRIMARY KEY(revision_id,source_namespace,asset_id))''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS owner_revision_pointer (
+      owner_uuid TEXT PRIMARY KEY,
+      revision_id TEXT NOT NULL REFERENCES owner_revisions(revision_id),
+      generation INTEGER NOT NULL CHECK(generation>0),
+      updated_us INTEGER NOT NULL)''');
+    await db.execute('''CREATE TABLE IF NOT EXISTS import_visibility (
+      source_namespace TEXT PRIMARY KEY REFERENCES claims(source_namespace),
+      fingerprint TEXT NOT NULL,
+      owner_uuid TEXT NOT NULL,
+      revision_id TEXT NOT NULL REFERENCES owner_revisions(revision_id),
+      operation_id TEXT NOT NULL UNIQUE REFERENCES claims(operation_id),
+      generation INTEGER NOT NULL CHECK(generation>0),
+      visible_us INTEGER NOT NULL)''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS owner_revisions_owner_state
+      ON owner_revisions(owner_uuid,state,created_us)''');
+    await db.execute('''CREATE INDEX IF NOT EXISTS import_visibility_owner
+      ON import_visibility(owner_uuid,visible_us)''');
+    for (final action in ['INSERT', 'UPDATE', 'DELETE']) {
+      final ref = action == 'DELETE' ? 'OLD' : 'NEW';
+      final protected = action == 'UPDATE'
+          ? "(SELECT state FROM owner_revisions WHERE revision_id=OLD.revision_id)!='preparing' OR "
+                "(SELECT state FROM owner_revisions WHERE revision_id=NEW.revision_id)!='preparing'"
+          : "(SELECT state FROM owner_revisions WHERE revision_id=$ref.revision_id)!='preparing'";
+      await db.execute(
+        '''CREATE TRIGGER IF NOT EXISTS revision_record_${action.toLowerCase()}_guard
+        BEFORE $action ON owner_revision_records
+        WHEN $protected
+        BEGIN SELECT RAISE(ABORT,'Verified owner revision is immutable'); END''',
+      );
+      await db.execute(
+        '''CREATE TRIGGER IF NOT EXISTS revision_asset_${action.toLowerCase()}_guard
+        BEFORE $action ON owner_revision_assets
+        WHEN $protected
+        BEGIN SELECT RAISE(ABORT,'Verified owner revision assets are immutable'); END''',
+      );
+    }
+    await db.execute(
+      '''CREATE TRIGGER IF NOT EXISTS owner_revision_identity_guard
+      BEFORE UPDATE ON owner_revisions
+      WHEN NEW.revision_id!=OLD.revision_id OR NEW.version!=OLD.version OR
+      NEW.owner_uuid!=OLD.owner_uuid OR NEW.base_revision_id IS NOT OLD.base_revision_id OR
+      NEW.source_revision!=OLD.source_revision OR NEW.source_fingerprint!=OLD.source_fingerprint OR
+      NEW.source_namespace!=OLD.source_namespace OR NEW.import_fingerprint!=OLD.import_fingerprint OR
+      NEW.plan_fingerprint!=OLD.plan_fingerprint OR NEW.record_count!=OLD.record_count OR
+      NEW.asset_count!=OLD.asset_count OR OLD.state='published' OR
+      (OLD.state='verified' AND NEW.evidence IS NOT OLD.evidence) OR
+      (OLD.state='verified' AND NEW.state!='published') OR
+      (OLD.state='preparing' AND NEW.state NOT IN ('preparing','verified'))
+      BEGIN SELECT RAISE(ABORT,'Owner revision identity/state conflict'); END''',
+    );
+    await db.execute(
+      '''CREATE TRIGGER IF NOT EXISTS owner_revision_pointer_target_insert
+      BEFORE INSERT ON owner_revision_pointer
+      WHEN NEW.generation!=1 OR NOT EXISTS(SELECT 1 FROM owner_revisions r WHERE r.revision_id=NEW.revision_id
+        AND r.owner_uuid=NEW.owner_uuid AND r.state='published')
+      BEGIN SELECT RAISE(ABORT,'Owner revision pointer target invalid'); END''',
+    );
+    await db.execute(
+      '''CREATE TRIGGER IF NOT EXISTS owner_revision_pointer_target_update
+      BEFORE UPDATE ON owner_revision_pointer
+      WHEN NOT EXISTS(SELECT 1 FROM owner_revisions r WHERE r.revision_id=NEW.revision_id
+        AND r.owner_uuid=NEW.owner_uuid AND r.state='published')
+      BEGIN SELECT RAISE(ABORT,'Owner revision pointer target invalid'); END''',
+    );
+    await db.execute(
+      '''CREATE TRIGGER IF NOT EXISTS owner_revision_pointer_identity_guard
+      BEFORE UPDATE ON owner_revision_pointer
+      WHEN NEW.owner_uuid!=OLD.owner_uuid OR NEW.generation!=OLD.generation+1
+      BEGIN SELECT RAISE(ABORT,'Owner revision pointer conflict'); END''',
+    );
+    await db.execute(
+      '''CREATE TRIGGER IF NOT EXISTS import_visibility_insert_guard
+      BEFORE INSERT ON import_visibility
+      WHEN NOT EXISTS(SELECT 1 FROM claims c WHERE c.source_namespace=NEW.source_namespace
+        AND c.operation_id=NEW.operation_id AND c.fingerprint=NEW.fingerprint
+        AND c.owner_uuid=NEW.owner_uuid AND c.state='completed') OR
+        NOT EXISTS(SELECT 1 FROM owner_revisions r WHERE r.revision_id=NEW.revision_id
+        AND r.owner_uuid=NEW.owner_uuid AND r.source_namespace=NEW.source_namespace
+        AND r.import_fingerprint=NEW.fingerprint AND r.state='published')
+      BEGIN SELECT RAISE(ABORT,'Import visibility evidence invalid'); END''',
+    );
+    await db.execute('''CREATE TRIGGER IF NOT EXISTS import_visibility_immutable
+      BEFORE UPDATE ON import_visibility
+      BEGIN SELECT RAISE(ABORT,'Import visibility is immutable'); END''');
+    await db.execute('''CREATE TRIGGER IF NOT EXISTS import_visibility_retained
+      BEFORE DELETE ON import_visibility
+      BEGIN SELECT RAISE(ABORT,'Import visibility is retained'); END''');
+  }
 }

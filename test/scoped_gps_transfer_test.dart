@@ -10,6 +10,8 @@ import 'package:driveit_project/services/gps_hive_transfer_sink.dart';
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/models/canonical_telemetry_point.dart';
 import 'package:driveit_project/services/drive_route_projection.dart';
+import 'package:driveit_project/services/drive_source_provenance.dart';
+import 'package:driveit_project/services/drive_source_provenance_repository.dart';
 
 void main() {
   late Directory root;
@@ -80,10 +82,32 @@ void main() {
     'session remains A after auth B; transfer retry and reopen keep exact destination',
     () async {
       final session = await coordinator.start();
+      final provenanceBefore =
+          (await sidecar.get('synthetic-journal', session.id))!
+              .provenance.sourceIdentity;
       await journal.stop(session.id, expectedSequence: 0);
       auth = b;
       final target = await sink(session.id);
       await coordinator.save(session.id, proposal(session.id), target);
+      expect(
+        store.read<Map>(a, 'drive_source_provenance_v1', session.id)?[
+          'sourceIdentity'
+        ],
+        provenanceBefore,
+      );
+      expect(
+        store
+            .read<DriveTelemetryRecord>(a, 'drive_telemetry', session.id)
+            ?.acquisitionMetadata['sourceIdentity'],
+        provenanceBefore,
+      );
+      expect(provenanceBefore, isNot(session.id));
+      final provenance = await OwnerScopedDriveSourceProvenanceRepository(
+        store,
+      ).readForDrive(session.id);
+      expect(provenance.status, DriveProvenanceStatus.proven);
+      expect(provenance.sourceIdentity, provenanceBefore);
+      expect(provenance.ownerScope, a.targetStore);
       await coordinator.save(session.id, proposal(session.id), target);
       expect(store.keys(a, 'drives'), [session.id]);
       await store.close();
@@ -92,6 +116,7 @@ void main() {
       final other = await OwnerScopedLocalStore.open(root: root.path, owner: b);
       try {
         expect(other.keys(b, 'drives'), isEmpty);
+        expect(other.keys(b, 'drive_source_provenance_v1'), isEmpty);
         expect(
           () => ScopedGpsTransferSink(
             other,
@@ -109,6 +134,51 @@ void main() {
       } finally {
         await other.close();
       }
+    },
+  );
+  test(
+    'legacy metadata stays unproven and incomplete evidence conflicts',
+    () async {
+      const driveId = 'legacy-drive';
+      await store.put(
+        a,
+        'drive_telemetry',
+        driveId,
+        DriveTelemetryRecord(
+          driveSessionId: driveId,
+          dataVersion: 1,
+          createdAt: DateTime.utc(2026),
+          points: const [],
+          acquisitionMetadata: const {'sessionId': driveId},
+        ),
+      );
+      final repository = OwnerScopedDriveSourceProvenanceRepository(store);
+      expect(
+        (await repository.readForDrive(driveId)).status,
+        DriveProvenanceStatus.unproven,
+      );
+
+      await store.put(
+        a,
+        'drive_source_provenance_v1',
+        driveId,
+        DriveSourceProvenance.unproven(ownerScope: a.targetStore).toMap(),
+      );
+      expect(
+        (await repository.readForDrive(driveId)).status,
+        DriveProvenanceStatus.unproven,
+      );
+
+      await store.put(a, 'drive_source_provenance_v1', driveId, {
+        ...DriveSourceProvenance.proven(
+          sourceIdentity: '11111111-1111-4111-8111-111111111111',
+          ownerScope: a.targetStore,
+        ).toMap(),
+      });
+      expect(
+        (await repository.readForDrive(driveId)).status,
+        DriveProvenanceStatus.conflict,
+      );
     },
   );
   test('no sidecar/journal receipts means cleanup forbidden', () async {

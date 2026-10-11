@@ -1,8 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:hive/src/hive_impl.dart';
+// SharedPreferences is the plugin's durable backing store for foreground-task data.
+// ignore: depend_on_referenced_packages
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/services/local_source_writer_fence.dart';
@@ -123,15 +129,29 @@ void main() {
       final handle = await boot();
       final session = await handle.gps.start(startNative: (_, _) async {});
       final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
-      final recovered = await OwnedForegroundBootstrap.decode(
-        descriptor.encode(),
+      final binding = await handle.gps.requireBinding(session.id);
+      final handoff = descriptor.forSession(
+        session,
+        binding,
+        ownerEpoch: handle.owner.lease.epoch,
       );
+      final recovered = await OwnedForegroundBootstrap.decode(handoff.encode());
       expect(
-        (await recovered.verify(
+        (await recovered.verifyHandoff(
           databaseFactoryFfiNoIsolate,
           session.id,
         )).owner.userId,
         a,
+      );
+      expect(recovered.handoff!.sessionId, session.id);
+      expect(
+        recovered.handoff!.sourceIdentity,
+        binding.provenance.sourceIdentity,
+      );
+      expect(recovered.handoff!.targetStore, binding.targetStore);
+      await expectLater(
+        recovered.verifyHandoff(databaseFactoryFfiNoIsolate, 'different'),
+        throwsStateError,
       );
       await expectLater(
         handle.owner.authorizeIdentityChange(() async => auth.emit(b)),
@@ -147,7 +167,7 @@ void main() {
       await handle.owner.settled;
       expect(handle.owner.state, LocalOwnerState.blocked);
       expect(
-        (await recovered.verify(
+        (await recovered.verifyHandoff(
           databaseFactoryFfiNoIsolate,
           session.id,
         )).owner.userId,
@@ -155,6 +175,111 @@ void main() {
       );
       await expectLater(handle.gps.transfer(session.id, {}), throwsStateError);
       expect(await handle.gps.journal.session(session.id), isNotNull);
+      await handle.closeAfterProducerDetached();
+    },
+  );
+  test(
+    'controlled foreground start is explicitly guest-scoped when selected',
+    () async {
+      auth.userId = null;
+      final handle = await boot();
+      String? handedOffSource;
+      String? handedOffOwner;
+      final session = await handle.gps.start(
+        startNative: (session, binding) async {
+          final descriptor = await OwnedForegroundBootstrap.prepareForTesting(
+            root,
+          );
+          final encoded = descriptor
+              .forSession(
+                session,
+                binding,
+                ownerEpoch: handle.owner.lease.epoch,
+              )
+              .encode();
+          final decoded = await OwnedForegroundBootstrap.decode(encoded);
+          final verified = await decoded.verifyHandoff(
+            databaseFactoryFfiNoIsolate,
+            session.id,
+          );
+          handedOffSource = verified.provenance.sourceIdentity;
+          handedOffOwner = verified.owner.wireKind;
+        },
+      );
+      expect(handedOffOwner, 'guest');
+      expect(handedOffSource, matches(RegExp(r'^[0-9a-f-]{36}$')));
+      expect(
+        (await handle.gps.requireBinding(session.id)).owner.kind,
+        GpsOwnerKind.guest,
+      );
+      await handle.closeAfterProducerDetached();
+    },
+  );
+  test(
+    'failed native start retains one bound identity for recovery retry',
+    () async {
+      final handle = await boot();
+      late String originalSource;
+      late String originalSession;
+      await expectLater(
+        handle.gps.start(
+          startNative: (session, binding) async {
+            originalSession = session.id;
+            originalSource = binding.provenance.sourceIdentity!;
+            throw StateError('synthetic native start failure');
+          },
+        ),
+        throwsStateError,
+      );
+      expect(await handle.gps.journal.recoverableSessions(), hasLength(1));
+      final recovered = await handle.gps.requireBinding(originalSession);
+      expect(recovered.provenance.sourceIdentity, originalSource);
+      var secondStartCalls = 0;
+      await expectLater(
+        handle.gps.start(
+          startNative: (_, _) async {
+            secondStartCalls++;
+          },
+        ),
+        throwsStateError,
+      );
+      expect(secondStartCalls, 0);
+      expect(await handle.gps.journal.recoverableSessions(), hasLength(1));
+      await handle.closeAfterProducerDetached();
+    },
+  );
+  test(
+    'handoff sidecar contradiction fails closed and retains journal',
+    () async {
+      final handle = await boot();
+      final session = await handle.gps.start(startNative: (_, _) async {});
+      final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
+      final binding = await handle.gps.requireBinding(session.id);
+      final row =
+          jsonDecode(
+                descriptor
+                    .forSession(
+                      session,
+                      binding,
+                      ownerEpoch: handle.owner.lease.epoch,
+                    )
+                    .encode(),
+              )
+              as Map<String, dynamic>;
+      final handoff = row['handoff'] as Map<String, dynamic>;
+      handoff['sourceIdentity'] = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      final contradictory = await OwnedForegroundBootstrap.decode(
+        jsonEncode(row),
+      );
+      await expectLater(
+        contradictory.verifyHandoff(databaseFactoryFfiNoIsolate, session.id),
+        throwsStateError,
+      );
+      expect(await handle.gps.journal.session(session.id), isNotNull);
+      expect(
+        (await handle.gps.requireBinding(session.id)).provenance.sourceIdentity,
+        binding.provenance.sourceIdentity,
+      );
       await handle.closeAfterProducerDetached();
     },
   );
@@ -216,6 +341,78 @@ void main() {
         );
       } finally {
         await ForegroundService.detachForTesting(handle.gps);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+        await handle.closeAfterProducerDetached();
+      }
+    },
+  );
+  test(
+    'public ForegroundService.start persists owner handoff before native start',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final handle = await boot();
+      const channel = MethodChannel('flutter_foreground_task/methods');
+      final calls = <String>[];
+      int? callbackHandle;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call.method);
+            if (call.method == 'isRunningService') return false;
+            if (call.method == 'startService') {
+              callbackHandle =
+                  (call.arguments as Map<Object?, Object?>)['callbackHandle']
+                      as int?;
+              return null;
+            }
+            return null;
+          });
+      final wasSkippingCheck = FlutterForegroundTask.skipServiceResponseCheck;
+      FlutterForegroundTask.skipServiceResponseCheck = true;
+      ForegroundService.attachForTesting(
+        handle.gps,
+        await OwnedForegroundBootstrap.prepareForTesting(root),
+      );
+      try {
+        await ForegroundService.init();
+        final session = await ForegroundService.start();
+        expect(calls, contains('startService'));
+        final prefs = await SharedPreferences.getInstance();
+        final encoded = prefs.getString(
+          'com.pravera.flutter_foreground_task.prefs.${OwnedForegroundBootstrap.preferenceKey}',
+        );
+        expect(encoded, isNotNull);
+        final handoff = await OwnedForegroundBootstrap.decode(encoded!);
+        expect(handoff.handoff!.sessionId, session.id);
+        expect(
+          (await handoff.verifyHandoff(
+            databaseFactoryFfiNoIsolate,
+            session.id,
+          )).owner.userId,
+          a,
+        );
+        final firstSource = handoff.handoff!.sourceIdentity;
+        await ForegroundService.resumeRecording();
+        final afterResume = await SharedPreferences.getInstance();
+        final resumed = await OwnedForegroundBootstrap.decode(
+          afterResume.getString(
+            'com.pravera.flutter_foreground_task.prefs.${OwnedForegroundBootstrap.preferenceKey}',
+          )!,
+        );
+        expect(resumed.handoff!.sessionId, session.id);
+        expect(resumed.handoff!.sourceIdentity, firstSource);
+        expect(calls.where((method) => method == 'startService').length, 2);
+        expect(
+          callbackHandle,
+          PluginUtilities.getCallbackHandle(ownedStartCallback)?.toRawHandle(),
+        );
+        await handle.gps.journal.stop(session.id, expectedSequence: 0);
+      } finally {
+        if (await FlutterForegroundTask.isRunningService) {
+          await FlutterForegroundTask.stopService();
+        }
+        await ForegroundService.detachForTesting(handle.gps);
+        FlutterForegroundTask.skipServiceResponseCheck = wasSkippingCheck;
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(channel, null);
         await handle.closeAfterProducerDetached();

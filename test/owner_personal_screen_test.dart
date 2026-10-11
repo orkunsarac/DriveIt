@@ -18,6 +18,7 @@ import 'package:driveit_project/widgets/local_owner_view.dart';
 import 'package:driveit_project/widgets/owner_personal_navigator.dart';
 import 'package:driveit_project/features/world_publish/segments/planet_publication_section.dart';
 import 'package:driveit_project/features/world_publish/segments/planet_segment.dart';
+import 'package:driveit_project/features/drive_poster/poster_screens.dart';
 import 'local_owner_integration_test.dart' show TestAuth, a, b;
 import 'planet_segment_test.dart' show fixture;
 
@@ -278,7 +279,7 @@ void main() {
   });
 
   testWidgets(
-    'unfinished poster route is closed, never builds the legacy screen',
+    'poster route is owner scoped and never builds the legacy screen',
     (tester) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -293,10 +294,8 @@ void main() {
         tester.element(find.byType(HomeScreen)),
       ).pushNamed('/posters');
       await tester.pumpAndSettle();
-      expect(
-        find.text('Kişisel veri erişimi hazır değil. Veriler korunuyor.'),
-        findsOneWidget,
-      );
+      expect(find.byType(PosterCenterScreen), findsOneWidget);
+      expect(find.text('Henüz poster oluşturabileceğin bir sürüş yok.'), findsOneWidget);
       expect(find.text('legacy'), findsNothing);
       expect(tester.takeException(), null);
     },

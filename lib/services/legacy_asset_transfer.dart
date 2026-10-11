@@ -79,9 +79,20 @@ class OwnerAssetTransfer {
   int largestChunk = 0;
 
   static bool within(String root, String candidate) {
-    final base = Platform.isWindows ? root.toLowerCase() : root;
-    final file = Platform.isWindows ? candidate.toLowerCase() : candidate;
-    return file.startsWith('$base${Platform.pathSeparator}');
+    // Dart/Android and Windows APIs can surface the same absolute path with
+    // different separator spellings. Normalize separators before doing a
+    // segment-boundary comparison; a plain prefix check would admit sibling
+    // paths such as "owner-other".
+    String normalize(String value) => value.replaceAll('\\', '/');
+    final normalizedRoot = normalize(root).replaceFirst(RegExp(r'/+$'), '');
+    final normalizedCandidate = normalize(candidate);
+    final base = Platform.isWindows
+        ? normalizedRoot.toLowerCase()
+        : normalizedRoot;
+    final file = Platform.isWindows
+        ? normalizedCandidate.toLowerCase()
+        : normalizedCandidate;
+    return file.startsWith('$base/');
   }
 
   static void validatePath(String path) {
@@ -99,7 +110,34 @@ class OwnerAssetTransfer {
   }
 
   /// Reject links in every existing component, not only the final filename.
-  static Future<void> noLinks(String path) async {
+  static Future<void> noLinks(String path, {String? trustedRoot}) async {
+    if (trustedRoot != null) {
+      final root = Directory(trustedRoot).absolute.path;
+      if (await FileSystemEntity.type(root, followLinks: false) ==
+          FileSystemEntityType.link) {
+        throw const ImportFailure('unsafe_symlink');
+      }
+      final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+      var current = File(path).absolute.path;
+      bool isRoot(String value) => Platform.isWindows
+          ? value.toLowerCase() == canonicalRoot.toLowerCase()
+          : value == canonicalRoot;
+      if (!within(canonicalRoot, current) && current != canonicalRoot) {
+        throw const ImportFailure('unsafe_path');
+      }
+      while (true) {
+        if (await FileSystemEntity.type(current, followLinks: false) ==
+            FileSystemEntityType.link) {
+          throw const ImportFailure('unsafe_symlink');
+        }
+        if (isRoot(current)) return;
+        final parent = Directory(current).parent.path;
+        if (parent == current || !within(canonicalRoot, current)) {
+          throw const ImportFailure('unsafe_path');
+        }
+        current = parent;
+      }
+    }
     var current = path;
     while (true) {
       if (await FileSystemEntity.type(current, followLinks: false) ==

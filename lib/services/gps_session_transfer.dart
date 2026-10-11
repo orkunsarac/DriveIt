@@ -16,6 +16,13 @@ abstract interface class GpsTransferSink {
   Future<void> flush();
 }
 
+/// Optional contract used only by controlled owner-scoped transfers. Legacy
+/// sinks and historical records do not acquire identity by inference.
+abstract interface class ProvenanceGpsTransferSink implements GpsTransferSink {
+  Future<String?> readSourceIdentity(String id);
+  Future<void> persistSourceIdentity(String id, String sourceIdentity);
+}
+
 /// SQLite is the durable recovery authority. Independent Hive boxes are NOT a
 /// transaction: a durable intent, stable ID, read-back and verification receipt
 /// make partial writes restartable. Never deletes either source or partial sink.
@@ -26,14 +33,26 @@ class GpsSessionTransfer {
   static final Map<String, Future<Map<String, dynamic>>> _inFlight = {};
   Future<Map<String, dynamic>> save(
     String sessionId,
-    Map<String, dynamic> proposed,
-  ) {
+    Map<String, dynamic> proposed, {
+    String? sourceIdentity,
+    Future<void> Function(Map<String, dynamic>)? beforeAcknowledgement,
+  }) {
+    if (sourceIdentity != null &&
+        (sink is! ProvenanceGpsTransferSink || !_isUuid(sourceIdentity))) {
+      throw StateError('Provenance transfer contract unavailable');
+    }
     final key = '${store.db.path}:$sessionId';
     return _inFlight.putIfAbsent(
       key,
-      () => _save(sessionId, proposed).whenComplete(() {
-        _inFlight.remove(key);
-      }),
+      () =>
+          _save(
+            sessionId,
+            proposed,
+            sourceIdentity: sourceIdentity,
+            beforeAcknowledgement: beforeAcknowledgement,
+          ).whenComplete(() {
+            _inFlight.remove(key);
+          }),
     );
   }
 
@@ -45,8 +64,10 @@ class GpsSessionTransfer {
 
   Future<Map<String, dynamic>> _save(
     String id,
-    Map<String, dynamic> proposed,
-  ) async {
+    Map<String, dynamic> proposed, {
+    String? sourceIdentity,
+    Future<void> Function(Map<String, dynamic>)? beforeAcknowledgement,
+  }) async {
     if (proposed['id'] != id) throw GpsFailure(GpsErrorCode.recovery);
     final priorIntent = await store.transferFor(id);
     final priorDrive = await sink.readDrive(id);
@@ -109,6 +130,12 @@ class GpsSessionTransfer {
     if (telemetry != null && !_samePoints(points, telemetry)) {
       throw GpsFailure(GpsErrorCode.recovery);
     }
+    if (sourceIdentity != null &&
+        telemetry != null &&
+        await (sink as ProvenanceGpsTransferSink).readSourceIdentity(id) !=
+            sourceIdentity) {
+      throw StateError('Existing telemetry provenance conflicts');
+    }
     if (telemetry == null) {
       final session = (await store.session(id))!;
       await sink.writeTelemetry(id, points, {
@@ -118,16 +145,34 @@ class GpsSessionTransfer {
         'startedAtMicros': session.startedAt.microsecondsSinceEpoch,
         'stopRequestedAtMicros': session.stoppedAt?.microsecondsSinceEpoch,
         'events': await store.events(id),
+        if (sourceIdentity != null) ...{
+          'sourceIdentity': sourceIdentity,
+          'sourceIdentityVersion': 1,
+          'sourceNamespace': 'drive_source_v1',
+          'provenanceStatus': 'proven',
+        },
       });
     }
     if (existing == null) await sink.writeDrive(id, manifest);
+    if (sourceIdentity != null) {
+      await (sink as ProvenanceGpsTransferSink).persistSourceIdentity(
+        id,
+        sourceIdentity,
+      );
+    }
     await sink.flush();
-    if (!await verify(id)) throw GpsFailure(GpsErrorCode.recovery);
+    if (!await verify(id, sourceIdentity: sourceIdentity)) {
+      throw GpsFailure(GpsErrorCode.recovery);
+    }
+    // Controlled finalization can keep the stopped journal recoverable until
+    // its secondary owner-local consumers are durable. Legacy callers have no
+    // hook and retain precisely the existing acknowledgement behavior.
+    await beforeAcknowledgement?.call(manifest);
     await store.acknowledgeSaved(id, id, verified: true);
     return manifest;
   }
 
-  Future<bool> verify(String id) async {
+  Future<bool> verify(String id, {String? sourceIdentity}) async {
     final receipt = await store.transferFor(id);
     if (receipt == null) return false;
     final drive = await sink.readDrive(receipt['drive_id'] as String);
@@ -137,7 +182,13 @@ class GpsSessionTransfer {
         telemetry != null &&
         jsonEncode(drive) == receipt['manifest'] &&
         journal.length == receipt['final_sequence'] &&
-        _samePoints(journal.map((p) => p.point).toList(), telemetry);
+        _samePoints(journal.map((p) => p.point).toList(), telemetry) &&
+        (sourceIdentity == null ||
+            (sink is ProvenanceGpsTransferSink &&
+                await (sink as ProvenanceGpsTransferSink).readSourceIdentity(
+                      receipt['drive_id'] as String,
+                    ) ==
+                    sourceIdentity));
   }
 
   static bool _samePoints(
@@ -147,4 +198,8 @@ class GpsSessionTransfer {
       a.length == b.length &&
       jsonEncode(a.map(pointContent).toList()) ==
           jsonEncode(b.map(pointContent).toList());
+
+  static bool _isUuid(String value) => RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+  ).hasMatch(value);
 }

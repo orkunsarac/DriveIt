@@ -29,10 +29,19 @@ class OwnedNativeProbe extends NativeGpsProbeTask {
       final journal = await descriptor.openJournal(databaseFactory);
       try {
         final session = (await journal.active())!;
-        final owner = await descriptor.verify(databaseFactory, session.id);
+        final owner = await descriptor.verifyHandoff(
+          databaseFactory,
+          session.id,
+        );
         if (owner.owner.userId != 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa') {
           throw StateError('Synthetic fixed owner mismatch');
         }
+        FlutterForegroundTask.sendDataToMain({
+          'ownedHandoffVerified': true,
+          'sessionId': owner.sessionId,
+          'sourceIdentity': owner.provenance.sourceIdentity,
+          'owner': owner.owner.userId,
+        });
       } finally {
         await journal.close();
       }
@@ -83,6 +92,15 @@ void main() {
             ownerAtStart: () =>
                 GpsOwner.account('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
           ).start();
+          final binding = (await sidecar.get(
+            descriptor.journalId,
+            session.id,
+          ))!;
+          final sessionDescriptor = descriptor.forSession(
+            session,
+            binding,
+            ownerEpoch: 1,
+          );
           FlutterForegroundTask.initCommunicationPort();
           FlutterForegroundTask.init(
             androidNotificationOptions: AndroidNotificationOptions(
@@ -97,7 +115,7 @@ void main() {
           expect(await FlutterForegroundTask.isRunningService, false);
           await FlutterForegroundTask.saveData(
             key: OwnedForegroundBootstrap.preferenceKey,
-            value: descriptor.encode(),
+            value: sessionDescriptor.encode(),
           );
           await FlutterForegroundTask.saveData(
             key: 'gps_native_probe_path',
@@ -105,11 +123,21 @@ void main() {
           );
           for (var round = 1; round <= 2; round++) {
             final done = Completer<Map>();
+            var verifiedHandoff = false;
             void receive(Object data) {
-              if (data is Map &&
-                  data.containsKey('gpsProbeDone') &&
-                  !done.isCompleted) {
-                done.complete(data);
+              if (data is Map) {
+                if (data['ownedHandoffVerified'] == true) {
+                  expect(data['sessionId'], session.id);
+                  expect(
+                    data['sourceIdentity'],
+                    binding.provenance.sourceIdentity,
+                  );
+                  expect(data['owner'], 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+                  verifiedHandoff = true;
+                }
+                if (data.containsKey('gpsProbeDone') && !done.isCompleted) {
+                  done.complete({...data, 'handoffVerified': verifiedHandoff});
+                }
               }
             }
 
@@ -132,6 +160,7 @@ void main() {
                 const Duration(seconds: 45),
               );
               expect(response['gpsProbeDone'], true);
+              expect(response['handoffVerified'], true);
               expect(response['sequence'], round * 60);
               expect(
                 await FlutterForegroundTask.stopService(),
@@ -149,7 +178,10 @@ void main() {
             List.generate(120, (i) => i + 1),
           );
           expect(
-            (await descriptor.verify(databaseFactory, session.id)).owner.userId,
+            (await sessionDescriptor.verifyHandoff(
+              databaseFactory,
+              session.id,
+            )).owner.userId,
             'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
           );
           expect(await journal.db.getVersion(), 3);

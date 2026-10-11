@@ -31,6 +31,9 @@ import '../features/my_world/services/world_pending_job_processor.dart';
 import '../features/my_world/services/world_index_mutation_planner.dart';
 import '../features/my_world/config/my_world_rules.dart';
 import '../features/my_world/models/world_trace_detail.dart';
+import 'owner_revision_models.dart';
+import 'owned_drive_finalization.dart';
+import 'gps_session_transfer.dart';
 
 /// Auth boundary exposes only a stable UUID; never a Session/token/profile.
 abstract interface class LocalOwnerAuth {
@@ -84,14 +87,35 @@ class LocalOwnerLease implements PosterOperationBoundary {
     return _store.keys(owner, group);
   }
 
-  List<DriveSession> drives() => keys(
-    'drives',
-  ).map((id) => read<DriveSession>('drives', id)!).toList(growable: false);
+  /// Snapshot bytes for the dormant revision planner. Callers must provide
+  /// evidence-backed provenance; an unresolved row remains ambiguous and will
+  /// be rejected by `OwnerRevisionRepository`.
+  List<OwnerRevisionRecord> revisionRecords({
+    required OwnerRevisionProvenanceResolver provenance,
+  }) {
+    requireCurrent();
+    return _store.revisionRecords(owner, provenance: provenance);
+  }
+
+  List<DriveSession> drives() => keys('drives')
+      .where(
+        (id) =>
+            _store.writeDurable(OwnedDriveFinalization.group, id) &&
+            (read<Map>(OwnedDriveFinalization.group, id)?['state'] == null ||
+                read<Map>(OwnedDriveFinalization.group, id)?['state'] ==
+                    'completed'),
+      )
+      .map((id) => read<DriveSession>('drives', id)!)
+      .toList(growable: false);
 
   /// A caller-provided DriveSession is not ownership evidence.
   DriveSession requireDrive(String id) {
     final drive = read<DriveSession>('drives', id);
-    if (drive == null || drive.id != id) {
+    final finalization = read<Map>(OwnedDriveFinalization.group, id);
+    if (drive == null ||
+        drive.id != id ||
+        !_store.writeDurable(OwnedDriveFinalization.group, id) ||
+        (finalization != null && finalization['state'] != 'completed')) {
       throw StateError('Owner drive unavailable');
     }
     return drive;
@@ -379,7 +403,9 @@ class LocalOwnerLease implements PosterOperationBoundary {
 
   /// Explicit owner-pinned worker. A matching dependency is never invented and
   /// cannot silently fall back to global/real network configuration.
-  Future<void> drainWorldJobs() => run(() async {
+  Future<void> drainWorldJobs() => run(_drainWorldJobs);
+
+  Future<void> _drainWorldJobs() async {
     for (final key
         in _store
             .keys(owner, 'local_lifecycle_v1')
@@ -431,7 +457,7 @@ class LocalOwnerLease implements PosterOperationBoundary {
       drainScope: _store.path,
     ).drain();
     _worldChanged();
-  });
+  }
 
   Future<void> enqueueWorldDrive(String id) => run(() async {
     final source = _store.repositories(owner).source(id);
@@ -489,6 +515,14 @@ class LocalOwnerLease implements PosterOperationBoundary {
     requireCurrent();
     if (!identical(this, current)) throw StateError('Owner view revoked');
     _store.requireOwner(binding.owner);
+    final finalization = OwnedDriveFinalization(
+      store: _store,
+      binding: binding,
+      requireCurrent: requireCurrent,
+      processWorld: _drainWorldJobs,
+    );
+    await finalization.prepare();
+    final sink = ScopedGpsTransferSink(_store, binding);
     await OwnedGpsSessionCoordinator(
       journal: journal,
       ownership: ownership,
@@ -497,9 +531,32 @@ class LocalOwnerLease implements PosterOperationBoundary {
     ).save(
       binding.sessionId!,
       proposed,
-      ScopedGpsTransferSink(_store, binding),
+      sink,
+      beforeAcknowledgement: finalization.derive,
     );
+    requireCurrent();
+    if (!await ownership.verified(binding.journalId, binding.sessionId!) ||
+        !await GpsSessionTransfer(journal, sink).verify(
+          binding.sessionId!,
+          sourceIdentity: binding.provenance.sourceIdentity,
+        )) {
+      throw StateError('Owner save receipts incomplete');
+    }
+    await finalization.complete();
   });
+
+  List<String> pendingDriveFinalizations() {
+    requireCurrent();
+    return keys(OwnedDriveFinalization.group)
+        .whereType<String>()
+        .where(
+          (id) =>
+              read<Map>(OwnedDriveFinalization.group, id)?['state'] !=
+                  'completed' ||
+              !_store.writeDurable(OwnedDriveFinalization.group, id),
+        )
+        .toList();
+  }
 }
 
 /// Dormant, dependency-injected lifecycle. OFF does not touch Auth, open boxes,

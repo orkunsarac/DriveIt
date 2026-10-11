@@ -10,6 +10,9 @@ import 'package:sqflite/sqflite.dart';
 import 'local_owner_gps_bridge.dart';
 import 'owned_foreground_bootstrap.dart';
 import 'owned_drive_transfer_route.dart';
+import 'gps_session_ownership.dart';
+import 'local_owner_lifecycle.dart';
+import 'owned_drive_finalization.dart';
 
 @pragma('vm:entry-point')
 void ownedStartCallback() {
@@ -24,7 +27,7 @@ void ownedStartCallback() {
     DriveTaskHandler(
       openJournal: () async => (await descriptor).openJournal(databaseFactory),
       verifySessionOwner: (id) async {
-        await (await descriptor).verify(databaseFactory, id);
+        await (await descriptor).verifyHandoff(databaseFactory, id);
       },
     ),
   );
@@ -39,7 +42,53 @@ class ForegroundService {
   static LocalOwnerGpsBridge? _ownedBridge;
   static OwnedForegroundBootstrap? _ownedDescriptor;
   static OwnedDriveTransfer? _ownedTransfer;
+  static void Function()? _ownedStartCallbackForTesting;
   static LocalOwnerGpsBridge? get controlledOwnerBridge => _ownedBridge;
+
+  /// A controlled screen cannot reach the legacy static journal by omission.
+  static void requireOwnerLease(LocalOwnerLease lease) {
+    lease.requireCurrent();
+    final bridge = _ownedBridge;
+    if (bridge == null ||
+        _ownedDescriptor == null ||
+        !identical(bridge.runtime.lease, lease)) {
+      throw StateError('Controlled foreground owner dependency missing');
+    }
+  }
+
+  static Future<void> verifyOwnerSession(
+    LocalOwnerLease lease,
+    String id,
+  ) async {
+    requireOwnerLease(lease);
+    final binding = await _ownedBridge!.requireBinding(id);
+    requireOwnerLease(lease);
+    if (binding.owner.targetStore != lease.owner.targetStore ||
+        !binding.provenance.isProven) {
+      throw StateError('GPS recovery owner evidence mismatch');
+    }
+  }
+
+  /// Repairs only this lease's unfinished finalizations; never scans legacy
+  /// sources, reads a new Auth destination, or starts a native GPS producer.
+  static Future<void> reconcileOwnerSaves(LocalOwnerLease lease) async {
+    requireOwnerLease(lease);
+    final bridge = _ownedBridge!;
+    for (final id in lease.pendingDriveFinalizations()) {
+      await verifyOwnerSession(lease, id);
+      final receipt = await bridge.journal.transferFor(id);
+      if (receipt == null) {
+        throw StateError('Finalization transfer intent missing');
+      }
+      await bridge.transfer(
+        id,
+        Map<String, dynamic>.from(
+          jsonDecode(receipt['manifest'] as String) as Map,
+        ),
+      );
+      requireOwnerLease(lease);
+    }
+  }
 
   /// Explicit synthetic bootstrap only; release cannot select this callback.
   static void attachForTesting(
@@ -63,6 +112,21 @@ class ForegroundService {
     _ownedTransfer = transfer;
   }
 
+  /// Allows an Android integration test to exercise the real UI/startService
+  /// path while using a deterministic headless producer. This is available
+  /// only after a synthetic owner bridge is attached in a debug build.
+  @visibleForTesting
+  static void installOwnedStartCallbackForTesting(void Function() callback) {
+    final bridge = _ownedBridge;
+    if (!kDebugMode || bridge == null || !bridge.runtime.gate.enabled) {
+      throw StateError('Synthetic foreground callback requires test owner');
+    }
+    if (_ownedStartCallbackForTesting != null) {
+      throw StateError('Synthetic foreground callback already installed');
+    }
+    _ownedStartCallbackForTesting = callback;
+  }
+
   static Future<void> detachForTesting(LocalOwnerGpsBridge bridge) async {
     if (!identical(_ownedBridge, bridge) ||
         await FlutterForegroundTask.isRunningService) {
@@ -72,6 +136,7 @@ class ForegroundService {
     _ownedDescriptor = null;
     OwnedDriveTransferRoute.detachForTesting(_ownedTransfer!);
     _ownedTransfer = null;
+    _ownedStartCallbackForTesting = null;
   }
 
   static Future<GpsSessionStore>? _journal;
@@ -110,11 +175,15 @@ class ForegroundService {
     }
     final owned = _ownedBridge;
     if (owned != null) {
+      if (owned.runtime.lease.pendingDriveFinalizations().isNotEmpty) {
+        throw StateError('Pending owner save must be reconciled first');
+      }
       return owned.start(
-        startNative: (session, _) async {
-          await FlutterForegroundTask.saveData(
-            key: OwnedForegroundBootstrap.preferenceKey,
-            value: _ownedDescriptor!.encode(),
+        startNative: (session, binding) async {
+          await _persistOwnerHandoff(
+            session,
+            binding,
+            ownerEpoch: owned.runtime.lease.epoch,
           );
           await _resetCounters();
           await _startNative();
@@ -127,6 +196,23 @@ class ForegroundService {
     return session;
   }
 
+  static Future<void> _persistOwnerHandoff(
+    GpsSession session,
+    GpsOwnershipManifest binding, {
+    required int ownerEpoch,
+  }) async {
+    final descriptor = _ownedDescriptor;
+    if (descriptor == null) throw StateError('Owner handoff unavailable');
+    final encoded = descriptor
+        .forSession(session, binding, ownerEpoch: ownerEpoch)
+        .encode();
+    final saved = await FlutterForegroundTask.saveData(
+      key: OwnedForegroundBootstrap.preferenceKey,
+      value: encoded,
+    );
+    if (!saved) throw StateError('Owner handoff persistence failed');
+  }
+
   static Future<void> _resetCounters() async {
     await FlutterForegroundTask.saveData(key: 'driveit_stop_count', value: 0);
     await FlutterForegroundTask.saveData(
@@ -136,13 +222,19 @@ class ForegroundService {
   }
 
   static Future<void> _startNative() async {
+    // External Auth events revoke the owner lease synchronously. Check at the
+    // last possible point before asking Android to create the producer.
+    final owned = _ownedBridge;
+    if (owned != null) owned.runtime.lease.requireCurrent();
     final result = await FlutterForegroundTask.startService(
       serviceId: 100,
       notificationTitle: 'DriveIt - Sürüş devam ediyor',
       notificationText: 'Konum ve rota arka planda kaydediliyor',
       notificationInitialRoute: '/',
       serviceTypes: const [ForegroundServiceTypes.location],
-      callback: _ownedBridge == null ? startCallback : ownedStartCallback,
+      callback: owned == null
+          ? startCallback
+          : (_ownedStartCallbackForTesting ?? ownedStartCallback),
     );
     if (result is ServiceRequestFailure) {
       final session = await activeSession();
@@ -168,6 +260,7 @@ class ForegroundService {
             throw StateError('Recovery owner mismatch');
           }
           lease.requireCurrent();
+          await _persistOwnerHandoff(session, binding, ownerEpoch: lease.epoch);
           await _startNative();
         });
       } else {
@@ -254,6 +347,10 @@ class ForegroundService {
         if (unfinished.isNotEmpty) throw GpsFailure(GpsErrorCode.recovery);
       }
       if (session != null) await store.last(session.id);
+      final owned = _ownedBridge;
+      if (owned != null && session != null) {
+        await verifyOwnerSession(owned.runtime.lease, session.id);
+      }
       return session;
     },
     legacyActive: () async =>
@@ -298,9 +395,12 @@ class ForegroundService {
       final binding = await owned.requireBinding(sessionId);
       final lease = owned.runtime.lease;
       if (lease.owner.targetStore != binding.targetStore ||
+          lease.pendingDriveFinalizations().contains(driveId) ||
           !await owned.ownership.verified(owned.journalId, sessionId) ||
           lease.read('drives', driveId) == null ||
-          lease.read('drive_telemetry', driveId) == null) {
+          lease.read('drive_telemetry', driveId) == null ||
+          lease.read<Map>(OwnedDriveFinalization.group, driveId)?['state'] !=
+              'completed') {
         throw GpsFailure(GpsErrorCode.recovery);
       }
     }

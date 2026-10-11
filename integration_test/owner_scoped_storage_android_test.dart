@@ -61,7 +61,7 @@ void main() {
       await coordinator.save(session.id, proposal, sink);
       await coordinator.save(session.id, proposal, sink);
       expect(await journal.db.getVersion(), 3);
-      expect(await sidecar.db.getVersion(), 1);
+      expect(await sidecar.db.getVersion(), 3);
       expect(
         await sidecar.verified('synthetic-native-journal', session.id),
         true,

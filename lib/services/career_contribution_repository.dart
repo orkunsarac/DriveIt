@@ -6,6 +6,7 @@ import '../models/drive_score_record.dart';
 import 'local_source_bundle.dart';
 import 'drive_time_analysis.dart';
 import 'career_statistics_service.dart';
+import 'drive_source_provenance.dart';
 
 /// Append-only contribution identities. No GPS geometry is kept in Career.
 /// Legacy activation is explicit, conservative, and never runs at startup.
@@ -31,7 +32,13 @@ class CareerContributionRepository {
     final prior = _queues[key] ?? Future<void>.value();
     final future = prior.then((_) async {
       source.validate();
-      final id = 'drive:${source.drive.id}';
+      final provenance = source.sourceProvenance;
+      if (provenance?.status == DriveProvenanceStatus.conflict) {
+        throw StateError('Career source provenance conflict');
+      }
+      final id = provenance?.isProven == true
+          ? 'source:${provenance!.sourceIdentity}'
+          : 'drive:${source.drive.id}';
       final content = _content(source, legacy: legacy);
       final raw = box.get(id) as String?;
       if (raw != null) {
@@ -53,7 +60,11 @@ class CareerContributionRepository {
       // once as a separate append-only record, without rewriting contribution
       // metrics or counting the drive again.
       if (source.score != null) {
-        await _attachScore(source.score!);
+        if (provenance?.isProven == true) {
+          await _attachProvenScore(source.score!, provenance!.sourceIdentity!);
+        } else {
+          await _attachScore(source.score!);
+        }
       }
       await box.flush();
     });
@@ -118,6 +129,29 @@ class CareerContributionRepository {
     await box.flush();
   }
 
+  Future<void> _attachProvenScore(
+    DriveScoreRecord record,
+    String sourceIdentity,
+  ) async {
+    final key = 'sourceScore:$sourceIdentity:v${record.algorithmVersion}';
+    final score = jsonEncode({
+      'sourceIdentity': sourceIdentity,
+      'driveId': record.driveId,
+      'algorithm': record.algorithmVersion,
+      'telemetryVersion': record.telemetryDataVersion,
+      'calculatedAt': record.calculatedAt.toIso8601String(),
+      'total': record.totalScore,
+      'confidence': record.overallConfidence,
+      'categories': record.categories.map((c) => c.toMap()).toList(),
+    });
+    final previous = box.get(key) as String?;
+    if (previous != null && previous != score) {
+      throw StateError('Immutable Career source score conflict');
+    }
+    if (previous == null) await box.put(key, score);
+    await box.flush();
+  }
+
   String _content(LocalSourceBundle source, {required bool legacy}) {
     final m = source.toMap();
     final drive = Map<String, dynamic>.from(m['drive']);
@@ -130,6 +164,8 @@ class CareerContributionRepository {
     return jsonEncode({
       'version': 1,
       'useReliableMetrics': !legacy,
+      if (source.sourceProvenance != null)
+        'sourceProvenance': source.sourceProvenance!.toMap(),
       'bundle': {
         ...m,
         'drive': drive,
@@ -224,14 +260,43 @@ class CareerContributionRepository {
 
   bool get legacyReady => (box.get('baseline') as Map?)?['ready'] == true;
 
+  /// Proven source contributions are exposed separately from legacy
+  /// `drive:<id>` rows. Consumers must resolve/remap local IDs before mixing
+  /// the two sets into a visible aggregate.
+  List<Map<String, dynamic>> provenContributions() {
+    final records = <Map<String, dynamic>>[];
+    for (final key in box.keys.whereType<String>().where(
+      (value) => value.startsWith('source:'),
+    )) {
+      final raw = box.get(key);
+      if (raw is! String) throw StateError('Invalid Career source record');
+      final record = jsonDecode(raw) as Map<String, dynamic>;
+      final bundle = Map<String, dynamic>.from(record['bundle'] as Map);
+      final provenanceValue = bundle['sourceProvenance'];
+      if (provenanceValue is! Map) {
+        throw StateError('Career source provenance missing');
+      }
+      final provenance = DriveSourceProvenance.fromMap(provenanceValue);
+      if (!provenance.isProven ||
+          key != 'source:${provenance.sourceIdentity}') {
+        throw StateError('Career source identity conflict');
+      }
+      records.add(Map.unmodifiable(record));
+    }
+    return List.unmodifiable(records);
+  }
+
   /// Opt-in consumer for Phase 3B. The existing Career screen is not switched
   /// until a complete, verified legacy baseline is available.
-  CareerStatistics? statistics({bool historyOrder = false}) {
-    if (!legacyReady) return null;
+  CareerStatistics? statistics({
+    bool historyOrder = false,
+    String? provenOwnerScope,
+  }) {
+    if (provenOwnerScope == null && !legacyReady) return null;
     final bundles = <String, LocalSourceBundle>{};
     final drives = <DriveSession>[];
     for (final key in box.keys.whereType<String>().where(
-      (k) => k.startsWith('drive:'),
+      (k) => k.startsWith(provenOwnerScope == null ? 'drive:' : 'source:'),
     )) {
       final m = jsonDecode(box.get(key) as String) as Map<String, dynamic>;
       if (m['version'] != 1) {
@@ -239,11 +304,27 @@ class CareerContributionRepository {
       }
       final bundle = Map<String, dynamic>.from(m['bundle']);
       final driveId = (bundle['drive'] as Map)['id'];
-      final score = box.get('score:$driveId:v1') as String?;
+      final provenance = bundle['sourceProvenance'] == null
+          ? null
+          : DriveSourceProvenance.fromMap(bundle['sourceProvenance'] as Map);
+      if (provenOwnerScope != null &&
+          (provenance?.isProven != true ||
+              provenance!.ownerScope != provenOwnerScope ||
+              key != 'source:${provenance.sourceIdentity}' ||
+              bundles.containsKey(driveId))) {
+        throw StateError('Career proven contribution identity conflict');
+      }
+      final score =
+          box.get(
+                provenOwnerScope == null
+                    ? 'score:$driveId:v1'
+                    : 'sourceScore:${provenance!.sourceIdentity}:v1',
+              )
+              as String?;
       if (score != null) bundle['score'] = jsonDecode(score);
       final b = LocalSourceBundle.fromMap(bundle);
       b.validate();
-      if (key != 'drive:${b.drive.id}') {
+      if (provenOwnerScope == null && key != 'drive:${b.drive.id}') {
         throw StateError('Career identity mismatch');
       }
       bundles[b.drive.id] = b;
@@ -257,7 +338,7 @@ class CareerContributionRepository {
       }
       drives.add(drive);
     }
-    if (historyOrder) {
+    if (historyOrder && provenOwnerScope == null) {
       // Preserve the old History projection's newest-insertion-first record
       // tie-breaking, including after the original Hive drives disappear.
       final baseline =

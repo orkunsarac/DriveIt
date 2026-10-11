@@ -152,6 +152,7 @@ class WorldSourceSnapshotRepository {
         telemetry: source.telemetry,
         score: source.score,
         ownerScope: source.ownerScope,
+        sourceProvenance: source.sourceProvenance,
         roads: [...source.roads.where((r) => r.id != road.id), road],
       );
       bundle.validate();

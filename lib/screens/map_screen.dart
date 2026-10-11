@@ -19,16 +19,19 @@ import '../services/drive_recovery_status.dart';
 import '../widgets/gps_recovery_notice.dart';
 import '../services/drive_time_analysis.dart';
 import '../services/drive_route_projection.dart';
+import '../services/local_owner_lifecycle.dart';
 
 class MapScreen extends StatefulWidget {
   final bool resumeDrive;
   final bool finishOnOpen;
   final bool resumeIfServiceStopped;
+  final LocalOwnerLease? ownerLease;
   const MapScreen({
     super.key,
     this.resumeDrive = false,
     this.finishOnOpen = false,
     this.resumeIfServiceStopped = false,
+    this.ownerLease,
   });
 
   @override
@@ -36,6 +39,11 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
+  void _requireOwner() {
+    final lease = widget.ownerLease;
+    if (lease != null) ForegroundService.requireOwnerLease(lease);
+  }
+
   final RouteService routeService = RouteService();
 
   GoogleMapController? mapController;
@@ -119,8 +127,13 @@ class _MapScreenState extends State<MapScreen> {
     try {
       final id = _gpsSessionId;
       if (id == null) throw GpsFailure(GpsErrorCode.recovery);
+      _requireOwner();
+      if (widget.ownerLease != null) {
+        await ForegroundService.verifyOwnerSession(widget.ownerLease!, id);
+      }
       final saved = await ForegroundService.readPoints(id, _lastGpsSequence);
       if (!mounted) return;
+      _requireOwner();
       final session = await ForegroundService.activeSession();
       if (!mounted) return;
       setState(() {
@@ -515,6 +528,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> startDriving() async {
     if (isDriving || isCountingDown || _recovering) return;
+    _requireOwner();
     final status = await ForegroundService.inspectRecovery();
     if (!mounted) return;
     if (!status.canStartNewDrive) {
@@ -553,8 +567,10 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _startDrivingSession() async {
     if (isDriving) return;
-
+    _requireOwner();
     final session = await ForegroundService.start();
+    if (!mounted) return;
+    _requireOwner();
 
     setState(() {
       routeService.reset();
@@ -648,6 +664,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _stopDrivingSession() async {
+    _requireOwner();
     // Capture foreground points before stopping; service shutdown persistence
     // is asynchronous and must not race with the final session snapshot.
     final routeBeforeStop = routeService.getRouteForSave();
@@ -729,6 +746,7 @@ class _MapScreenState extends State<MapScreen> {
       onSaved: _gpsSessionId == null
           ? null
           : (id) => ForegroundService.acknowledgeSaved(_gpsSessionId!, id),
+      ownerLease: widget.ownerLease,
     );
   }
 
@@ -744,6 +762,7 @@ class _MapScreenState extends State<MapScreen> {
     _recovering = widget.resumeDrive;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
+        _requireOwner();
         if (!widget.finishOnOpen) await requestPermissions();
         await _createArrowIcon();
         await _createStationaryIcon();
@@ -784,6 +803,13 @@ class _MapScreenState extends State<MapScreen> {
         throw status.failure ?? GpsFailure(GpsErrorCode.recovery);
       }
       final session = status.session!;
+      _requireOwner();
+      if (widget.ownerLease != null) {
+        await ForegroundService.verifyOwnerSession(
+          widget.ownerLease!,
+          session.id,
+        );
+      }
       if (status.requiresDecision &&
           !widget.resumeIfServiceStopped &&
           !widget.finishOnOpen) {

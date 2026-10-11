@@ -523,6 +523,12 @@ void main() {
   test('poster store and metadata are owner scoped', () async {
     await runtime.lease.put('drives', 'same', source().drive);
     final posters = await runtime.lease.posters();
+    final canonicalTemp = await root.resolveSymbolicLinks();
+    expect(posters.trustedRoot!.path, startsWith(canonicalTemp));
+    expect(
+      await posters.directory.resolveSymbolicLinks(),
+      posters.directory.path,
+    );
     final saved = await posters.save(request());
     expect(await posters.file(saved).exists(), true);
     await switchTo(b);
@@ -530,6 +536,45 @@ void main() {
     expect(() => posters.all, throwsStateError);
     await switchTo(a);
     expect((await runtime.lease.posters()).all.single.id, saved.id);
+  });
+  test('picked poster stream is staged and saved only in owner scope', () async {
+    await runtime.lease.put('drives', 'same', source().drive);
+    final posters = await runtime.lease.posters();
+    final staged = await posters.stageBackgroundStream(
+      Stream<List<int>>.fromIterable([
+        [1, 2, 3],
+        [4, 5, 6],
+      ]),
+    );
+    expect(File(staged).readAsBytesSync(), [1, 2, 3, 4, 5, 6]);
+    expect(staged, startsWith('${posters.trustedRoot!.path}${Platform.pathSeparator}'));
+    final saved = await posters.save(request(background: staged));
+    expect(saved.backgroundFileName, isNotNull);
+    expect(await posters.backgroundFile(saved)!.readAsBytes(), [1, 2, 3, 4, 5, 6]);
+    await switchTo(b);
+    final other = await runtime.lease.posters();
+    expect(other.all, isEmpty);
+    expect(() => posters.backgroundFile(saved), throwsStateError);
+  });
+  test('failed picked stream leaves no completed owner background', () async {
+    await runtime.lease.put('drives', 'same', source().drive);
+    final posters = await runtime.lease.posters();
+    final failedStream = Stream<List<int>>.multi((controller) {
+      controller.add([1, 2, 3]);
+      controller.addError(StateError('synthetic read failure'));
+    });
+    await expectLater(
+      posters.stageBackgroundStream(failedStream),
+      throwsA(isA<StateError>()),
+    );
+    expect(await Directory('${posters.trustedRoot!.path}/poster_cache').exists(), true);
+    expect(
+      Directory('${posters.trustedRoot!.path}/poster_cache')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.jpg')),
+      isEmpty,
+    );
   });
   test('absolute cross-owner path and traversal are rejected', () async {
     await runtime.lease.put('drives', 'same', source().drive);
@@ -552,7 +597,56 @@ void main() {
       () => posters.file(forged('../other.png')),
       throwsA(isA<ImportFailure>()),
     );
+    expect(
+      () => posters.file(forged('${posters.directory.path}-other/escape.png')),
+      throwsA(isA<ImportFailure>()),
+    );
   });
+  test(
+    'owner poster files reject live and broken symlink escapes',
+    () async {
+      await runtime.lease.put('drives', 'same', source().drive);
+      final posters = await runtime.lease.posters();
+      final outside = File('${root.path}/outside.png');
+      await outside.writeAsBytes([137, 80, 78, 71, 13, 10, 26, 10]);
+      final liveLink = Link('${posters.directory.path}/live-link.png');
+      final brokenLink = Link('${posters.directory.path}/broken-link.png');
+      try {
+        await liveLink.create(outside.path);
+        await brokenLink.create('${root.path}/missing-target.png');
+      } on FileSystemException {
+        if (Platform.isAndroid || Platform.isLinux) rethrow;
+        return;
+      }
+      SavedDrivePoster forged(String fileName) => SavedDrivePoster(
+        id: fileName,
+        driveId: 'same',
+        createdAt: DateTime.utc(2026),
+        fileName: fileName,
+        backgroundSourceType: PosterBackgroundSourceType.customImage,
+        startLabel: '',
+        endLabel: '',
+        showMaxSpeed: true,
+      );
+      expect(
+        () => posters.file(forged('live-link.png')),
+        throwsA(
+          isA<ImportFailure>().having(
+            (error) => error.code,
+            'code',
+            'unsafe_symlink',
+          ),
+        ),
+      );
+      expect(
+        () => posters.file(forged('broken-link.png')),
+        throwsA(isA<ImportFailure>()),
+      );
+    },
+    skip: Platform.isWindows
+        ? 'This Windows test host does not allow creating synthetic symlinks.'
+        : false,
+  );
   test(
     'poster save after owner switch neither writes B nor falls back',
     () async {

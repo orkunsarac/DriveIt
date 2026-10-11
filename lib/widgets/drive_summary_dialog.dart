@@ -6,6 +6,9 @@ import '../services/drive_storage_service.dart';
 import 'package:flutter/material.dart';
 import 'neon_route_preview.dart';
 import '../features/drive_poster/poster_screens.dart';
+import '../services/local_owner_lifecycle.dart';
+import '../services/foreground_service.dart';
+import 'local_owner_view.dart';
 
 class DriveSummaryDialog {
   static Future<void> show(
@@ -23,189 +26,210 @@ class DriveSummaryDialog {
     String? driveSessionId,
     Map<String, dynamic> acquisitionMetadata = const {},
     Future<void> Function(String driveId)? onSaved,
+    LocalOwnerLease? ownerLease,
   }) {
     var saving = false;
+    final dialogNavigator = Navigator.of(context, rootNavigator: false);
     return showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xff0a1830),
-        surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Center(
-          child: Text(
-            "🏁 Sürüş Tamamlandı",
-            style: TextStyle(fontWeight: FontWeight.bold),
+      // Owned routes live inside LocalOwnerNavigator. Keep the dialog in that
+      // same Navigator so the save action dismisses the dialog, not /drive.
+      useRootNavigator: false,
+      builder: (_) {
+        Widget dialog(BuildContext _) => AlertDialog(
+          backgroundColor: const Color(0xff0a1830),
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
           ),
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                height: 150,
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xff071326),
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: const Color(0xff248fff)),
+          title: const Center(
+            child: Text(
+              "🏁 Sürüş Tamamlandı",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  height: 150,
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xff071326),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: const Color(0xff248fff)),
+                  ),
+                  child: NeonRoutePreview(route: route),
                 ),
-                child: NeonRoutePreview(route: route),
-              ),
 
-              const SizedBox(height: 20),
+                const SizedBox(height: 20),
 
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      const Text("Toplam Mesafe"),
-                      const SizedBox(height: 8),
-                      Text(
-                        "${(totalDistance / 1000).toStringAsFixed(2)} km",
-                        style: const TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        const Text("Toplam Mesafe"),
+                        const SizedBox(height: 8),
+                        Text(
+                          "${(totalDistance / 1000).toStringAsFixed(2)} km",
+                          style: const TextStyle(
+                            fontSize: 28,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      children: [
+                        const Text("Sürüş Süresi"),
+                        const SizedBox(height: 8),
+                        Text(
+                          "${driveDuration.inMinutes} dk ${driveDuration.inSeconds % 60} sn",
+                          style: const TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.speed),
+                    title: const Text("Ortalama Hız"),
+                    trailing: Text(
+                      "${averageSpeed.toStringAsFixed(1)} km/h",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 8),
+
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.flash_on),
+                    title: const Text("Maksimum Hız"),
+                    trailing: Text(
+                      "${maxSpeed.toStringAsFixed(1)} km/h",
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                _analysisCard(metrics),
+
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => dialogNavigator.pop(),
+              child: const Text("Kapat"),
+            ),
+
+            ElevatedButton.icon(
+              onPressed: () async {
+                if (saving) return;
+                saving = true;
+                try {
+                  if (ownerLease != null) {
+                    ForegroundService.requireOwnerLease(ownerLease);
+                  }
+                  final drive = DriveSession(
+                    id:
+                        driveSessionId ??
+                        DateTime.now().millisecondsSinceEpoch.toString(),
+                    date: DateTime.now(),
+                    distance: totalDistance,
+                    durationSeconds: driveDuration.inSeconds,
+                    averageSpeed: averageSpeed,
+                    maxSpeed: maxSpeed,
+                    mapImagePath: mapImagePath,
+                    route: route,
+                    stopCount: stopCount,
+                    stoppedSeconds: stoppedSeconds,
+                    hardBrakeCount: metrics.hardBrakeCount,
+                    hardAccelerationCount: metrics.hardAccelerationCount,
+                    sharpTurnCount: metrics.sharpTurnCount,
+                    maxAccelerationG: metrics.maxAccelerationG,
+                    maxBrakingG: metrics.maxBrakingG,
+                    maxCorneringSpeed: metrics.maxCorneringSpeed,
+                    cornerCount: metrics.cornerCount,
+                    maxAltitude: metrics.maxAltitude,
+                    altitudeGain: metrics.altitudeGain,
+                    altitudeLoss: metrics.altitudeLoss,
+                    bestZeroToHundredSeconds: metrics.bestZeroToHundredSeconds,
+                    bestSixtyToHundredSeconds:
+                        metrics.bestSixtyToHundredSeconds,
+                  );
+
+                  await DriveStorageService.saveDrive(
+                    drive,
+                    telemetry: telemetry,
+                    acquisitionMetadata: acquisitionMetadata,
+                  );
+                  if (onSaved != null) await onSaved(drive.id);
+                  ownerLease?.requireCurrent();
+
+                  if (context.mounted) {
+                    dialogNavigator.pop();
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("✅ Sürüş başarıyla kaydedildi"),
+                      ),
+                    );
+                    await offerDrivePoster(
+                      context,
+                      ownerLease == null
+                          ? DriveStorageService.getDrive(drive.id) ?? drive
+                          : ownerLease.requireDrive(drive.id),
+                      ownerLease: ownerLease,
+                    );
+                  }
+                } catch (_) {
+                  if (context.mounted &&
+                      (ownerLease == null || ownerLease.isCurrent)) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text(
+                          'Kayıt tamamlanamadı. GPS oturumu kurtarma için korunuyor.',
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    children: [
-                      const Text("Sürüş Süresi"),
-                      const SizedBox(height: 8),
-                      Text(
-                        "${driveDuration.inMinutes} dk ${driveDuration.inSeconds % 60} sn",
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.speed),
-                  title: const Text("Ortalama Hız"),
-                  trailing: Text(
-                    "${averageSpeed.toStringAsFixed(1)} km/h",
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 8),
-
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.flash_on),
-                  title: const Text("Maksimum Hız"),
-                  trailing: Text(
-                    "${maxSpeed.toStringAsFixed(1)} km/h",
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              _analysisCard(metrics),
-
-              const SizedBox(height: 16),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Kapat"),
-          ),
-
-          ElevatedButton.icon(
-            onPressed: () async {
-              if (saving) return;
-              saving = true;
-              try {
-                final drive = DriveSession(
-                  id:
-                      driveSessionId ??
-                      DateTime.now().millisecondsSinceEpoch.toString(),
-                  date: DateTime.now(),
-                  distance: totalDistance,
-                  durationSeconds: driveDuration.inSeconds,
-                  averageSpeed: averageSpeed,
-                  maxSpeed: maxSpeed,
-                  mapImagePath: mapImagePath,
-                  route: route,
-                  stopCount: stopCount,
-                  stoppedSeconds: stoppedSeconds,
-                  hardBrakeCount: metrics.hardBrakeCount,
-                  hardAccelerationCount: metrics.hardAccelerationCount,
-                  sharpTurnCount: metrics.sharpTurnCount,
-                  maxAccelerationG: metrics.maxAccelerationG,
-                  maxBrakingG: metrics.maxBrakingG,
-                  maxCorneringSpeed: metrics.maxCorneringSpeed,
-                  cornerCount: metrics.cornerCount,
-                  maxAltitude: metrics.maxAltitude,
-                  altitudeGain: metrics.altitudeGain,
-                  altitudeLoss: metrics.altitudeLoss,
-                  bestZeroToHundredSeconds: metrics.bestZeroToHundredSeconds,
-                  bestSixtyToHundredSeconds: metrics.bestSixtyToHundredSeconds,
-                );
-
-                await DriveStorageService.saveDrive(
-                  drive,
-                  telemetry: telemetry,
-                  acquisitionMetadata: acquisitionMetadata,
-                );
-                if (onSaved != null) await onSaved(drive.id);
-
-                if (context.mounted) {
-                  Navigator.pop(context);
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text("✅ Sürüş başarıyla kaydedildi"),
-                    ),
-                  );
-                  await offerDrivePoster(
-                    context,
-                    DriveStorageService.getDrive(drive.id) ?? drive,
-                  );
+                    );
+                  }
+                } finally {
+                  saving = false;
                 }
-              } catch (_) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                        'Kayıt tamamlanamadı. GPS oturumu kurtarma için korunuyor.',
-                      ),
-                    ),
-                  );
-                }
-              } finally {
-                saving = false;
-              }
-            },
-            icon: const Icon(Icons.save),
-            label: const Text("Sürüşü Kaydet"),
-          ),
-        ],
-      ),
+              },
+              icon: const Icon(Icons.save),
+              label: const Text("Sürüşü Kaydet"),
+            ),
+          ],
+        );
+        return ownerLease == null
+            ? dialog(context)
+            : LocalOwnerView(lease: ownerLease, builder: dialog);
+      },
     );
   }
 
@@ -276,8 +300,19 @@ class DriveSummaryDialog {
     child: Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(label),
-        Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+        Expanded(
+          child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+        ),
+        const SizedBox(width: 8),
+        Flexible(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+        ),
       ],
     ),
   );

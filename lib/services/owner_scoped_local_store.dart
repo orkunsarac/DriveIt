@@ -33,6 +33,8 @@ import '../features/my_world/models/world_processing.dart';
 import 'local_lifecycle_journal.dart';
 import 'career_statistics_service.dart';
 import '../features/drive_poster/poster_store.dart';
+import 'owner_revision_models.dart';
+import 'gps_hive_transfer_sink.dart';
 
 /// Explicit opt-in only. No global Hive, Auth, bootstrap or task subscriptions.
 /// A separate Hive instance prevents asynchronous work from following a mutable
@@ -45,6 +47,9 @@ class OwnerScopedLocalStore {
 
   /// Controlled durability fault seam. Never installed by production bootstrap.
   final Future<void> Function(String group)? beforeFlush;
+  final Set<(String, Object)> _unflushedWrites = {};
+  bool writeDurable(String group, Object key) =>
+      !_unflushedWrites.contains((group, key));
   String get scope => owner.targetStore;
   static const groups = <String>[
     'drives',
@@ -52,6 +57,8 @@ class OwnerScopedLocalStore {
     'drive_scores',
     'drive_names',
     'drive_details_v1',
+    'drive_source_provenance_v1',
+    'owned_drive_finalization_v1',
     'drive_posters',
     'career_totals',
     'career_contributions_v1',
@@ -85,11 +92,10 @@ class OwnerScopedLocalStore {
     Future<void> Function(String group)? beforeFlush,
   }) async {
     final name = sha256.convert(utf8.encode(owner.targetStore)).toString();
-    final directory = Directory(
-      '$root${Platform.pathSeparator}owner_stores_v1'
-      '${Platform.pathSeparator}$name',
-    );
-    await directory.create(recursive: true);
+    final requestedRoot = Directory(root);
+    await requestedRoot.create(recursive: true);
+    final canonicalRoot = await requestedRoot.resolveSymbolicLinks();
+    final directory = await _createOwnerDirectory(canonicalRoot, name);
     final hadData = directory.listSync().any(
       (f) => f.path.endsWith('.hive') && !f.path.endsWith('$_manifestBox.hive'),
     );
@@ -117,6 +123,36 @@ class OwnerScopedLocalStore {
       await hive.close();
       rethrow;
     }
+  }
+
+  static Future<Directory> _createOwnerDirectory(
+    String canonicalRoot,
+    String ownerName,
+  ) async {
+    var current = Directory(canonicalRoot);
+    for (final segment in ['owner_stores_v1', ownerName]) {
+      final next = Directory(
+        '${current.path}${Platform.pathSeparator}$segment',
+      );
+      final type = await FileSystemEntity.type(next.path, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        throw StateError('Owner storage path contains a symbolic link');
+      }
+      if (type == FileSystemEntityType.notFound) {
+        await next.create();
+      } else if (type != FileSystemEntityType.directory) {
+        throw StateError('Owner storage path is not a directory');
+      }
+      current = next;
+    }
+    final resolved = await current.resolveSymbolicLinks();
+    final samePath = Platform.isWindows
+        ? resolved.toLowerCase() == current.absolute.path.toLowerCase()
+        : resolved == current.absolute.path;
+    if (!samePath) {
+      throw StateError('Owner storage path is not canonical');
+    }
+    return current;
   }
 
   void requireOwner(GpsOwner context) {
@@ -153,12 +189,52 @@ class OwnerScopedLocalStore {
   T? read<T>(GpsOwner context, String group, Object key) {
     requireOwner(context);
     final value = _box(group).get(key);
-    return value == null ? null : decode(encode(value)) as T;
+    if (value == null) return null;
+    final detached = decode(encode(value));
+    if (group == 'drives' && detached is DriveSession) {
+      final date = _box('drive_details_v1').get('gpsTransferDate:$key');
+      if (date is Map) {
+        return driveFromTransferManifest({
+              ...driveTransferManifest(detached),
+              'dateMicros': date['dateMicros'],
+              'dateIsUtc': date['dateIsUtc'],
+            })
+            as T;
+      }
+    }
+    return detached as T;
   }
 
   List<Object> keys(GpsOwner context, String group) {
     requireOwner(context);
     return _box(group).keys.cast<Object>().toList(growable: false);
+  }
+
+  /// Captures adapter-preserving bytes from every personal box. Provenance is
+  /// supplied by a domain resolver; null becomes an invalid identity that the
+  /// revision planner rejects instead of guessing from a potentially reused ID.
+  List<OwnerRevisionRecord> revisionRecords(
+    GpsOwner context, {
+    required OwnerRevisionProvenanceResolver provenance,
+  }) {
+    requireOwner(context);
+    final output = <OwnerRevisionRecord>[];
+    for (final group in groups) {
+      for (final key in _box(group).keys.cast<Object>()) {
+        final attached = _box(group).get(key);
+        final detached = attached == null ? null : decode(encode(attached));
+        output.add(
+          OwnerRevisionRecord(
+            group: group,
+            logicalKey: jsonEncode(key),
+            sourceIdentity: provenance(group, key, detached) ?? '',
+            origin: OwnerRevisionOrigin.owner,
+            payload: encode(detached),
+          ),
+        );
+      }
+    }
+    return List.unmodifiable(output);
   }
 
   Future<void> put(GpsOwner context, String group, Object key, Object? value) =>
@@ -175,6 +251,7 @@ class OwnerScopedLocalStore {
   ) async {
     requireOwner(context);
     final detached = decode(encode(value));
+    _unflushedWrites.add((group, key));
     await _box(group).put(key, detached);
     await beforeFlush?.call(group);
     await _box(group).flush();
@@ -182,6 +259,7 @@ class OwnerScopedLocalStore {
         base64Encode(encode(value))) {
       throw StateError('Local write verification failed');
     }
+    _unflushedWrites.remove((group, key));
   }
 
   Future<void> remove(GpsOwner context, String group, Object key) =>
@@ -269,12 +347,25 @@ class OwnerScopedLocalStore {
   }) async {
     requireOwner(context);
     requireCurrent();
+    final ownerRoot = Directory(path);
     final directory = Directory('$path${Platform.pathSeparator}posters');
-    await directory.create(recursive: true);
+    final directoryType = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (directoryType == FileSystemEntityType.link) {
+      throw StateError('Poster owner directory is a symbolic link');
+    }
+    if (directoryType == FileSystemEntityType.notFound) {
+      await directory.create();
+    } else if (directoryType != FileSystemEntityType.directory) {
+      throw StateError('Poster owner path is not a directory');
+    }
     requireCurrent();
     return PosterStore(
       _box('drive_posters'),
       directory,
+      trustedRoot: ownerRoot,
       temporaryDirectory: Directory(
         '$path${Platform.pathSeparator}poster_cache${Platform.pathSeparator}$epoch',
       ),
@@ -399,6 +490,22 @@ class ScopedLocalRepositories {
   }
 
   CareerStatistics? careerStatistics() {
+    final proven = store
+        .keys(owner, CareerContributionRepository.boxName)
+        .whereType<String>()
+        .any((k) => k.startsWith('source:'));
+    if (proven || _career.box.get('baseline') == null) {
+      // This is NOT legacy aggregate merge. An ambiguous namespace cannot be
+      // made visible by silently dropping its old cumulative totals.
+      if (_career.box.get('baseline') != null ||
+          store.keys(owner, 'career_totals').isNotEmpty ||
+          _career.box.keys.whereType<String>().any(
+            (k) => k.startsWith('drive:'),
+          )) {
+        throw StateError('Legacy Career requires separate resolution');
+      }
+      return _career.statistics(provenOwnerScope: store.scope);
+    }
     // Every persisted bundle must belong to this namespace before aggregation.
     for (final key
         in store
@@ -428,7 +535,9 @@ class ScopedLocalRepositories {
           store.read(
                 owner,
                 CareerContributionRepository.boxName,
-                'drive:$id',
+                source(id)!.sourceProvenance?.isProven == true
+                    ? 'source:${source(id)!.sourceProvenance!.sourceIdentity}'
+                    : 'drive:$id',
               ) ==
               null) {
         throw StateError(

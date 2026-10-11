@@ -20,7 +20,11 @@ class LocalOwnerGpsBridge {
 
   Future<GpsOwnershipManifest> requireBinding(String sessionId) async {
     if (!runtime.gate.enabled) throw StateError('Ownership disabled');
-    final binding = await ownership.get(journalId, sessionId);
+    final binding = await ownership.recoverBinding(
+      journalId,
+      sessionId,
+      journalSessionExists: await journal.session(sessionId) != null,
+    );
     if (binding == null ||
         binding.state != 'ready' ||
         binding.owner.kind == GpsOwnerKind.legacyUnassigned) {
@@ -32,7 +36,11 @@ class LocalOwnerGpsBridge {
   Future<GpsOwner?> activeOwner() async {
     final session = await journal.active();
     if (session == null) return null;
-    final binding = await ownership.get(journalId, session.id);
+    final binding = await ownership.recoverBinding(
+      journalId,
+      session.id,
+      journalSessionExists: await journal.session(session.id) != null,
+    );
     return binding?.state == 'ready' ? binding!.owner : null;
   }
 

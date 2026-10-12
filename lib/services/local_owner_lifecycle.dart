@@ -34,6 +34,7 @@ import '../features/my_world/models/world_trace_detail.dart';
 import 'owner_revision_models.dart';
 import 'owned_drive_finalization.dart';
 import 'gps_session_transfer.dart';
+import 'owner_drive_sync_client.dart';
 
 /// Auth boundary exposes only a stable UUID; never a Session/token/profile.
 abstract interface class LocalOwnerAuth {
@@ -134,6 +135,27 @@ class LocalOwnerLease implements PosterOperationBoundary {
     requireDrive(id);
     return _store.repositories(owner).segments(id);
   }
+
+  /// Explicitly injected transport only: no remote is configured or started
+  /// by the owner runtime. Any worker created here remains pinned to this lease.
+  List<String> pendingSyncKeys() => OwnerDriveSyncClient(
+    store: _store,
+    requireCurrent: requireCurrent,
+  ).pendingKeys();
+
+  Map? syncRecord(String key) => OwnerDriveSyncClient(
+    store: _store,
+    requireCurrent: requireCurrent,
+  ).readRecord(key);
+
+  OwnerDriveSyncWorker syncWorker(OwnerSyncRemoteAdapter remote) =>
+      OwnerDriveSyncWorker(
+        client: OwnerDriveSyncClient(
+          store: _store,
+          requireCurrent: requireCurrent,
+        ),
+        remote: remote,
+      );
 
   Future<void> preparePublication(String id, Iterable<PlanetSegment> segments) {
     final frozen = List<PlanetSegment>.unmodifiable(segments);
@@ -544,6 +566,10 @@ class LocalOwnerLease implements PosterOperationBoundary {
       }
       await finalization.complete();
     });
+    // Queue work is scheduled only after owner Hive read-back, both GPS
+    // receipts, and finalization completion. It cannot make the drive save
+    // fail; an absent outbox row is recovered on the next owner bootstrap.
+    _runtime.scheduleOwnerSync(this);
     _runtime.scheduleWorldJobs(this);
   }
 
@@ -593,6 +619,49 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   String? _worldErrorCode;
   String? get worldErrorCode => _worldErrorCode;
   Future<void> get worldSettled => _worldWork;
+  Future<void> get syncSettled async {
+    while (true) {
+      final work = _syncWork;
+      await work;
+      if (identical(work, _syncWork)) return;
+    }
+  }
+  String? _syncErrorCode;
+  String? get syncErrorCode => _syncErrorCode;
+  Future<void> _syncWork = Future<void>.value();
+  final Set<int> _scheduledSyncEpochs = {};
+  final Set<int> _syncRescheduleEpochs = {};
+
+  /// Local-only reconciliation. It creates durable outbox rows but never
+  /// contacts a remote service or starts a network retry loop.
+  void scheduleOwnerSync(LocalOwnerLease captured) {
+    if (!captured.isCurrent || captured.owner.kind != GpsOwnerKind.account) {
+      return;
+    }
+    if (!_scheduledSyncEpochs.add(captured.epoch)) {
+      // A finalization can complete while the startup pass is scanning. Ensure
+      // that pass is followed by one more scan instead of missing the new row.
+      _syncRescheduleEpochs.add(captured.epoch);
+      return;
+    }
+    _syncWork = _exclusive(() async {
+      captured.requireCurrent();
+      await OwnerDriveSyncClient(
+        store: captured._store,
+        requireCurrent: captured.requireCurrent,
+      ).reconcileFinalizedDrives();
+      if (captured.isCurrent) _syncErrorCode = null;
+    }, fromAuthEvent: true).catchError((Object error, StackTrace stack) {
+      // A failed outbox flush is recoverable by the same owner on next start.
+      // Keep the successful drive finalization and expose a safe status code.
+      if (captured.isCurrent) _syncErrorCode = 'owner_sync_queue_pending';
+    }).whenComplete(() {
+      _scheduledSyncEpochs.remove(captured.epoch);
+      final rerun = _syncRescheduleEpochs.remove(captured.epoch);
+      if (rerun && captured.isCurrent) scheduleOwnerSync(captured);
+      if (captured.isCurrent) notifyListeners();
+    });
+  }
 
   /// Save completion never awaits this worker. Jobs remain durable on error;
   /// a fresh owner lease on startup, resume or another save retries them.
@@ -788,6 +857,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       _state = LocalOwnerState.ready;
       _errorCode = null;
       notifyListeners();
+      // Startup repairs a crash after Hive finalization but before outbox
+      // persistence. Reconciliation is owner-scoped and excludes tombstones.
+      scheduleOwnerSync(_lease!);
     } catch (_) {
       if (!_closed && epoch == requestEpoch) {
         _invalidate(LocalOwnerState.failed, 'owner_context_unavailable');

@@ -59,6 +59,7 @@ class OwnerScopedLocalStore {
     'drive_details_v1',
     'drive_source_provenance_v1',
     'owned_drive_finalization_v1',
+    'owner_sync_outbox_v1',
     'drive_posters',
     'career_totals',
     'career_contributions_v1',

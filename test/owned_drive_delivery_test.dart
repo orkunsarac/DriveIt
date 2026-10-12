@@ -19,10 +19,12 @@ import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/services/local_ownership_bootstrap.dart';
 import 'package:driveit_project/services/owned_foreground_bootstrap.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
+import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/foreground_service.dart';
 import 'package:driveit_project/services/drive_storage_service.dart';
 import 'package:driveit_project/services/drive_route_projection.dart';
 import 'package:driveit_project/services/owned_drive_finalization.dart';
+import 'package:driveit_project/services/owner_drive_sync_client.dart';
 import 'package:driveit_project/features/my_world/providers/road_matching_provider.dart';
 import 'package:driveit_project/features/my_world/services/road_matching_service.dart';
 import 'package:driveit_project/features/my_world/models/matched_road_point.dart';
@@ -220,6 +222,7 @@ class DeliveryFixture {
       drive,
       acquisitionMetadata: {'sessionId': drive.id},
     );
+    await runtime.owner.syncSettled;
     await runtime.owner.worldSettled;
   }
 
@@ -325,6 +328,41 @@ class DeliveryLocation extends GeolocatorPlatform {
 class DeliveryArchiveAuthorizer implements DeviceArchiveAuthorizer {
   @override
   Future<bool> verifyDeviceAccess() async => true;
+}
+
+class DeliverySyncRemote implements OwnerSyncRemoteAdapter {
+  bool failNext = false;
+  Completer<void>? holdNext;
+  Completer<void>? enteredNext;
+  final Map<String, OwnerSyncMutation> records = {};
+  final List<String> calls = [];
+
+  @override
+  Future<OwnerSyncReceipt> apply(OwnerSyncMutation mutation) async {
+    calls.add(mutation.idempotencyKey);
+    final entered = enteredNext;
+    enteredNext = null;
+    if (entered != null && !entered.isCompleted) entered.complete();
+    final hold = holdNext;
+    holdNext = null;
+    await hold?.future;
+    if (failNext) {
+      failNext = false;
+      throw const OwnerSyncTransportFailure('offline');
+    }
+    final previous = records[mutation.idempotencyKey];
+    if (previous != null &&
+        previous.payloadFingerprint != mutation.payloadFingerprint) {
+      throw const OwnerSyncConflict('remote_payload_conflict');
+    }
+    records.putIfAbsent(mutation.idempotencyKey, () => mutation);
+    return OwnerSyncReceipt(
+      ownerScope: mutation.ownerScope,
+      idempotencyKey: mutation.idempotencyKey,
+      payloadFingerprint: mutation.payloadFingerprint,
+      remoteId: 'remote:${mutation.idempotencyKey}',
+    );
+  }
 }
 
 void main() {
@@ -510,6 +548,104 @@ void main() {
       expect(f.runtime.owner.lease.career().totalDistanceMeters, 6000);
     },
   );
+
+  test(
+    'real finalization queues once; fake worker retries across A B A while World fails',
+    () async {
+      f.matcher.fail = true;
+      final drive = await f.record();
+      await f.save(drive);
+
+      final leaseA = f.runtime.owner.lease;
+      expect(leaseA.drives().single.id, drive.id);
+      expect(f.runtime.owner.worldErrorCode, 'owner_world_retry_pending');
+      expect(leaseA.pendingSyncKeys(), hasLength(1));
+      final key = leaseA.pendingSyncKeys().single;
+      final remote = DeliverySyncRemote()..failNext = true;
+      final workerA = leaseA.syncWorker(remote);
+      final offline = await workerA.runOnce();
+      expect(offline.notAcknowledged, 1);
+      expect(leaseA.syncRecord(key)!['state'], 'retryableFailure');
+
+      // Hold the remote response while Auth changes. The old lease must not
+      // apply its result to B; the remote idempotency key remains reusable.
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      remote.enteredNext = entered;
+      remote.holdNext = release;
+      final staleResult = workerA.runOnce();
+      await entered.future;
+      f.auth.emit(b);
+      await f.runtime.owner.settled;
+      await f.runtime.owner.syncSettled;
+      final leaseB = f.runtime.owner.lease;
+      expect(leaseB.drives(), isEmpty);
+      expect(leaseB.pendingSyncKeys(), isEmpty);
+      release.complete();
+      await expectLater(staleResult, throwsStateError);
+
+      f.auth.emit(a);
+      await f.runtime.owner.settled;
+      await f.runtime.owner.syncSettled;
+      final returnedA = f.runtime.owner.lease;
+      expect(returnedA.drives().single.id, drive.id);
+      expect(returnedA.pendingSyncKeys(), [key]);
+      final workerReturnedA = returnedA.syncWorker(remote);
+      final retry = await workerReturnedA.runOnce();
+      expect(retry.acknowledged, 1);
+      expect(remote.records, hasLength(1));
+      expect(remote.calls, [key, key, key]);
+      expect(returnedA.syncRecord(key)!['state'], 'acknowledged');
+      expect(returnedA.pendingSyncKeys(), isEmpty);
+      expect((await workerReturnedA.runOnce()).attempted, 0);
+      expect(returnedA.career().totalDistanceMeters, 6000);
+    },
+  );
+
+  test('startup reconciliation repairs the Hive-to-outbox crash gap', () async {
+    f.failGroup = OwnerDriveSyncClient.boxName;
+    final drive = await f.record();
+    await f.save(drive);
+    expect(f.runtime.owner.lease.drives().single.id, drive.id);
+    expect(f.runtime.owner.syncErrorCode, 'owner_sync_queue_pending');
+
+    // The synthetic outbox flush failure occurs after completed owner Hive
+    // finalization. Reopen, clear only this temporary fixture's nondurable
+    // outbox state, and verify startup discovers the missing queue item.
+    f.failGroup = null;
+    await f.closeRuntime();
+    final interruptedStore = await OwnerScopedLocalStore.open(
+      root: f.root.path,
+      owner: GpsOwner.account(a),
+    );
+    final possibleRows = interruptedStore.keys(
+      GpsOwner.account(a),
+      OwnerDriveSyncClient.boxName,
+    );
+    for (final key in possibleRows) {
+      await interruptedStore.remove(
+        GpsOwner.account(a),
+        OwnerDriveSyncClient.boxName,
+        key,
+      );
+    }
+    expect(
+      interruptedStore.read<Map>(
+        GpsOwner.account(a),
+        OwnedDriveFinalization.group,
+        drive.id,
+      )?['state'],
+      'completed',
+    );
+    await interruptedStore.close();
+
+    await f.boot();
+    await f.runtime.owner.syncSettled;
+    final lease = f.runtime.owner.lease;
+    expect(lease.drives().single.id, drive.id);
+    expect(lease.pendingSyncKeys(), hasLength(1));
+    expect(f.runtime.owner.syncErrorCode, isNull);
+  });
 
   test(
     'completed History and pending World survive close/reopen and worker retry',

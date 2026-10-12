@@ -15,9 +15,12 @@ class HistoryScreen extends StatefulWidget {
     this.ownerLease,
     this.ownedDetailBuilder,
     this.deviceArchive,
+    this.deviceArchiveLoader,
   });
   final LocalOwnerLease? ownerLease;
   final DeviceDriveArchiveAccess? deviceArchive;
+  final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  deviceArchiveLoader;
 
   /// No legacy detail fallback: all nested detail consumers must be scoped.
   final Widget Function(LocalOwnerLease, String)? ownedDetailBuilder;
@@ -30,6 +33,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   static const _background = Color(0xff020c1d);
 
   List<DriveSession> _drives = const [];
+  bool _archiveOpening = false;
   late final LocalOwnerLease? _mountedOwner;
 
   @override
@@ -99,9 +103,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Future<void> _openArchive() async {
     final lease = widget.ownerLease;
-    final access = widget.deviceArchive;
-    if (lease == null || access == null) return;
+    if (lease == null || _archiveOpening) return;
+    _archiveOpening = true;
     try {
+      final access =
+          widget.deviceArchive ?? await widget.deviceArchiveLoader?.call(lease);
+      if (access == null) return;
+      lease.requireCurrent();
       final archive = await access.open(lease);
       if (!mounted || !lease.isCurrent) {
         archive.dispose();
@@ -119,6 +127,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
           content: Text('Cihaz arşivi için güvenli yerel doğrulama gerekli.'),
         ),
       );
+    } finally {
+      _archiveOpening = false;
     }
   }
 
@@ -235,10 +245,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
             if (widget.ownerLease != null)
               ListTile(
                 title: const Text('Cihazdaki Eski Sürüşler'),
-                subtitle: widget.deviceArchive == null
+                subtitle:
+                    widget.deviceArchive == null &&
+                        widget.deviceArchiveLoader == null
                     ? const Text('Güvenli cihaz doğrulaması henüz hazır değil')
                     : const Text('Ayrı, salt okunur cihaz arşivi'),
-                onTap: widget.deviceArchive == null ? null : _openArchive,
+                onTap:
+                    widget.deviceArchive == null &&
+                        widget.deviceArchiveLoader == null
+                    ? null
+                    : _openArchive,
               ),
             Expanded(
               child: _drives.isEmpty

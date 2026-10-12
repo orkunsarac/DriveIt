@@ -3,7 +3,6 @@ import 'package:crypto/crypto.dart';
 import '../features/drive_score/services/drive_score_persistence_coordinator.dart';
 import '../features/my_world/config/my_world_rules.dart';
 import '../features/my_world/models/world_pending_job.dart';
-import '../features/my_world/models/world_processing.dart';
 import '../models/drive_session.dart';
 import '../models/drive_score_record.dart';
 import '../models/canonical_telemetry_point.dart';
@@ -20,13 +19,11 @@ class OwnedDriveFinalization {
     required this.store,
     required this.binding,
     required this.requireCurrent,
-    required this.processWorld,
   });
   static const group = 'owned_drive_finalization_v1';
   final OwnerScopedLocalStore store;
   final GpsOwnershipManifest binding;
   final void Function() requireCurrent;
-  final Future<void> Function() processWorld;
   String get id => binding.sessionId!;
   Map<String, Object?> get identity => {
     'version': 1,
@@ -148,31 +145,15 @@ class OwnedDriveFinalization {
     if (score != null &&
         drive.distance >= MyWorldRules.minimumValidDistanceMeters) {
       final world = store.worldSources(store.owner);
-      final processed = await world.getProcessingRecord(id);
-      if (processed?.state != WorldProcessingState.processed &&
-          processed?.state !=
-              WorldProcessingState.rejectedInsufficientValidDistance &&
-          processed?.state != WorldProcessingState.failedPermanent) {
-        await world.enqueueIfAbsent(
-          WorldPendingJob.pending(
-            driveSessionId: id,
-            type: WorldJobType.validateRoad,
-            now: DateTime.now().toUtc(),
-          ),
-        );
-        await processWorld();
-      }
-      requireCurrent();
-      final after = await world.getProcessingRecord(id);
-      if (![
-        WorldProcessingState.processed,
-        WorldProcessingState.rejectedInsufficientValidDistance,
-        WorldProcessingState.failedPermanent,
-      ].contains(after?.state)) {
-        // Existing World worker intentionally schedules retries. That is not a
-        // successful completed save; retain journal and the owner-local job.
-        throw StateError('Owner World finalization needs retry');
-      }
+      // Persist the job before acknowledging the GPS source. Network matching
+      // and generation writes belong to the independent owner-pinned worker.
+      await world.enqueueIfAbsent(
+        WorldPendingJob.pending(
+          driveSessionId: id,
+          type: WorldJobType.validateRoad,
+          now: DateTime.now().toUtc(),
+        ),
+      );
     }
     // Independent Hive boxes are not one transaction. Reflush/read-back via
     // store before releasing SQLite's active stopped-session pointer.
@@ -182,6 +163,10 @@ class OwnedDriveFinalization {
       ...store.read<Map>(store.owner, group, id)!,
       'derivedReady': true,
       'scoreAvailable': score != null,
+      // Queue durability is not evidence of validation or World ownership.
+      'worldQueued':
+          score != null &&
+          drive.distance >= MyWorldRules.minimumValidDistanceMeters,
     });
   }
 

@@ -12,22 +12,17 @@ import 'package:driveit_project/config/supabase_bootstrap.dart';
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/models/route_point.dart';
 import 'package:driveit_project/screens/device_drive_archive_screen.dart';
-import 'package:driveit_project/services/android_device_archive_authorizer.dart';
+import 'package:driveit_project/main.dart' as app;
+import 'package:driveit_project/services/local_ownership_bootstrap.dart';
+import 'package:driveit_project/services/owned_foreground_bootstrap.dart';
+import 'package:driveit_project/services/foreground_service.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:driveit_project/services/device_drive_archive.dart';
-import 'package:driveit_project/services/legacy_source_writer_fence.dart';
-import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/services/local_source_writer_fence.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import '../test/local_owner_integration_test.dart' show TestAuth, b;
 import '../test/owned_drive_delivery_test.dart' show DeliveryMaps;
-
-class _SyntheticFence implements RegisteredSourceWriterFence {
-  @override
-  void requireRegistered() {}
-  @override
-  Future<void> pauseAndDrain() async {}
-  @override
-  Future<void> resume() async {}
-}
 
 class _SystemLifecycle with WidgetsBindingObserver {
   final StreamController<AppLifecycleState> states =
@@ -53,7 +48,7 @@ void main() {
     expect(SupabaseBootstrap.isIsolatedAndroidTest, true);
     expect(await SupabaseBootstrap.initializeIfConfigured(), false);
     final root = await Directory.systemTemp.createTemp(
-      'driveit_archive_lifecycle_',
+      'driveit_owner_test_archive_lifecycle_',
     );
     final hive = HiveImpl()
       ..init('${root.path}/source')
@@ -80,31 +75,47 @@ void main() {
     final sourceFile = File('${root.path}/source/drives.hive');
     final originalBytes = await sourceFile.readAsBytes();
     final auth = TestAuth();
-    final runtime = LocalOwnerLifecycle(
-      gate: LocalOwnershipGate.synthetic(),
-      auth: auth,
-      driveInProgress: () async => false,
-      openStore: (owner) =>
-          OwnerScopedLocalStore.open(root: '${root.path}/owners', owner: owner),
-    );
-    await runtime.start();
-    final snapshot = await DeviceDriveArchiveSnapshot.prepare(
-      source: SavedDriveArchiveSource(box),
-      writers: _SyntheticFence(),
-      unfinishedDriveIds: () async => {},
-    );
+    final gate = LocalOwnershipGate.synthetic();
+    final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
+    late app.DriveItApp application;
+    final controlled = (await app.startDriveIt(
+      gate: gate,
+      controlled: ControlledOwnershipDependencies(
+        restoreAuth: () async => auth,
+        descriptor: descriptor,
+        databaseFactory: databaseFactory,
+        openStore: (owner) => OwnerScopedLocalStore.open(
+          root: '${root.path}/owners',
+          owner: owner,
+        ),
+        producerRunning: () => FlutterForegroundTask.isRunningService,
+        attachForeground: (gps, value) async =>
+            ForegroundService.attachForTesting(gps, value),
+        detachForeground: ForegroundService.detachForTesting,
+        writerFence: LocalSourceWriterFence(
+          gate: gate,
+          gpsBusy: () => FlutterForegroundTask.isRunningService,
+          provenCategories: LocalSourceWriterFence.requiredCategories,
+          sourceRoots: [root.path],
+        ),
+      ),
+      archiveSource: SavedDriveArchiveSource(box),
+      unfinishedArchiveDrives: () async => {},
+      // No authorizer override: application's actual Android adapter is used.
+      mountApplication: (widget) => application = widget as app.DriveItApp,
+    ))!;
+    final runtime = controlled.owner;
     final originalMaps = maps.GoogleMapsFlutterPlatform.instance;
     maps.GoogleMapsFlutterPlatform.instance = DeliveryMaps();
     final lifecycle = _SystemLifecycle()..attach();
     DeviceDriveArchiveContext? context;
     var screenOwnsContext = false;
     try {
-      Future<DeviceDriveArchiveContext> authenticate() =>
-          DeviceDriveArchiveAccess(
-            gate: LocalOwnershipGate.synthetic(),
-            snapshot: snapshot,
-            authorizer: AndroidDeviceArchiveAuthorizer(),
-          ).open(runtime.lease).timeout(const Duration(seconds: 120));
+      Future<DeviceDriveArchiveContext> authenticate() async {
+        final access = await application.deviceArchiveLoader!(runtime.lease);
+        return access.open(runtime.lease).timeout(const Duration(seconds: 120));
+      }
+
       Future<DeviceDriveArchiveContext> authenticateOnDevice() async {
         final authenticated = await tester.runAsync(authenticate);
         if (authenticated == null) {
@@ -113,18 +124,35 @@ void main() {
         return authenticated;
       }
 
+      await tester.pumpWidget(application);
+      await tester.pump();
+      expect(find.byType(app.DriveItApp), findsOneWidget);
       await tester.pumpWidget(
         const MaterialApp(
           key: ValueKey('archive-auth-initial'),
-          home: Scaffold(body: Text('Arşiv için Android cihaz doğrulaması')),
+          home: Scaffold(body: Text('İlk Android doğrulamasını İPTAL EDİN')),
         ),
       );
       // Native device-auth callbacks must run outside WidgetTest's FakeAsync
       // zone; otherwise the OS prompt can remain pending without lifecycle
       // delivery to the integration test.
+      await tester.runAsync(() async {
+        await expectLater(
+          authenticate(),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'code',
+              'archive_device_authorization_required',
+            ),
+          ),
+        );
+      });
+      debugPrint('ARCHIVE_NATIVE_CANCEL_DENIED');
       final initialContext = await authenticateOnDevice();
       context = initialContext;
       expect(initialContext.isCurrent, true);
+      debugPrint('ARCHIVE_NATIVE_GRANTED');
       await tester.pumpWidget(
         MaterialApp(
           key: const ValueKey('archive-list-initial'),
@@ -174,6 +202,7 @@ void main() {
       if (returnedFromHome != true) return;
       await tester.pump();
       expect(initialContext.isCurrent, false);
+      debugPrint('ARCHIVE_HOME_REVOKED');
       expect(
         () => initialContext.drive('synthetic-archive-lifecycle'),
         throwsStateError,
@@ -257,6 +286,7 @@ void main() {
       if (returnedFromLock != true) return;
       await tester.pump();
       expect(resumedContext.isCurrent, false);
+      debugPrint('ARCHIVE_LOCK_REVOKED');
       expect(
         () => resumedContext.drive('synthetic-archive-lifecycle'),
         throwsStateError,
@@ -282,6 +312,7 @@ void main() {
       auth.emit(b);
       await runtime.settled;
       expect(accountContext.isCurrent, false);
+      debugPrint('ARCHIVE_OWNER_REVOKED');
       expect(
         () => accountContext.drive('synthetic-archive-lifecycle'),
         throwsStateError,
@@ -296,7 +327,7 @@ void main() {
       if (!screenOwnsContext) context?.dispose();
       lifecycle.close();
       maps.GoogleMapsFlutterPlatform.instance = originalMaps;
-      await runtime.close();
+      await controlled.closeAfterProducerDetached();
       runtime.dispose();
       await auth.events.close();
       await hive.close();

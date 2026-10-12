@@ -18,7 +18,10 @@ class MainActivity : FlutterFragmentActivity() {
         archiveSecurityChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "driveit/device_archive_security").also { channel ->
             channel.setMethodCallHandler { call, result ->
-                if (call.method != "hasSecureDeviceLock") {
+                if (call.method == "isIsolatedDebugRuntime") {
+                    val debug = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                    result.success(debug && packageName == "com.example.driveit_project.isolated_test")
+                } else if (call.method != "hasSecureDeviceLock") {
                     result.notImplemented()
                 } else {
                     val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager

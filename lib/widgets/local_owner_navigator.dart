@@ -12,18 +12,21 @@ class LocalOwnerNavigator extends StatelessWidget {
     required this.legacyChild,
     required this.routes,
     this.initialRoute = '/',
+    this.navigatorKey,
   });
   final LocalOwnerLifecycle runtime;
   final Widget legacyChild;
   final Map<String, Widget Function(BuildContext, LocalOwnerLease, Object?)>
   routes;
   final String initialRoute;
+  final GlobalKey<NavigatorState>? navigatorKey;
 
   @override
   Widget build(BuildContext context) => LocalOwnerBoundary(
     runtime: runtime,
     legacyChild: legacyChild,
     personalBuilder: (context, lease) => Navigator(
+      key: navigatorKey,
       initialRoute: initialRoute,
       onGenerateRoute: (settings) {
         final builder = routes[settings.name];

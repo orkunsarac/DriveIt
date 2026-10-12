@@ -23,21 +23,31 @@ class OwnerPersonalNavigator extends StatelessWidget {
     required this.legacyChild,
     this.deviceArchive,
     this.deviceArchiveSnapshot,
+    this.deviceArchiveLoader,
+    this.initialRoute = '/',
+    this.navigatorKey,
   }) : assert(deviceArchive == null || deviceArchiveSnapshot == null);
   final LocalOwnerLifecycle runtime;
+  final String initialRoute;
+  final GlobalKey<NavigatorState>? navigatorKey;
   final Widget legacyChild;
   final DeviceDriveArchiveAccess? deviceArchive;
 
   /// Verified device snapshot only; no account/global-store fallback discovery.
   final DeviceDriveArchiveSnapshot? deviceArchiveSnapshot;
+  final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  deviceArchiveLoader;
   @override
   Widget build(BuildContext context) => LocalOwnerNavigator(
     runtime: runtime,
+    initialRoute: initialRoute,
+    navigatorKey: navigatorKey,
     legacyChild: legacyChild,
     routes: {
       '/': (_, lease, _) => HomeScreen(ownerLease: lease),
       '/history': (_, lease, _) => HistoryScreen(
         ownerLease: lease,
+        deviceArchiveLoader: deviceArchiveLoader,
         deviceArchive:
             deviceArchive ??
             (deviceArchiveSnapshot == null

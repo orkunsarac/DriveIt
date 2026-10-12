@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -22,17 +23,30 @@ import 'package:driveit_project/services/local_ownership_bootstrap.dart';
 import 'package:driveit_project/services/owned_foreground_bootstrap.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import 'package:driveit_project/features/my_world/services/road_matching_service.dart';
-import 'package:driveit_project/widgets/owner_personal_navigator.dart';
+import 'package:driveit_project/main.dart' as app;
+import 'package:driveit_project/models/drive_session.dart';
+import 'package:driveit_project/models/route_point.dart';
+import 'package:driveit_project/services/device_drive_archive.dart';
+import 'package:driveit_project/services/local_source_writer_fence.dart';
+import 'package:driveit_project/screens/device_drive_archive_screen.dart';
+import 'package:driveit_project/features/my_world/models/world_pending_job.dart';
+import 'package:driveit_project/features/my_world/providers/road_matching_provider.dart';
+// ignore: implementation_imports
+import 'package:hive/src/hive_impl.dart';
 import '../test/local_owner_integration_test.dart' show TestAuth, a, b;
 import '../test/owned_drive_delivery_test.dart'
-    show DeliveryLocation, DeliveryMaps, DeliveryMatcher;
+    show
+        DeliveryLocation,
+        DeliveryMaps,
+        DeliveryMatcher,
+        DeliveryArchiveAuthorizer;
 
 @pragma('vm:entry-point')
 void ownedDriveUiSyntheticCallback() =>
     FlutterForegroundTask.setTaskHandler(_OwnedDriveUiProbe());
 
 /// Real Android foreground-task service with synthetic journal samples.
-/// Physical GPS, Supabase and app.main() are not used.
+/// Physical GPS and Supabase are not used. UI uses main's shared startDriveIt.
 class _OwnedDriveUiProbe extends TaskHandler {
   OwnedForegroundBootstrap? _descriptor;
   String? _sessionId;
@@ -61,7 +75,10 @@ class _OwnedDriveUiProbe extends TaskHandler {
     session = (await journal.session(session.id))!;
     await descriptor.verifyHandoff(databaseFactory, session.id);
     final last = (await journal.last(session.id))?.sequence ?? 0;
-    for (var sequence = last + 1; sequence <= 301; sequence++) {
+    final limit =
+        await FlutterForegroundTask.getData<int>(key: 'ownedUiSampleLimit') ??
+        301;
+    for (var sequence = last + 1; sequence <= limit; sequence++) {
       final i = sequence - 1;
       await journal.append(
         session.id,
@@ -82,7 +99,7 @@ class _OwnedDriveUiProbe extends TaskHandler {
     }
     _descriptor = descriptor;
     _sessionId = session.id;
-    FlutterForegroundTask.sendDataToMain({'ownedUiSequence': 301});
+    FlutterForegroundTask.sendDataToMain({'ownedUiSequence': limit});
   }
 
   @override
@@ -111,6 +128,99 @@ class _OwnedDriveUiProbe extends TaskHandler {
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
 }
 
+/// Only UI controls are driven here; acquisition is the isolated native probe.
+Future<String> _recordGuestThroughUi(
+  WidgetTester tester,
+  ControlledOwnershipRuntime runtime, {
+  int samples = 16,
+  bool expectNa = true,
+}) async {
+  final beforeCount = runtime.owner.lease.drives().length;
+  await FlutterForegroundTask.saveData(
+    key: 'ownedUiSampleLimit',
+    value: samples,
+  );
+  await tester.tap(
+    find.byWidgetPredicate(
+      (w) => w.runtimeType.toString() == '_AnimatedDriveButton',
+    ),
+  );
+  await tester.pump();
+  for (var i = 0; i < 40 && find.byType(MapScreen).evaluate().isEmpty; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+  }
+  expect(find.byType(MapScreen), findsOneWidget);
+  await tester.tap(find.text('SÜRÜŞE BAŞLA'));
+  await tester.pump(const Duration(seconds: 3));
+  String? id;
+  for (var i = 0; i < 80; i++) {
+    final active = await ForegroundService.activeSession();
+    if (active != null &&
+        (await runtime.gps.journal.last(active.id))?.sequence == samples) {
+      id = active.id;
+      (tester.state(find.byType(MapScreen)) as dynamic).driveStartTime =
+          active.startedAt;
+      break;
+    }
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+  }
+  expect(id, isNotNull);
+  await tester.tap(find.text('SÜRÜŞÜ BİTİR'));
+  for (
+    var i = 0;
+    i < 50 && find.text('🏁 Sürüş Tamamlandı').evaluate().isEmpty;
+    i++
+  ) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+  }
+  await tester.tap(find.text('Sürüşü Kaydet'));
+  for (
+    var i = 0;
+    i < 200 && runtime.owner.lease.drives().length == beforeCount;
+    i++
+  ) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pump();
+  }
+  expect(runtime.owner.lease.drives(), hasLength(beforeCount + 1));
+  if (expectNa) {
+    expect(
+      runtime.owner.lease.score(id!),
+      isNull,
+      reason: '15 seconds of five minutes is insufficient coverage',
+    );
+  }
+  await runtime.owner.worldSettled;
+  return id!;
+}
+
+class _RuntimeMatcher extends DeliveryMatcher {
+  bool permanent = false;
+  @override
+  Future<RoadMatchingResult> match(RoadMatchingRequest request) {
+    if (permanent) {
+      return Future.value(
+        RoadMatchingResult.failure(
+          kind: RoadMatchingFailureKind.invalidInput,
+          message: 'Synthetic permanent rejection',
+        ),
+      );
+    }
+    return super.match(request);
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('A owner /drive UI starts, records, saves and isolates drive', (
@@ -125,37 +235,86 @@ void main() {
     final root = await (await getApplicationSupportDirectory()).createTemp(
       'driveit_owner_test_ui_',
     );
-    final auth = TestAuth();
+    final auth = TestAuth()..userId = null;
     final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
-    final runtime = (await LocalOwnershipBootstrap.run(
-      gate: LocalOwnershipGate.synthetic(),
-      legacyBootstrap: () async => fail('Shared Hive fallback'),
-      controlled: ControlledOwnershipDependencies(
-        descriptor: descriptor,
-        databaseFactory: databaseFactory,
-        restoreAuth: () async => auth,
-        producerRunning: () => FlutterForegroundTask.isRunningService,
-        worldRoadMatching: RoadMatchingService(provider: DeliveryMatcher()),
-        openStore: (owner) =>
-            OwnerScopedLocalStore.open(root: root.path, owner: owner),
-        attachForeground: (gps, value) async =>
-            ForegroundService.attachForTesting(gps, value),
-        detachForeground: ForegroundService.detachForTesting,
+    final legacy = HiveImpl()
+      ..init('${root.path}/legacy')
+      ..registerAdapter(DriveSessionAdapter())
+      ..registerAdapter(RoutePointAdapter());
+    final legacyBox = await legacy.openBox<DriveSession>('drives');
+    await legacyBox.put(
+      'old',
+      DriveSession(
+        id: 'old',
+        date: DateTime.utc(2026, 9, 28),
+        distance: 1000,
+        durationSeconds: 100,
+        averageSpeed: 36,
+        maxSpeed: 40,
+        mapImagePath: '',
+        route: [
+          RoutePoint(latitude: 40, longitude: 30),
+          RoutePoint(latitude: 40.001, longitude: 30),
+        ],
       ),
-    ))!;
-    try {
-      await ForegroundService.init();
+    );
+    await legacyBox.flush();
+    final legacyBytes = await File(legacyBox.path!).readAsBytes();
+    final matcher = _RuntimeMatcher()..hold = Completer<void>();
+    var guestChoices = 0;
+    late ControlledOwnershipRuntime runtime;
+    Future<void> boot() async {
+      final gate = LocalOwnershipGate.synthetic();
+      runtime = (await app.startDriveIt(
+        gate: gate,
+        controlled: ControlledOwnershipDependencies(
+          descriptor: descriptor,
+          databaseFactory: databaseFactory,
+          restoreAuth: () async => auth,
+          producerRunning: () => FlutterForegroundTask.isRunningService,
+          worldRoadMatching: RoadMatchingService(provider: matcher),
+          openStore: (owner) =>
+              OwnerScopedLocalStore.open(root: root.path, owner: owner),
+          attachForeground: (gps, value) async =>
+              ForegroundService.attachForTesting(gps, value),
+          detachForeground: ForegroundService.detachForTesting,
+          writerFence: LocalSourceWriterFence(
+            gate: gate,
+            gpsBusy: () => FlutterForegroundTask.isRunningService,
+            provenCategories: LocalSourceWriterFence.requiredCategories,
+            sourceRoots: [root.path],
+          ),
+        ),
+        archiveSource: SavedDriveArchiveSource(legacyBox),
+        unfinishedArchiveDrives: () async => {},
+        confirmGuest: () async {
+          guestChoices++;
+          return true;
+        },
+        archiveAuthorizer: DeliveryArchiveAuthorizer(),
+      ))!;
       ForegroundService.installOwnedStartCallbackForTesting(
         ownedDriveUiSyntheticCallback,
       );
-      await tester.pumpWidget(
-        MaterialApp(
-          home: OwnerPersonalNavigator(
-            runtime: runtime.owner,
-            legacyChild: const Scaffold(body: Text('Legacy path unused')),
-          ),
-        ),
+    }
+
+    await boot();
+    try {
+      await tester.pump();
+      expect(guestChoices, 1);
+      expect(runtime.owner.lease.owner.userId, null);
+      expect(
+        find.textContaining('Misafir sürüşleri bu cihazda'),
+        findsOneWidget,
       );
+      await tester.pump(const Duration(seconds: 1));
+      final guestId = await _recordGuestThroughUi(tester, runtime);
+      await FlutterForegroundTask.saveData(
+        key: 'ownedUiSampleLimit',
+        value: 301,
+      );
+      auth.emit(a);
+      await runtime.owner.settled;
       await tester.pump(const Duration(seconds: 1));
       expect(find.byType(HomeScreen), findsOneWidget);
       final ownerNavigator = Navigator.of(
@@ -280,11 +439,18 @@ void main() {
         isNotNull,
         reason: 'Synthetic five-minute GPS window must produce Drive Score',
       );
-      final worldSnapshot = await ownerA.worldSnapshot();
-      if (worldSnapshot == null) {
-        throw StateError('Owned World snapshot was not persisted');
-      }
-      expect(worldSnapshot.traces, isNotEmpty);
+      // The matcher is deliberately held. Save and direct detail read-back
+      // must finish before World validation can return.
+      expect(matcher.hold!.isCompleted, false);
+      expect(await runtime.gps.journal.active(), null);
+      expect(
+        ownerA.read<Map>(
+          'owned_drive_finalization_v1',
+          drive.id,
+        )?['worldQueued'],
+        true,
+      );
+      expect((await ownerA.worldSnapshot())?.traces ?? [], isEmpty);
       expect(ownerA.career().totalDistanceMeters, 6000);
       expect(
         await runtime.gps.ownership.verified(
@@ -293,17 +459,6 @@ void main() {
         ),
         true,
       );
-
-      // Save retry is safe after the visible UI save.
-      await tester.runAsync(
-        () => DriveStorageService.saveDrive(
-          ownerA.requireDrive(drive.id),
-          telemetry: savedTelemetry.points,
-          acquisitionMetadata: {'sessionId': activeSession.id},
-        ),
-      );
-      expect(ownerA.drives(), hasLength(1));
-      expect(ownerA.career().totalDistanceMeters, 6000);
 
       expect(
         ownerNavigator.mounted,
@@ -328,24 +483,146 @@ void main() {
       }
       expect(find.text(scoreText), findsOneWidget);
 
+      matcher.retry = true;
+      matcher.hold!.complete();
+      await runtime.owner.worldSettled;
+      final jobKey = WorldPendingJob.idempotencyKey(
+        drive.id,
+        WorldJobType.validateRoad,
+      );
+      expect(
+        ownerA.read<WorldPendingJob>('my_world_pending_jobs', jobKey)?.status,
+        WorldJobStatus.retryScheduled,
+      );
+      expect(runtime.owner.worldErrorCode, 'owner_world_retry_pending');
+      expect(ownerA.drives(), hasLength(1));
+
+      // Close/reopen native SQLite/Hive and the complete application root.
+      // This is disk reopen, not the separate OS process-crash acceptance.
+      await tester.pumpWidget(const SizedBox());
+      await runtime.closeAfterProducerDetached();
+      matcher.hold = null;
+      await boot();
+      await tester.pump();
+      await runtime.owner.worldSettled;
+      expect(runtime.owner.lease.requireDrive(drive.id).route, hasLength(301));
+      expect(
+        runtime.owner.lease
+            .read<WorldPendingJob>('my_world_pending_jobs', jobKey)
+            ?.status,
+        WorldJobStatus.retryScheduled,
+      );
+      expect(runtime.owner.lease.career().totalDistanceMeters, 6000);
+      expect(
+        (await runtime.gps.requireBinding(drive.id)).provenance.sourceIdentity,
+        activeBinding.provenance.sourceIdentity,
+      );
+
+      // Archive access is routed through the real lazy application loader.
+      // Device-auth provider is synthetic here; the unchanged real PIN/biometry
+      // prompt already has its own native acceptance and is not bypassed.
+      final reopenedNavigator = Navigator.of(
+        tester.element(find.byType(HomeScreen)),
+      );
+      unawaited(reopenedNavigator.pushNamed<void>('/history'));
+      await tester.pump();
+      await tester.tap(find.text('Cihazdaki Eski Sürüşler'));
+      for (
+        var i = 0;
+        i < 40 && find.byType(DeviceDriveArchiveScreen).evaluate().isEmpty;
+        i++
+      ) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump();
+      }
+      expect(find.byType(DeviceDriveArchiveScreen), findsOneWidget);
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(DeviceDriveArchiveScreen),
+              matching: find.byType(ListTile),
+            )
+            .first,
+      );
+      await tester.pump();
+      expect(find.byType(DeviceDriveArchiveDetailScreen), findsOneWidget);
+      await tester.tap(find.text('GPS Rota Haritası'));
+      await tester.pump();
+      expect(find.byType(DeviceDriveArchiveMapScreen), findsOneWidget);
+      expect(await File(legacyBox.path!).readAsBytes(), legacyBytes);
+
       auth.emit(b);
       await runtime.owner.settled;
       await tester.pump();
       expect(runtime.owner.lease.owner.userId, b);
       expect(runtime.owner.lease.drives(), isEmpty);
       expect(runtime.owner.lease.career().totalDistanceMeters, 0);
+      matcher.retry = false;
       auth.emit(a);
       await runtime.owner.settled;
       await tester.pump();
+      // The pending durable job is processed by the owner-ready root trigger.
+      await runtime.owner.worldSettled;
       expect(runtime.owner.lease.drives().single.id, drive.id);
       expect(runtime.owner.lease.career().totalDistanceMeters, 6000);
+      final snapshot = (await runtime.owner.lease.worldSnapshot())!;
+      expect(snapshot.traces, hasLength(1));
+      await DriveStorageService.saveDrive(
+        runtime.owner.lease.requireDrive(drive.id),
+        acquisitionMetadata: {'sessionId': drive.id},
+      );
+      await runtime.owner.worldSettled;
+      expect(
+        (await runtime.owner.lease.worldSnapshot())!.generation,
+        snapshot.generation,
+      );
+      expect(runtime.owner.lease.drives(), hasLength(1));
+      expect(runtime.owner.lease.career().totalDistanceMeters, 6000);
+      matcher.permanent = true;
+      final rejectedId = await _recordGuestThroughUi(
+        tester,
+        runtime,
+        samples: 301,
+        expectNa: false,
+      );
+      final rejectedJob = WorldPendingJob.idempotencyKey(
+        rejectedId,
+        WorldJobType.validateRoad,
+      );
+      expect(
+        runtime.owner.lease
+            .read<WorldPendingJob>('my_world_pending_jobs', rejectedJob)
+            ?.status,
+        WorldJobStatus.failedPermanent,
+      );
+      expect(
+        runtime.owner.lease.requireDrive(rejectedId).route,
+        hasLength(301),
+      );
+      expect(runtime.owner.lease.drives(), hasLength(2));
+      expect(runtime.owner.lease.career().totalDistanceMeters, 12000);
+      expect(
+        (await runtime.owner.lease.worldSnapshot())!.generation,
+        snapshot.generation,
+      );
+      auth.emit(null);
+      await runtime.owner.settled;
+      await tester.pump();
+      expect(runtime.owner.lease.drives().single.id, guestId);
+      expect(runtime.owner.lease.score(guestId), null);
     } finally {
+      if (matcher.hold != null && !matcher.hold!.isCompleted) {
+        matcher.hold!.complete();
+      }
       await tester.pumpWidget(const SizedBox());
       if (await FlutterForegroundTask.isRunningService) {
         await FlutterForegroundTask.stopService();
       }
       await runtime.closeAfterProducerDetached();
       await auth.events.close();
+      await legacy.close();
       await root.delete(recursive: true);
       GeolocatorPlatform.instance = originalLocation;
       maps.GoogleMapsFlutterPlatform.instance = originalMaps;

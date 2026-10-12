@@ -1,6 +1,12 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'config/local_ownership_gate.dart';
 import 'services/local_ownership_bootstrap.dart';
+import 'services/device_drive_archive.dart';
+import 'services/android_device_archive_authorizer.dart';
+import 'services/local_owner_lifecycle.dart';
+import 'widgets/owner_personal_navigator.dart';
+import 'features/account/widgets/driveit_account_section.dart';
 
 import 'services/foreground_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -29,10 +35,154 @@ import 'features/world_publish/segments/planet_segment_outbox.dart';
 import 'features/my_world/repositories/world_source_snapshot_repository.dart';
 
 void main() async {
-  await LocalOwnershipBootstrap.run(
-    gate: LocalOwnershipGate.production,
-    legacyBootstrap: _legacyBootstrap,
+  await startDriveIt();
+}
+
+/// The application entry point is shared by main and isolated acceptance.
+/// Production remains OFF; an enabled gate requires the complete composition.
+Future<ControlledOwnershipRuntime?> startDriveIt({
+  LocalOwnershipGate gate = LocalOwnershipGate.production,
+  ControlledOwnershipDependencies? controlled,
+  SavedDriveArchiveSource? archiveSource,
+  Future<Set<String>> Function()? unfinishedArchiveDrives,
+  Future<bool> Function()? confirmGuest,
+  DeviceArchiveAuthorizer? archiveAuthorizer,
+  void Function(Widget) mountApplication = runApp,
+  Future<void> Function()? legacyBootstrap,
+}) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (!gate.enabled) {
+    return LocalOwnershipBootstrap.run(
+      gate: gate,
+      legacyBootstrap: legacyBootstrap ?? _legacyBootstrap,
+    );
+  }
+  // Controlled Android activation is test-only and cannot run in the real
+  // application's sandbox, even if a caller supplies synthetic dependencies.
+  if (Platform.isAndroid) {
+    if (!SupabaseBootstrap.isIsolatedAndroidTest ||
+        await const MethodChannel(
+              'driveit/device_archive_security',
+            ).invokeMethod<bool>('isIsolatedDebugRuntime') !=
+            true) {
+      throw StateError('Controlled Android runtime requires isolated package');
+    }
+  }
+  if (controlled == null ||
+      archiveSource == null ||
+      unfinishedArchiveDrives == null ||
+      controlled.writerFence == null) {
+    throw StateError('Owner application dependencies incomplete');
+  }
+  // Restore the SDK/session before opening ANY personal store. Failure never
+  // resolves to a guest. The explicit choice is required only for a null session.
+  final auth = await controlled.restoreAuth();
+  if (auth.userId == null && !await (confirmGuest ?? _confirmGuest)()) {
+    throw StateError('Explicit guest choice required');
+  }
+  LocalOwnerLifecycle.ownerFor(auth.userId);
+  if ((await unfinishedArchiveDrives()).isNotEmpty) {
+    throw StateError('Legacy GPS recovery required before owner activation');
+  }
+  final dependencies = ControlledOwnershipDependencies(
+    restoreAuth: () async => auth,
+    descriptor: controlled.descriptor,
+    databaseFactory: controlled.databaseFactory,
+    openStore: controlled.openStore,
+    producerRunning: controlled.producerRunning,
+    attachForeground: controlled.attachForeground,
+    detachForeground: controlled.detachForeground,
+    writerFence: controlled.writerFence,
+    worldRoadMatching: controlled.worldRoadMatching,
   );
+  final runtime = (await LocalOwnershipBootstrap.run(
+    gate: gate,
+    legacyBootstrap: () async => throw StateError('Shared storage forbidden'),
+    controlled: dependencies,
+  ))!;
+  try {
+    // A supplied attach callback must actually bind this runtime. Never inspect
+    // the legacy global journal when the controlled composition is incomplete.
+    ForegroundService.requireOwnerLease(runtime.owner.lease);
+    await initializeDateFormatting('tr_TR');
+    await ForegroundService.init();
+    SupabaseAccountService.instance.startIdentitySync();
+    final recovery = await ForegroundService.inspectRecovery();
+    mountApplication(
+      DriveItApp(
+        ownerRuntime: runtime,
+        ownerInitialRoute:
+            recovery.canStartNewDrive &&
+                runtime.owner.lease.pendingDriveFinalizations().isEmpty
+            ? '/'
+            : '/drive',
+        deviceArchiveLoader: (lease) => runtime.owner.withOwnerOperation((
+          current,
+        ) async {
+          lease.requireCurrent();
+          if (!identical(current, lease)) {
+            throw StateError('Archive owner changed');
+          }
+          final archive = await DeviceDriveArchiveSnapshot.prepare(
+            source: archiveSource,
+            writers: controlled.writerFence!,
+            unfinishedDriveIds: () async => {
+              ...await unfinishedArchiveDrives(),
+              ...((await runtime.gps.journal.recoverableSessions()).map(
+                (s) => s.id,
+              )),
+              if (await runtime.gps.journal.active() case final session?)
+                session.id,
+              if (await controlled.producerRunning()) 'native_producer_running',
+            },
+          );
+          lease.requireCurrent();
+          return DeviceDriveArchiveAccess(
+            gate: gate,
+            snapshot: archive,
+            authorizer: archiveAuthorizer ?? AndroidDeviceArchiveAuthorizer(),
+          );
+        }),
+      ),
+    );
+    return runtime;
+  } catch (_) {
+    // Never detach or close a running producer on a failed UI composition.
+    // Its immutable journal remains the recovery authority.
+    if (!await controlled.producerRunning()) {
+      await runtime.closeAfterProducerDetached();
+    }
+    rethrow;
+  }
+}
+
+Future<bool> _confirmGuest() {
+  final choice = Completer<bool>();
+  runApp(
+    MaterialApp(
+      home: Scaffold(
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(24),
+            children: [
+              const Text(
+                'Misafir sürüşleri bu cihazda ayrı tutulur. Hesaba giriş yapmak '
+                'bu kayıtları otomatik aktarmaz.',
+              ),
+              const DriveItAccountSection(),
+              FilledButton(
+                onPressed: () {
+                  if (!choice.isCompleted) choice.complete(true);
+                },
+                child: const Text('Devam Et / Misafir Olarak Kullan'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+  return choice.future;
 }
 
 Future<void> _legacyBootstrap() async {
@@ -96,6 +246,11 @@ Future<void> _legacyBootstrap() async {
 }
 
 class DriveItApp extends StatefulWidget {
+  final ControlledOwnershipRuntime? ownerRuntime;
+  final String ownerInitialRoute;
+  final DeviceDriveArchiveSnapshot? deviceArchiveSnapshot;
+  final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  deviceArchiveLoader;
   final Widget initialScreen;
   final bool resumeDrive;
   final DriveRecoveryStatus? recoveryStatus;
@@ -104,6 +259,10 @@ class DriveItApp extends StatefulWidget {
     this.initialScreen = const HomeScreen(),
     this.resumeDrive = false,
     this.recoveryStatus,
+    this.ownerRuntime,
+    this.ownerInitialRoute = '/',
+    this.deviceArchiveSnapshot,
+    this.deviceArchiveLoader,
   });
 
   @override
@@ -124,6 +283,7 @@ class _DriveItAppState extends State<DriveItApp> {
   @override
   void initState() {
     super.initState();
+    if (widget.ownerRuntime != null) return;
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     final recovery = widget.recoveryStatus;
     if (widget.resumeDrive ||
@@ -175,8 +335,135 @@ class _DriveItAppState extends State<DriveItApp> {
               ),
             ),
       ),
-      routes: {OnboardingScreen.previewRoute: (_) => const OnboardingScreen()},
-      home: widget.initialScreen,
+      routes: widget.ownerRuntime == null
+          ? {OnboardingScreen.previewRoute: (_) => const OnboardingScreen()}
+          : const {},
+      home: widget.ownerRuntime == null
+          ? widget.initialScreen
+          : _OwnedApplicationHome(
+              runtime: widget.ownerRuntime!,
+              archive: widget.deviceArchiveSnapshot,
+              archiveLoader: widget.deviceArchiveLoader,
+              initialRoute: widget.ownerInitialRoute,
+            ),
     );
   }
+}
+
+class _OwnedApplicationHome extends StatefulWidget {
+  const _OwnedApplicationHome({
+    required this.runtime,
+    this.archive,
+    this.archiveLoader,
+    this.initialRoute = '/',
+  });
+  final ControlledOwnershipRuntime runtime;
+  final String initialRoute;
+  final DeviceDriveArchiveSnapshot? archive;
+  final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  archiveLoader;
+  @override
+  State<_OwnedApplicationHome> createState() => _OwnedApplicationHomeState();
+}
+
+class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
+    with WidgetsBindingObserver {
+  int? _workerEpoch;
+  int? _initialEpoch;
+  GlobalKey<NavigatorState> _personalNavKey = GlobalKey<NavigatorState>();
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    FlutterForegroundTask.addTaskDataCallback(_taskData);
+    widget.runtime.owner.addListener(_ownerChanged);
+    _initialEpoch = widget.runtime.owner.epoch;
+    _ownerChanged();
+  }
+
+  void _ownerChanged() {
+    final owner = widget.runtime.owner;
+    if (_workerEpoch != owner.epoch) {
+      _personalNavKey = GlobalKey<NavigatorState>();
+    }
+    if (owner.state != LocalOwnerState.ready || _workerEpoch == owner.epoch) {
+      return;
+    }
+    _workerEpoch = owner.epoch;
+    owner.scheduleWorldJobs(owner.lease);
+  }
+
+  void _taskData(Object data) {
+    if (data is Map &&
+        data['openDrive'] == true &&
+        widget.runtime.owner.state == LocalOwnerState.ready) {
+      _personalNavKey.currentState?.pushNamed('/drive');
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final owner = widget.runtime.owner;
+    if (state == AppLifecycleState.resumed &&
+        owner.state == LocalOwnerState.ready) {
+      owner.scheduleWorldJobs(owner.lease);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.runtime.owner.removeListener(_ownerChanged);
+    FlutterForegroundTask.removeTaskDataCallback(_taskData);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.runtime.owner,
+    builder: (context, _) {
+      final owner = widget.runtime.owner;
+      return Column(
+        children: [
+          if (owner.state == LocalOwnerState.ready &&
+              owner.lease.owner.userId == null)
+            const SafeArea(
+              bottom: false,
+              child: Material(
+                child: Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text(
+                    'Misafir sürüşleri bu cihazda '
+                    'ayrı tutulur; hesaba otomatik aktarılmaz.',
+                  ),
+                ),
+              ),
+            ),
+          if (owner.state == LocalOwnerState.ready &&
+              owner.worldErrorCode != null)
+            const Material(
+              child: Padding(
+                padding: EdgeInsets.all(8),
+                child: Text(
+                  'Sürüş kaydedildi. Benim Dünyam işlemi bekliyor. '
+                  'owner_world_retry_pending',
+                ),
+              ),
+            ),
+          Expanded(
+            child: OwnerPersonalNavigator(
+              runtime: owner,
+              navigatorKey: _personalNavKey,
+              initialRoute: owner.epoch == _initialEpoch
+                  ? widget.initialRoute
+                  : '/',
+              deviceArchiveSnapshot: widget.archive,
+              deviceArchiveLoader: widget.archiveLoader,
+              legacyChild: const SizedBox.shrink(),
+            ),
+          ),
+        ],
+      );
+    },
+  );
 }

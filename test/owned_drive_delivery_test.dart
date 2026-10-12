@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart'
     as maps;
-import 'package:driveit_project/widgets/owner_personal_navigator.dart';
 import 'package:driveit_project/screens/map_screen.dart';
 import 'package:driveit_project/screens/history_screen.dart';
 import 'package:driveit_project/screens/drive_detail_screen.dart';
@@ -30,6 +29,14 @@ import 'package:driveit_project/features/my_world/models/matched_road_point.dart
 import 'package:driveit_project/features/my_world/models/matched_road_section.dart';
 import 'package:driveit_project/features/my_world/models/validated_road.dart';
 import 'local_owner_integration_test.dart' show TestAuth, a, b;
+import 'package:driveit_project/main.dart' as app;
+import 'package:driveit_project/services/device_drive_archive.dart';
+import 'package:driveit_project/services/local_source_writer_fence.dart';
+import 'package:driveit_project/models/route_point.dart';
+// ignore: implementation_imports
+import 'package:hive/src/hive_impl.dart';
+import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/screens/device_drive_archive_screen.dart';
 
 /// No main(), global Hive, real GPS or network. Real public foreground/save
 /// entry points compose the same durable owner pipeline used by /drive.
@@ -42,6 +49,9 @@ class DeliveryFixture {
   bool failCompletion = false;
   static const channel = MethodChannel('flutter_foreground_task/methods');
   bool previousSkip = false;
+  HiveImpl? archiveHive;
+  bool runtimeOpen = false;
+  int storesOpened = 0;
 
   Future<void> open() async {
     root = await Directory.systemTemp.createTemp('driveit_owner_test_');
@@ -57,18 +67,26 @@ class DeliveryFixture {
     await boot();
   }
 
-  Future<void> boot() async {
+  Future<void> boot({
+    bool application = false,
+    Future<LocalOwnerAuth> Function()? restoreAuth,
+    Future<bool> Function()? confirmGuest,
+    DeviceArchiveAuthorizer? archiveAuthorizer,
+    Future<Set<String>> Function()? unfinishedArchiveDrives,
+    void Function(Widget)? mountApplication,
+    bool omitForeground = false,
+  }) async {
     final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
-    runtime = (await LocalOwnershipBootstrap.run(
-      gate: LocalOwnershipGate.synthetic(),
-      legacyBootstrap: () async => fail('Shared storage fallback'),
-      controlled: ControlledOwnershipDependencies(
-        descriptor: descriptor,
-        databaseFactory: databaseFactoryFfiNoIsolate,
-        restoreAuth: () async => auth,
-        producerRunning: () async => false,
-        worldRoadMatching: RoadMatchingService(provider: matcher),
-        openStore: (owner) => OwnerScopedLocalStore.open(
+    final gate = LocalOwnershipGate.synthetic();
+    final dependencies = ControlledOwnershipDependencies(
+      descriptor: descriptor,
+      databaseFactory: databaseFactoryFfiNoIsolate,
+      restoreAuth: restoreAuth ?? () async => auth,
+      producerRunning: () async => false,
+      worldRoadMatching: RoadMatchingService(provider: matcher),
+      openStore: (owner) {
+        storesOpened++;
+        return OwnerScopedLocalStore.open(
           root: root.path,
           owner: owner,
           beforeFlush: (group) async {
@@ -89,13 +107,70 @@ class DeliveryFixture {
               throw StateError('Synthetic completion flush failure');
             }
           },
+        );
+      },
+      attachForeground: (gps, descriptor) async {
+        if (!omitForeground) {
+          ForegroundService.attachForTesting(gps, descriptor);
+        }
+      },
+      detachForeground: (gps) async {
+        if (!omitForeground) await ForegroundService.detachForTesting(gps);
+      },
+      writerFence: application
+          ? LocalSourceWriterFence(
+              gate: gate,
+              gpsBusy: () async => false,
+              provenCategories: LocalSourceWriterFence.requiredCategories,
+              sourceRoots: [root.path],
+            )
+          : null,
+    );
+    if (application) {
+      await archiveHive?.close();
+      archiveHive = HiveImpl()
+        ..init('${root.path}/legacy')
+        ..registerAdapter(DriveSessionAdapter())
+        ..registerAdapter(RoutePointAdapter());
+      final box = await archiveHive!.openBox<DriveSession>('drives');
+      await box.put(
+        'old',
+        DriveSession(
+          id: 'old',
+          date: DateTime.utc(2026, 9, 28),
+          distance: 1000,
+          durationSeconds: 100,
+          averageSpeed: 36,
+          maxSpeed: 40,
+          mapImagePath: '',
+          route: [RoutePoint(latitude: 40, longitude: 30)],
         ),
-        attachForeground: (gps, descriptor) async =>
-            ForegroundService.attachForTesting(gps, descriptor),
-        detachForeground: ForegroundService.detachForTesting,
-      ),
-    ))!;
-    await ForegroundService.init();
+      );
+      await box.flush();
+      runtime = (await app.startDriveIt(
+        gate: gate,
+        controlled: dependencies,
+        archiveSource: SavedDriveArchiveSource(box),
+        unfinishedArchiveDrives: unfinishedArchiveDrives ?? () async => {},
+        confirmGuest: confirmGuest ?? () async => true,
+        archiveAuthorizer: archiveAuthorizer,
+        mountApplication: mountApplication ?? runApp,
+      ))!;
+    } else {
+      runtime = (await LocalOwnershipBootstrap.run(
+        gate: gate,
+        legacyBootstrap: () async => fail('Shared storage fallback'),
+        controlled: dependencies,
+      ))!;
+    }
+    runtimeOpen = true;
+    if (!application) await ForegroundService.init();
+  }
+
+  Future<void> closeRuntime() async {
+    if (!runtimeOpen) return;
+    await runtime.closeAfterProducerDetached();
+    runtimeOpen = false;
   }
 
   Future<DriveSession> record({int intervals = 300}) async {
@@ -140,16 +215,20 @@ class DeliveryFixture {
     );
   }
 
-  Future<void> save(DriveSession drive) => DriveStorageService.saveDrive(
-    drive,
-    acquisitionMetadata: {'sessionId': drive.id},
-  );
+  Future<void> save(DriveSession drive) async {
+    await DriveStorageService.saveDrive(
+      drive,
+      acquisitionMetadata: {'sessionId': drive.id},
+    );
+    await runtime.owner.worldSettled;
+  }
 
   Future<void> close() async {
     failGroup = null;
     failCompletion = false;
-    await runtime.closeAfterProducerDetached();
+    await closeRuntime();
     await auth.events.close();
+    await archiveHive?.close();
     FlutterForegroundTask.skipServiceResponseCheck = previousSkip;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, null);
@@ -158,6 +237,8 @@ class DeliveryFixture {
 }
 
 class DeliveryMatcher implements RoadMatchingProvider {
+  Completer<void>? hold;
+  bool fail = false;
   bool retry = false;
   int calls = 0;
   @override
@@ -165,6 +246,8 @@ class DeliveryMatcher implements RoadMatchingProvider {
   @override
   Future<RoadMatchingResult> match(RoadMatchingRequest request) async {
     calls++;
+    await hold?.future;
+    if (fail) throw StateError('Synthetic World provider failure');
     if (retry) {
       return RoadMatchingResult.failure(
         kind: RoadMatchingFailureKind.network,
@@ -239,6 +322,11 @@ class DeliveryLocation extends GeolocatorPlatform {
       const Stream.empty();
 }
 
+class DeliveryArchiveAuthorizer implements DeviceArchiveAuthorizer {
+  @override
+  Future<bool> verifyDeviceAccess() async => true;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
@@ -248,6 +336,282 @@ void main() {
     await f.open();
   });
   tearDown(() async => f.close());
+
+  test(
+    'main entry OFF preserves legacy bootstrap without owner dependencies',
+    () async {
+      var legacy = 0;
+      final result = await app.startDriveIt(
+        legacyBootstrap: () async {
+          legacy++;
+        },
+      );
+      expect(result, isNull);
+      expect(legacy, 1);
+      expect(LocalOwnershipGate.production.enabled, false);
+    },
+  );
+
+  test('main entry ON rejects missing composition', () async {
+    await expectLater(
+      app.startDriveIt(gate: LocalOwnershipGate.synthetic()),
+      throwsStateError,
+    );
+  });
+
+  test(
+    'application refuses an unbound foreground before inspecting shared journal',
+    () async {
+      await f.closeRuntime();
+      await expectLater(
+        f.boot(application: true, omitForeground: true),
+        throwsStateError,
+      );
+      expect(ForegroundService.controlledOwnerBridge, null);
+    },
+  );
+
+  testWidgets(
+    'Auth restore precedes store opening; restore failure never becomes guest',
+    (tester) async {
+      await tester.runAsync(f.closeRuntime);
+      final before = f.storesOpened;
+      await tester.runAsync(() async {
+        final restored = Completer<LocalOwnerAuth>();
+        final restoreEntered = Completer<void>();
+        final boot = f.boot(
+          application: true,
+          restoreAuth: () {
+            restoreEntered.complete();
+            return restored.future;
+          },
+        );
+        await restoreEntered.future;
+        expect(f.storesOpened, before);
+        restored.complete(f.auth);
+        await boot;
+      });
+      await tester.pump();
+      expect(f.storesOpened, before + 1);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(f.closeRuntime);
+      final count = f.storesOpened;
+      await tester.runAsync(() async {
+        await expectLater(
+          f.boot(
+            application: true,
+            restoreAuth: () async =>
+                throw StateError('Synthetic restore failure'),
+          ),
+          throwsStateError,
+        );
+      });
+      expect(f.storesOpened, count);
+    },
+  );
+
+  testWidgets('explicit guest choice and root guest A B A isolation', (
+    tester,
+  ) async {
+    await tester.runAsync(f.closeRuntime);
+    f.auth.emit(null);
+    final before = f.storesOpened;
+    await tester.runAsync(() async {
+      await expectLater(
+        f.boot(application: true, confirmGuest: () async => false),
+        throwsStateError,
+      );
+    });
+    expect(f.storesOpened, before);
+    await tester.runAsync(() => f.boot(application: true));
+    await tester.pump();
+    expect(find.textContaining('Misafir sürüşleri bu cihazda'), findsOneWidget);
+    late DriveSession guest;
+    await tester.runAsync(() async {
+      guest = await f.record(intervals: 2);
+      await f.save(guest);
+    });
+    for (final id in [a, b, a]) {
+      await tester.runAsync(() async {
+        f.auth.emit(id);
+        await f.runtime.owner.settled;
+      });
+      await tester.pump();
+      expect(f.runtime.owner.lease.drives(), isEmpty);
+      expect(
+        () => f.runtime.owner.lease.requireDrive(guest.id),
+        throwsStateError,
+      );
+    }
+    await tester.runAsync(() async {
+      f.auth.emit(null);
+      await f.runtime.owner.settled;
+    });
+    await tester.pump();
+    expect(f.runtime.owner.lease.drives().single.id, guest.id);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'unfinished legacy journal blocks activation before opening owner store',
+    (tester) async {
+      await tester.runAsync(f.closeRuntime);
+      final before = f.storesOpened;
+      await tester.runAsync(() async {
+        await expectLater(
+          f.boot(
+            application: true,
+            unfinishedArchiveDrives: () async => {'old-unassigned-session'},
+          ),
+          throwsStateError,
+        );
+      });
+      expect(f.storesOpened, before);
+    },
+  );
+
+  test(
+    'slow World never delays verified History save or source receipt',
+    () async {
+      final drive = await f.record();
+      f.matcher.hold = Completer<void>();
+      try {
+        await DriveStorageService.saveDrive(
+          drive,
+          acquisitionMetadata: {'sessionId': drive.id},
+        );
+        expect(f.runtime.owner.lease.drives().single.id, drive.id);
+        expect(await f.runtime.gps.journal.active(), isNull);
+        expect(f.runtime.owner.lease.career().totalDistanceMeters, 6000);
+      } finally {
+        f.matcher.hold!.complete();
+      }
+      await f.runtime.owner.worldSettled;
+      expect(
+        (await f.runtime.owner.lease.worldSnapshot())!.traces,
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'World worker exception preserves completed History and durable retry',
+    () async {
+      final drive = await f.record();
+      f.matcher.fail = true;
+      await f.save(drive);
+      expect(f.runtime.owner.lease.drives(), hasLength(1));
+      expect(await f.runtime.gps.journal.active(), isNull);
+      expect(f.runtime.owner.worldErrorCode, 'owner_world_retry_pending');
+      f.matcher.fail = false;
+      await f.runtime.owner.lease.drainWorldJobs();
+      await f.save(drive);
+      expect(f.runtime.owner.lease.drives(), hasLength(1));
+      expect(f.runtime.owner.lease.career().totalDistanceMeters, 6000);
+    },
+  );
+
+  test(
+    'completed History and pending World survive close/reopen and worker retry',
+    () async {
+      final drive = await f.record();
+      f.matcher.retry = true;
+      await f.save(drive);
+      expect(
+        f.runtime.owner.lease.read<Map>(
+          OwnedDriveFinalization.group,
+          drive.id,
+        )?['worldQueued'],
+        true,
+      );
+      await f.closeRuntime();
+      f.matcher.retry = false;
+      await f.boot();
+      expect(f.runtime.owner.lease.drives().single.id, drive.id);
+      expect(f.runtime.owner.lease.telemetry(drive.id)!.points, hasLength(301));
+      f.runtime.owner.scheduleWorldJobs(f.runtime.owner.lease);
+      await f.runtime.owner.worldSettled;
+      expect(
+        (await f.runtime.owner.lease.worldSnapshot())!.traces,
+        hasLength(1),
+      );
+      expect(f.runtime.owner.lease.career().totalDistanceMeters, 6000);
+      expect(f.runtime.owner.worldErrorCode, null);
+    },
+  );
+
+  testWidgets(
+    'application History archive detail map keeps legacy bytes unchanged',
+    (tester) async {
+      final oldMaps = maps.GoogleMapsFlutterPlatform.instance;
+      maps.GoogleMapsFlutterPlatform.instance = DeliveryMaps();
+      try {
+        await tester.runAsync(() async {
+          await f.closeRuntime();
+          await f.boot(
+            application: true,
+            archiveAuthorizer: DeliveryArchiveAuthorizer(),
+          );
+          await f.runtime.owner.worldSettled;
+        });
+        await tester.pump();
+        final source = File(f.archiveHive!.box<DriveSession>('drives').path!);
+        final before = await tester.runAsync(source.readAsBytes);
+        tester
+            .state<NavigatorState>(find.byType(Navigator).last)
+            .pushNamed('/history');
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          await tester.tap(find.text('Cihazdaki Eski Sürüşler'));
+          await f.runtime.owner.withOwnerOperation((_) async {});
+        });
+        await tester.pumpAndSettle();
+        expect(find.byType(DeviceDriveArchiveScreen), findsOneWidget);
+        await tester.tap(find.text('28.09.2026 00:00'));
+        await tester.pumpAndSettle();
+        expect(find.byType(DeviceDriveArchiveDetailScreen), findsOneWidget);
+        await tester.tap(find.text('GPS Rota Haritası'));
+        await tester.pumpAndSettle();
+        expect(find.byType(DeviceDriveArchiveMapScreen), findsOneWidget);
+        expect(await tester.runAsync(source.readAsBytes), before);
+        expect(f.runtime.owner.lease.drives(), isEmpty);
+        await tester.runAsync(() async {
+          f.auth.emit(b);
+          await f.runtime.owner.settled;
+        });
+        // New Home can show its animated first-use tour. Assert epoch removal
+        // after the frame, rather than waiting for all user-driven animations.
+        await tester.pump();
+        expect(find.byType(DeviceDriveArchiveMapScreen), findsNothing);
+        expect(f.runtime.owner.lease.drives(), isEmpty);
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        maps.GoogleMapsFlutterPlatform.instance = oldMaps;
+      }
+    },
+  );
+
+  test(
+    'application entry routes active owner session to recovery without archive capture',
+    () async {
+      late Widget application;
+      final session = await ForegroundService.start();
+      final binding = await f.runtime.gps.requireBinding(session.id);
+      await f.closeRuntime();
+      await f.boot(
+        application: true,
+        mountApplication: (widget) => application = widget,
+      );
+      // Capture only the rendering side effect; the shared entry performs the
+      // real Auth/store/foreground/recovery composition before producing this app.
+      expect((application as app.DriveItApp).ownerInitialRoute, '/drive');
+      final recovered = await f.runtime.gps.requireBinding(session.id);
+      expect(
+        recovered.provenance.sourceIdentity,
+        binding.provenance.sourceIdentity,
+      );
+    },
+  );
 
   test(
     'public start/save: durable A History Score World Career, retry exactly once',
@@ -317,11 +681,7 @@ void main() {
     },
   );
 
-  for (final group in [
-    'drive_scores',
-    'career_contributions_v1',
-    'my_world_index_metadata',
-  ]) {
+  for (final group in ['drive_scores', 'career_contributions_v1']) {
     test(
       '$group write failure: stopped source retained, hidden partial History, retry',
       () async {
@@ -350,13 +710,15 @@ void main() {
   }
 
   test(
-    'World retry is not successful save; journal/job retained without double contribution',
+    'World retry does not block save; durable job and exactly-once contribution',
     () async {
       final drive = await f.record();
       f.matcher.retry = true;
-      await expectLater(f.save(drive), throwsStateError);
-      expect((await f.runtime.gps.journal.active())!.id, drive.id);
-      expect(f.runtime.owner.lease.drives(), isEmpty);
+      await f.save(drive);
+      expect(await f.runtime.gps.journal.active(), isNull);
+      expect(f.runtime.owner.lease.drives(), hasLength(1));
+      expect(f.runtime.owner.worldErrorCode, 'owner_world_retry_pending');
+      expect(f.runtime.owner.lease.keys('my_world_pending_jobs'), hasLength(1));
       f.matcher.retry = false;
       await f.save(drive);
       expect(f.runtime.owner.lease.drives(), hasLength(1));
@@ -502,14 +864,11 @@ void main() {
                 : 1,
           );
       try {
-        await tester.pumpWidget(
-          MaterialApp(
-            home: OwnerPersonalNavigator(
-              runtime: f.runtime.owner,
-              legacyChild: const Text('legacy'),
-            ),
-          ),
-        );
+        await tester.pumpWidget(const SizedBox());
+        await tester.runAsync(() async {
+          await f.runtime.closeAfterProducerDetached();
+          await f.boot(application: true);
+        });
         await tester.pump();
         tester
             .state<NavigatorState>(find.byType(Navigator).last)
@@ -570,6 +929,7 @@ void main() {
           reason: 'UI save must enter primary owner sink',
         );
         expect(f.runtime.owner.lease.drives(), hasLength(1));
+        await tester.runAsync(() => f.runtime.owner.worldSettled);
         final drive = f.runtime.owner.lease.drives().single;
         expect(f.runtime.owner.lease.score(drive.id), isNotNull);
         expect(f.runtime.owner.lease.career().totalDistanceMeters, 6000);

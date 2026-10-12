@@ -511,39 +511,41 @@ class LocalOwnerLease implements PosterOperationBoundary {
     required GpsOwnershipStore ownership,
     required GpsOwnershipManifest binding,
     required Map<String, dynamic> proposed,
-  }) => _runtime.withOwnerOperation((current) async {
-    requireCurrent();
-    if (!identical(this, current)) throw StateError('Owner view revoked');
-    _store.requireOwner(binding.owner);
-    final finalization = OwnedDriveFinalization(
-      store: _store,
-      binding: binding,
-      requireCurrent: requireCurrent,
-      processWorld: _drainWorldJobs,
-    );
-    await finalization.prepare();
-    final sink = ScopedGpsTransferSink(_store, binding);
-    await OwnedGpsSessionCoordinator(
-      journal: journal,
-      ownership: ownership,
-      journalId: binding.journalId,
-      ownerAtStart: () => throw StateError('Transfer must not read Auth'),
-    ).save(
-      binding.sessionId!,
-      proposed,
-      sink,
-      beforeAcknowledgement: finalization.derive,
-    );
-    requireCurrent();
-    if (!await ownership.verified(binding.journalId, binding.sessionId!) ||
-        !await GpsSessionTransfer(journal, sink).verify(
-          binding.sessionId!,
-          sourceIdentity: binding.provenance.sourceIdentity,
-        )) {
-      throw StateError('Owner save receipts incomplete');
-    }
-    await finalization.complete();
-  });
+  }) async {
+    await _runtime.withOwnerOperation((current) async {
+      requireCurrent();
+      if (!identical(this, current)) throw StateError('Owner view revoked');
+      _store.requireOwner(binding.owner);
+      final finalization = OwnedDriveFinalization(
+        store: _store,
+        binding: binding,
+        requireCurrent: requireCurrent,
+      );
+      await finalization.prepare();
+      final sink = ScopedGpsTransferSink(_store, binding);
+      await OwnedGpsSessionCoordinator(
+        journal: journal,
+        ownership: ownership,
+        journalId: binding.journalId,
+        ownerAtStart: () => throw StateError('Transfer must not read Auth'),
+      ).save(
+        binding.sessionId!,
+        proposed,
+        sink,
+        beforeAcknowledgement: finalization.derive,
+      );
+      requireCurrent();
+      if (!await ownership.verified(binding.journalId, binding.sessionId!) ||
+          !await GpsSessionTransfer(journal, sink).verify(
+            binding.sessionId!,
+            sourceIdentity: binding.provenance.sourceIdentity,
+          )) {
+        throw StateError('Owner save receipts incomplete');
+      }
+      await finalization.complete();
+    });
+    _runtime.scheduleWorldJobs(this);
+  }
 
   List<String> pendingDriveFinalizations() {
     requireCurrent();
@@ -586,6 +588,55 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   String? _errorCode;
   LocalOwnerState get state => _state;
   int get epoch => _epoch;
+  Future<void> _worldWork = Future<void>.value();
+  final Set<int> _scheduledWorldEpochs = {};
+  String? _worldErrorCode;
+  String? get worldErrorCode => _worldErrorCode;
+  Future<void> get worldSettled => _worldWork;
+
+  /// Save completion never awaits this worker. Jobs remain durable on error;
+  /// a fresh owner lease on startup, resume or another save retries them.
+  void scheduleWorldJobs(LocalOwnerLease captured) {
+    if (!captured.isCurrent ||
+        captured.pendingDriveFinalizations().isNotEmpty ||
+        !_scheduledWorldEpochs.add(captured.epoch)) {
+      return;
+    }
+    // A ready notification can arrive inside the Auth transition's ticket.
+    // Enqueue a distinct operation after that transition; never nest a lease run.
+    _worldWork =
+        _exclusive(() async {
+              captured.requireCurrent();
+              await captured._drainWorldJobs();
+            }, fromAuthEvent: true)
+            .then<void>((_) async {
+              if (!captured.isCurrent) return;
+              final pending = await captured._store
+                  .worldSources(captured.owner)
+                  .getPendingJobs();
+              if (captured.isCurrent) {
+                _worldErrorCode =
+                    pending.any(
+                      (job) =>
+                          job.status == WorldJobStatus.pending ||
+                          job.status == WorldJobStatus.running ||
+                          job.status == WorldJobStatus.retryScheduled,
+                    )
+                    ? 'owner_world_retry_pending'
+                    : null;
+              }
+            })
+            .catchError((Object error, StackTrace stack) {
+              if (captured.isCurrent) {
+                _worldErrorCode = 'owner_world_retry_pending';
+              }
+            })
+            .whenComplete(() {
+              _scheduledWorldEpochs.remove(captured.epoch);
+              if (captured.isCurrent) notifyListeners();
+            });
+  }
+
   String? get errorCode => _errorCode;
   LocalOwnerLease? _lease;
   OwnerScopedLocalStore? _store;
@@ -732,6 +783,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       }
       _store = opened;
       _worldRevision = 0;
+      _worldErrorCode = null;
       _lease = LocalOwnerLease._(this, opened, requestEpoch);
       _state = LocalOwnerState.ready;
       _errorCode = null;

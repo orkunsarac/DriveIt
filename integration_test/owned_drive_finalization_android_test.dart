@@ -189,6 +189,7 @@ void main() {
         expect(lease.telemetry(session.id)!.points, hasLength(301));
         expect(lease.score(session.id), isNotNull);
         expect(lease.career().totalDistanceMeters, 6000);
+        await runtime.owner.worldSettled;
         expect((await lease.worldSnapshot())!.traces, isNotEmpty);
         expect(
           await runtime.gps.ownership.verified(

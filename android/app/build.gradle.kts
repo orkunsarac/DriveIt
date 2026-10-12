@@ -24,6 +24,52 @@ val isolatedTestDartDefines = providers.gradleProperty("dart-defines").orNull
 val driveItIsolatedTest =
     providers.gradleProperty("driveItIsolatedTest").orNull == "true" ||
         "DRIVEIT_ISOLATED_ANDROID_TEST=true" in isolatedTestDartDefines
+val flutterTarget = providers.gradleProperty("target").orNull
+    ?.replace('\\', '/')
+    ?.trimStart('/')
+    .orEmpty()
+val isAndroidIntegrationTestBuild =
+    Regex("(^|/)integration_test/[^/]+\\.dart$").containsMatchIn(flutterTarget)
+val baseApplicationId = "com.example.driveit_project"
+val isolatedApplicationId = "$baseApplicationId.isolated_test"
+val configuredApplicationId =
+    if (driveItIsolatedTest) isolatedApplicationId else baseApplicationId
+
+// Flutter's integration_test runner installs the APK immediately after its
+// Gradle assemble task. Refuse to build a test target unless the package is
+// isolated, so a missing define can never fall back to the user's app ID.
+if (isAndroidIntegrationTestBuild && !driveItIsolatedTest) {
+    throw GradleException(
+        "Refusing Android integration_test target '$flutterTarget': " +
+            "set DRIVEIT_ISOLATED_ANDROID_TEST=true; test APKs may not use $baseApplicationId.",
+    )
+}
+if (isAndroidIntegrationTestBuild && configuredApplicationId != isolatedApplicationId) {
+    throw GradleException(
+        "Refusing Android integration_test target with applicationId $configuredApplicationId; " +
+            "expected $isolatedApplicationId.",
+    )
+}
+
+val verifyAndroidApplicationId = tasks.register("verifyAndroidApplicationId") {
+    doLast {
+        val expected = if (driveItIsolatedTest) isolatedApplicationId else baseApplicationId
+        check(configuredApplicationId == expected) {
+            "Refusing Android build: applicationId $configuredApplicationId != expected $expected"
+        }
+        if (isAndroidIntegrationTestBuild) {
+            check(configuredApplicationId == isolatedApplicationId) {
+                "Refusing Android integration test install: package is not isolated"
+            }
+        }
+        logger.lifecycle("Verified Android applicationId: $configuredApplicationId")
+    }
+}
+tasks.configureEach {
+    if (name == "preDebugBuild" || name == "preReleaseBuild") {
+        dependsOn(verifyAndroidApplicationId)
+    }
+}
 
 android {
     namespace = "com.example.driveit_project"
@@ -38,7 +84,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.driveit_project"
+        applicationId = baseApplicationId
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -52,6 +98,7 @@ android {
         getByName("debug") {
             if (driveItIsolatedTest) {
                 applicationIdSuffix = ".isolated_test"
+                manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "true"
             }
         }
         release {

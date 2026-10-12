@@ -79,7 +79,8 @@ class _GroupMapState extends State<_GroupMap> {
         final boundary = member.location!.recordedAt.add(
           Duration(seconds: seconds, milliseconds: 1),
         );
-        if (boundary.isAfter(_now) && (next == null || boundary.isBefore(next))) {
+        if (boundary.isAfter(_now) &&
+            (next == null || boundary.isBefore(next))) {
           next = boundary;
         }
       }
@@ -158,7 +159,8 @@ class _GroupMapState extends State<_GroupMap> {
             : .3,
         infoWindow: InfoWindow(
           title: '${member.displayName}${mine ? ' (Sen)' : ''}',
-          snippet: 'Sentetik • $age sn önce',
+          snippet:
+              '${point.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS (${point.accuracyMeters!.round()} m)'} • $age sn önce',
         ),
         onTap: () => unawaited(_focus(member)),
       );
@@ -199,7 +201,7 @@ class _GroupMapState extends State<_GroupMap> {
               color: const Color(0xcc020a18),
               padding: const EdgeInsets.all(8),
               child: Text(
-                'Sentetik test konumları • ${markers.length} görünür üye',
+                '${visible.any((member) => member.location!.origin == GroupLocationOrigin.deviceGps) ? 'Cihaz GPS konumları' : 'Sentetik test konumları'} • ${markers.length} görünür üye',
                 key: const Key('group_marker_count'),
                 style: const TextStyle(color: Colors.white),
               ),
@@ -216,7 +218,7 @@ class _GroupMapState extends State<_GroupMap> {
                 color: const Color(0xcc020a18),
                 padding: const EdgeInsets.all(8),
                 child: Text(
-                  'Seçili: ${selected.displayName} • Sentetik',
+                  'Seçili: ${selected.displayName} • ${selected.location!.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS'}',
                   key: const Key('group_selected_member'),
                   style: const TextStyle(color: Colors.white),
                 ),

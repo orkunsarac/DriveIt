@@ -8,15 +8,21 @@ import '../../widgets/local_owner_view.dart';
 import 'group_drive_models.dart';
 import 'group_drive_service.dart';
 import 'group_drive_map.dart';
+import 'group_gps_source.dart';
+import 'group_gps_sharing.dart';
 
 class GroupDriveScreen extends StatelessWidget {
   const GroupDriveScreen({
     super.key,
     required this.lease,
     required this.service,
+    this.gpsSource,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
+
+  /// Explicit controlled Android source. Null keeps the synthetic demo.
+  final GroupGpsSource? gpsSource;
   @override
   Widget build(BuildContext context) => LocalOwnerView(
     lease: lease,
@@ -33,6 +39,7 @@ class GroupDriveScreen extends StatelessWidget {
         key: ObjectKey(service),
         lease: lease,
         service: service,
+        gpsSource: gpsSource,
       );
     },
   );
@@ -43,9 +50,11 @@ class _GroupDrivePage extends StatefulWidget {
     super.key,
     required this.lease,
     required this.service,
+    this.gpsSource,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
+  final GroupGpsSource? gpsSource;
   @override
   State<_GroupDrivePage> createState() => _GroupDrivePageState();
 }
@@ -60,19 +69,39 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
   String? _error;
   GroupLocationGrant? _grant;
   int _sequence = 0;
-  bool get _current => mounted && widget.lease.isCurrent;
+  GroupGpsSharing? _gps;
+  bool _disposing = false;
+  bool get _current => mounted && !_disposing && widget.lease.isCurrent;
 
   @override
   void initState() {
     super.initState();
     _client = widget.service.forOwner(widget.lease);
+    if (widget.gpsSource != null) {
+      _gps = GroupGpsSharing(
+        lease: widget.lease,
+        client: _client,
+        source: widget.gpsSource!,
+        clock: () => widget.service.simulationTime,
+      );
+      _gps!.addListener(_onGpsChanged);
+    }
     _subscription = _client.changes.listen((value) {
       if (_current) _showSnapshot(value);
     });
     unawaited(_run(_client.current));
   }
 
+  void _onGpsChanged() {
+    if (_current) {
+      setState(() {
+        if (_gps!.errorCode != null) _error = _gpsDescription(_gps!.errorCode!);
+      });
+    }
+  }
+
   void _showSnapshot(GroupDriveSnapshot? value) {
+    _gps?.updateGroup(value);
     _expiryTimer?.cancel();
     final own = value?.members
         .where((member) => member.accountId == widget.lease.owner.userId)
@@ -102,9 +131,15 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       context: context,
       useRootNavigator: false,
       builder: (context) => AlertDialog(
-        title: const Text('Sentetik konum paylaşımı'),
-        content: const Text(
-          'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.',
+        title: Text(
+          _gps == null
+              ? 'Sentetik konum paylaşımı'
+              : 'Cihaz GPS konumunu paylaş',
+        ),
+        content: Text(
+          _gps == null
+              ? 'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.'
+              : 'Konum izni gereklidir. Bu cihazın GPS noktaları yalnız yerel fake grupta gösterilir; uzak sunucuya gönderilmez. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.',
         ),
         actions: [
           TextButton(
@@ -126,6 +161,10 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       return;
     }
     await _run(() async {
+      if (_gps != null) {
+        await _gps!.start(group.id, consent: true);
+        return _client.current();
+      }
       final grant = await _client.startSharing(group.id, consent: true);
       if (_current) {
         _grant = grant;
@@ -165,9 +204,11 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     // Safety controls remain available even while a publish is awaiting the
     // fake transport. Revoke first; its eventual reply cannot restore a point.
     try {
-      final result = pause
-          ? await _client.pauseSharing(group!.id)
-          : await _client.stopSharing(group!.id);
+      final result = _gps != null
+          ? (pause ? await _gps!.pause(group!.id) : await _gps!.stop(group!.id))
+          : (pause
+                ? await _client.pauseSharing(group!.id)
+                : await _client.stopSharing(group!.id));
       if (_current) _showSnapshot(result);
     } on GroupDriveException catch (error) {
       if (_current) setState(() => _error = _description(error.code));
@@ -185,6 +226,8 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     try {
       final result = await action();
       if (_current) _showSnapshot(result);
+    } on GroupGpsException catch (error) {
+      if (_current) setState(() => _error = _gpsDescription(error.code));
     } on GroupDriveException catch (error) {
       if (_current) setState(() => _error = _description(error.code));
     } on StateError {
@@ -235,10 +278,22 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
 
   @override
   void dispose() {
+    _disposing = true;
     _expiryTimer?.cancel();
     unawaited(_subscription?.cancel() ?? Future<void>.value());
-    unawaited(_client.close());
     _inviteText.dispose();
+    final gps = _gps;
+    gps?.removeListener(_onGpsChanged);
+    if (gps != null) {
+      unawaited(
+        gps.close().whenComplete(() async {
+          gps.dispose();
+          await _client.close();
+        }),
+      );
+    } else {
+      unawaited(_client.close());
+    }
     super.dispose();
   }
 
@@ -274,12 +329,16 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Gerçek çevrimiçi grup değildir. Canlı konum paylaşımı kapalı.',
+            Text(
+              _gps == null
+                  ? 'Gerçek çevrimiçi grup değildir. Canlı konum paylaşımı kapalı.'
+                  : 'Yerel fake grup • Cihaz GPS’i • Yalnız uygulama görünürken',
               style: TextStyle(color: Colors.white70),
             ),
-            const Text(
-              'Haritadaki bütün noktalar sentetik test verisidir; gerçek GPS okunmaz.',
+            Text(
+              _gps == null
+                  ? 'Haritadaki bütün noktalar sentetik test verisidir; gerçek GPS okunmaz.'
+                  : 'GPS paylaşımı ayrı onay ve konum izni ister. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.',
               style: TextStyle(color: Colors.white70),
             ),
             if (_busy) const LinearProgressIndicator(),
@@ -332,25 +391,27 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
                     style: const TextStyle(color: Colors.white),
                   ),
                   subtitle: Text(
-                    '${member.role == GroupDriveRole.administrator ? 'Yönetici' : 'Üye'} • ${_sharingLabel(member.sharingStatus)}${member.location == null ? '' : ' • Sentetik, ${group.observedAt.difference(member.location!.recordedAt).inSeconds} sn önce'}',
+                    '${member.role == GroupDriveRole.administrator ? 'Yönetici' : 'Üye'} • ${_sharingLabel(member.sharingStatus)}${member.location == null ? '' : ' • ${member.location!.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS'}, ${group.observedAt.difference(member.location!.recordedAt).inSeconds} sn önce'}',
                     style: const TextStyle(color: Colors.white70),
                   ),
                 ),
               if (active) ...[
                 Text(
-                  'Sentetik paylaşım: ${_sharingLabel(own!.sharingStatus)}',
+                  '${_gps == null ? 'Sentetik' : 'GPS'} paylaşım: ${_sharingLabel(own!.sharingStatus)}',
                   key: const Key('group_sharing_status'),
                   style: const TextStyle(color: Colors.white),
                 ),
                 if (own.sharingStatus != GroupSharingStatus.sharing ||
-                    _grant == null)
+                    (_gps == null ? _grant == null : !_gps!.active))
                   FilledButton(
                     key: const Key('group_share_start'),
                     onPressed: _busy ? null : _consent,
                     child: Text(
                       own.sharingStatus == GroupSharingStatus.paused
                           ? 'Devam Et'
-                          : 'Sentetik Paylaşımı Başlat',
+                          : (_gps == null
+                                ? 'Sentetik Paylaşımı Başlat'
+                                : 'GPS Paylaşımını Başlat'),
                     ),
                   ),
                 if (own.sharingStatus == GroupSharingStatus.sharing) ...[
@@ -359,11 +420,14 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
                     onPressed: () => _withdrawSharing(true),
                     child: const Text('Paylaşımı Duraklat'),
                   ),
-                  FilledButton(
-                    key: const Key('group_send_synthetic'),
-                    onPressed: _busy || _grant == null ? null : _sendSynthetic,
-                    child: const Text('Sentetik Nokta Gönder'),
-                  ),
+                  if (_gps == null)
+                    FilledButton(
+                      key: const Key('group_send_synthetic'),
+                      onPressed: _busy || _grant == null
+                          ? null
+                          : _sendSynthetic,
+                      child: const Text('Sentetik Nokta Gönder'),
+                    ),
                 ],
                 if (own.sharingStatus != GroupSharingStatus.off)
                   TextButton(
@@ -464,5 +528,17 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     'stale_location' => 'Eski veya sırasız sentetik konum reddedildi.',
     'invalid_location' => 'Sentetik konum geçersiz.',
     _ => 'Grup işlemi tamamlanamadı ($code).',
+  };
+  static String _gpsDescription(String code) => switch (code) {
+    'permission_denied' ||
+    'permission_denied_forever' ||
+    'permission_revoked' =>
+      'Konum izni yok. GPS paylaşımı kapalı; izin verip yeniden başlatabilirsin.',
+    'location_disabled' => 'Konum servisi kapalı. Paylaşım başlamadı.',
+    'background_paused' =>
+      'GPS paylaşımı arka planda duraklatıldı. Devam etmek için yeniden onayla.',
+    'foreground_required' ||
+    'context_changed' => 'Paylaşım için uygulamaya dönüp yeniden onayla.',
+    _ => 'GPS paylaşımı kesildi ($code). Normal sürüş kaydı korunuyor.',
   };
 }

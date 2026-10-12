@@ -5,12 +5,16 @@ enum GroupDriveRole { administrator, member }
 enum GroupSharingStatus { off, sharing, paused }
 
 /// Explicit test input only. There is no GPS provider in this delivery.
-class GroupSyntheticLocation {
-  GroupSyntheticLocation({
+enum GroupLocationOrigin { synthetic, deviceGps }
+
+class GroupLocationPoint {
+  GroupLocationPoint({
     required this.latitude,
     required this.longitude,
     required this.recordedAt,
     required this.sequence,
+    required this.origin,
+    this.accuracyMeters,
   }) {
     if (!latitude.isFinite ||
         !longitude.isFinite ||
@@ -20,11 +24,42 @@ class GroupSyntheticLocation {
         !recordedAt.isUtc) {
       throw const GroupDriveException('invalid_location');
     }
+    if (origin == GroupLocationOrigin.deviceGps &&
+        (accuracyMeters == null ||
+            !accuracyMeters!.isFinite ||
+            accuracyMeters! < 0 ||
+            accuracyMeters! > 75)) {
+      throw const GroupDriveException('invalid_location');
+    }
   }
   final double latitude;
   final double longitude;
   final DateTime recordedAt;
   final int sequence;
+  final GroupLocationOrigin origin;
+  final double? accuracyMeters;
+}
+
+class GroupSyntheticLocation extends GroupLocationPoint {
+  GroupSyntheticLocation({
+    required super.latitude,
+    required super.longitude,
+    required super.recordedAt,
+    required super.sequence,
+  }) : super(origin: GroupLocationOrigin.synthetic);
+}
+
+class GroupGpsLocation extends GroupLocationPoint {
+  GroupGpsLocation({
+    required super.latitude,
+    required super.longitude,
+    required super.recordedAt,
+    required super.sequence,
+    required double accuracyMeters,
+  }) : super(
+         origin: GroupLocationOrigin.deviceGps,
+         accuracyMeters: accuracyMeters,
+       );
 }
 
 /// A revocable publication fence. Old grants cannot survive pause/resume,
@@ -107,7 +142,7 @@ class GroupDriveMember {
   final int joinOrder;
   final GroupDriveRole role;
   final GroupSharingStatus sharingStatus;
-  final GroupSyntheticLocation? location;
+  final GroupLocationPoint? location;
   final int colorIndex;
 }
 

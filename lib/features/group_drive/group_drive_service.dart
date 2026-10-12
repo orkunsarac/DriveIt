@@ -34,6 +34,7 @@ abstract interface class GroupDriveClient {
     GroupLocationGrant grant,
     GroupSyntheticLocation point,
   );
+  Future<void> publishGps(GroupLocationGrant grant, GroupGpsLocation point);
   Future<void> close();
 }
 
@@ -353,9 +354,19 @@ class _FakeClient implements GroupDriveClient {
   Future<void> publishSynthetic(
     GroupLocationGrant grant,
     GroupSyntheticLocation point,
+  ) => _publish(grant, point, 'publishSynthetic');
+
+  @override
+  Future<void> publishGps(GroupLocationGrant grant, GroupGpsLocation point) =>
+      _publish(grant, point, 'publishGps');
+
+  Future<void> _publish(
+    GroupLocationGrant grant,
+    GroupLocationPoint point,
+    String operation,
   ) async {
     _requireOpen();
-    return service._request(lease, 'publishSynthetic', (actor, now) {
+    return service._request(lease, operation, (actor, now) {
       _requireOpen();
       final group = service._authorized(actor, grant.groupId);
       final sharing = group.sharing[actor]!;
@@ -388,7 +399,7 @@ class _Sharing {
   GroupSharingStatus status = GroupSharingStatus.off;
   GroupLocationGrant? grant;
   String? issuerClient;
-  GroupSyntheticLocation? location;
+  GroupLocationPoint? location;
   int lastSequence = 0;
   void withdraw(GroupSharingStatus next) {
     status = next;

@@ -9,6 +9,7 @@ import 'package:driveit_project/features/group_drive/group_drive_map.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart'
     as maps;
 import 'group_drive_map_fake.dart';
+import 'group_gps_sharing_test.dart' show FakeGroupGps, groupPosition;
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/features/group_drive/group_drive_screen.dart';
 import 'package:driveit_project/features/group_drive/group_drive_service.dart';
@@ -622,6 +623,68 @@ void main() {
       expect(await service.forOwner(ra.lease).current(), null);
       expect(tester.takeException(), null);
       await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Home GPS consent to adapter to group map, pause and background',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final source = FakeGroupGps();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: ra,
+            legacyChild: const Text('legacy'),
+            groupDriveServiceForTesting: service,
+            groupGpsSourceFactory: () => source,
+          ),
+        ),
+      );
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await click(tester, find.byKey(const Key('group_create')));
+      expect(source.requests, 0);
+      await click(tester, find.byKey(const Key('group_share_start')));
+      await tester.tap(find.text('Vazgeç'));
+      await frames(tester);
+      expect(source.requests, 0);
+      await click(tester, find.byKey(const Key('group_share_start')));
+      await tester.tap(find.byKey(const Key('group_consent_confirm')));
+      await frames(tester);
+      expect(source.opens, 1);
+      expect(find.byKey(const Key('group_send_synthetic')), findsNothing);
+      now = DateTime.now().toUtc().add(const Duration(milliseconds: 1));
+      source.stream.add(groupPosition(now));
+      await frames(tester);
+      GoogleMap map() => tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(map().markers, hasLength(1));
+      expect(map().markers.single.infoWindow.snippet, contains('Cihaz GPS'));
+      await click(tester, find.byKey(const Key('group_share_pause')));
+      expect(map().markers, isEmpty);
+      expect(source.cancels, 1);
+      await click(tester, find.byKey(const Key('group_share_start')));
+      expect(source.opens, 1); // Resume still needs explicit consent.
+      await tester.tap(find.byKey(const Key('group_consent_confirm')));
+      await frames(tester);
+      expect(source.opens, 2);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await frames(tester);
+      expect(source.cancels, 2);
+      expect(map().markers, isEmpty);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await frames(tester);
+      expect(source.opens, 2);
+      expect(tester.takeException(), null);
+      await tester.pumpWidget(const SizedBox());
+      await source.stream.close();
     },
   );
 

@@ -15,6 +15,7 @@ import '../services/android_device_archive_authorizer.dart';
 import '../screens/owned_drive_screen.dart';
 import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
+import '../features/group_drive/group_gps_source.dart';
 
 /// Controlled harness only. Unfinished routes deliberately remain unregistered
 /// rather than falling back to a global personal data consumer.
@@ -29,6 +30,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
     this.initialRoute = '/',
     this.navigatorKey,
     this.groupDriveServiceForTesting,
+    this.groupGpsSourceFactory,
   }) : assert(deviceArchive == null || deviceArchiveSnapshot == null);
   final LocalOwnerLifecycle runtime;
   final String initialRoute;
@@ -37,6 +39,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
 
   /// Explicit simulator injection only; production does not construct it.
   final FakeGroupDriveService? groupDriveServiceForTesting;
+  final GroupGpsSource Function()? groupGpsSourceFactory;
   final DeviceDriveArchiveAccess? deviceArchive;
 
   /// Verified device snapshot only; no account/global-store fallback discovery.
@@ -58,6 +61,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
         '/group': (_, lease, _) => GroupDriveScreen(
           lease: lease,
           service: groupDriveServiceForTesting!,
+          gpsSource: groupGpsSourceFactory?.call(),
         ),
       '/history': (_, lease, _) => HistoryScreen(
         ownerLease: lease,

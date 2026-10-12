@@ -18,9 +18,9 @@ class MainActivity : FlutterFragmentActivity() {
         archiveSecurityChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,
             "driveit/device_archive_security").also { channel ->
             channel.setMethodCallHandler { call, result ->
-                if (call.method == "isIsolatedDebugRuntime") {
-                    val debug = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                    result.success(debug && packageName == "com.example.driveit_project.isolated_test")
+                if (call.method == "isIsolatedControlledRuntime") {
+                    val testBuild = applicationInfo.metaData?.getBoolean("driveit.isolated_owner_runtime") == true
+                    result.success(testBuild && packageName == "com.example.driveit_project.isolated_test")
                 } else if (call.method != "hasSecureDeviceLock") {
                     result.notImplemented()
                 } else {

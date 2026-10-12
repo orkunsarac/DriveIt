@@ -1,12 +1,13 @@
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'dart:convert';
 import 'task_handler.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'gps_session_store.dart';
 import 'gps_session_runtime.dart';
 import 'drive_recovery_status.dart';
 import 'gps_failure.dart';
-import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
+import '../config/local_ownership_gate.dart';
 import 'local_owner_gps_bridge.dart';
 import 'owned_foreground_bootstrap.dart';
 import 'owned_drive_transfer_route.dart';
@@ -95,7 +96,7 @@ class ForegroundService {
     LocalOwnerGpsBridge bridge,
     OwnedForegroundBootstrap descriptor,
   ) {
-    if (!kDebugMode ||
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable ||
         !bridge.runtime.gate.enabled ||
         _ownedBridge != null ||
         bridge.journalId != descriptor.journalId ||
@@ -118,7 +119,9 @@ class ForegroundService {
   @visibleForTesting
   static void installOwnedStartCallbackForTesting(void Function() callback) {
     final bridge = _ownedBridge;
-    if (!kDebugMode || bridge == null || !bridge.runtime.gate.enabled) {
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable ||
+        bridge == null ||
+        !bridge.runtime.gate.enabled) {
       throw StateError('Synthetic foreground callback requires test owner');
     }
     if (_ownedStartCallbackForTesting != null) {

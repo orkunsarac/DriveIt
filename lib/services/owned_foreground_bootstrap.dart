@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
 import 'package:sqflite_common/sqlite_api.dart';
+import '../config/local_ownership_gate.dart';
 import 'gps_session_store.dart';
 import 'gps_session_ownership.dart';
 import 'drive_source_provenance.dart';
@@ -60,7 +60,11 @@ class OwnedForegroundBootstrap {
   static Future<OwnedForegroundBootstrap> prepareForTesting(
     Directory directory,
   ) async {
-    if (!kDebugMode) throw StateError('Controlled GPS unavailable in release');
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable) {
+      throw StateError(
+        'Controlled GPS unavailable outside isolated test build',
+      );
+    }
     if (!directory.absolute.path
         .replaceAll('\\', '/')
         .split('/')
@@ -91,7 +95,11 @@ class OwnedForegroundBootstrap {
   }
 
   static Future<OwnedForegroundBootstrap> decode(String value) async {
-    if (!kDebugMode) throw StateError('Controlled GPS unavailable');
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable) {
+      throw StateError(
+        'Controlled GPS unavailable outside isolated test build',
+      );
+    }
     final row = jsonDecode(value);
     if (row is! Map || row['version'] != 1 || row['root'] is! String) {
       throw StateError('GPS descriptor invalid');

@@ -12,7 +12,9 @@ abstract final class OwnedDriveTransferRoute {
     LocalOwnershipGate gate,
     OwnedDriveTransfer transfer,
   ) {
-    if (!LocalOwnershipGate.debugBuild || !gate.enabled || _transfer != null) {
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable ||
+        !gate.enabled ||
+        _transfer != null) {
       throw StateError('Controlled transfer unavailable');
     }
     _transfer = transfer;

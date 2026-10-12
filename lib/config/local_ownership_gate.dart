@@ -3,11 +3,11 @@
 class LocalOwnershipGate {
   const LocalOwnershipGate.disabled() : enabled = false;
 
-  /// Explicit synthetic harness only. Keep this core dependency Flutter-free
-  /// so standalone journal/Hive crash-recovery tools can use the OFF path.
+  /// Explicit synthetic harness only. Android release test builds also set an
+  /// isolated package suffix in Gradle when this define is present.
   factory LocalOwnershipGate.synthetic() {
-    if (!debugBuild) {
-      throw StateError('Synthetic ownership requires debug mode');
+    if (!syntheticRuntimeAvailable) {
+      throw StateError('Synthetic ownership requires an isolated test build');
     }
     return const LocalOwnershipGate._(true);
   }
@@ -17,4 +17,6 @@ class LocalOwnershipGate {
   static const debugBuild =
       !bool.fromEnvironment('dart.vm.product') &&
       !bool.fromEnvironment('dart.vm.profile');
+  static const syntheticRuntimeAvailable =
+      debugBuild || bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST');
 }

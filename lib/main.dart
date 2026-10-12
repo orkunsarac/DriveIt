@@ -63,7 +63,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     if (!SupabaseBootstrap.isIsolatedAndroidTest ||
         await const MethodChannel(
               'driveit/device_archive_security',
-            ).invokeMethod<bool>('isIsolatedDebugRuntime') !=
+            ).invokeMethod<bool>('isIsolatedControlledRuntime') !=
             true) {
       throw StateError('Controlled Android runtime requires isolated package');
     }

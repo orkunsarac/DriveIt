@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../config/local_ownership_gate.dart';
 import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
 
@@ -128,7 +129,9 @@ class SupabaseAccountService extends ChangeNotifier
 
   /// Same public Auth entry points, fenced only in an explicit debug harness.
   void attachOwnerForTesting(LocalOwnerLifecycle owner) {
-    if (!kDebugMode || !owner.gate.enabled || _controlledOwner != null) {
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable ||
+        !owner.gate.enabled ||
+        _controlledOwner != null) {
       throw StateError('Controlled Auth owner unavailable');
     }
     _controlledOwner = owner;

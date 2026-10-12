@@ -162,7 +162,7 @@ class LocalSourceWriterFence implements RegisteredSourceWriterFence {
 abstract final class SourceWriterBoundary {
   static LocalSourceWriterFence? _fence;
   static void installForTesting(LocalSourceWriterFence fence) {
-    if (!LocalOwnershipGate.debugBuild ||
+    if (!LocalOwnershipGate.syntheticRuntimeAvailable ||
         !fence.gate.enabled ||
         _fence != null) {
       throw StateError('Controlled writer fence unavailable');

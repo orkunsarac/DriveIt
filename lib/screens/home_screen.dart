@@ -24,8 +24,13 @@ import '../services/owner_personal_preferences.dart';
 import '../widgets/local_owner_view.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.ownerLease});
+  const HomeScreen({
+    super.key,
+    this.ownerLease,
+    this.groupDriveAvailable = false,
+  });
   final LocalOwnerLease? ownerLease;
+  final bool groupDriveAvailable;
 
   static const blue = Color(0xff248fff);
   static const textFont = 'Noto Sans';
@@ -641,10 +646,18 @@ class _HomeScreenState extends State<HomeScreen> {
         const SizedBox(width: 10),
         Expanded(
           child: InkWell(
+            key: const Key('home_group_card'),
             borderRadius: BorderRadius.circular(22),
-            onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Grup Sürüşü yakında')),
-            ),
+            onTap: () {
+              if (!_current) return;
+              if (widget.ownerLease != null && widget.groupDriveAvailable) {
+                Navigator.of(context).pushNamed<void>('/group');
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Grup Sürüşü yakında')),
+                );
+              }
+            },
             child: _glass(
               const Color(0xff9d5cff),
               const Center(

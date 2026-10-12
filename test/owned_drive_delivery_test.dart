@@ -54,6 +54,7 @@ class DeliveryFixture {
   HiveImpl? archiveHive;
   bool runtimeOpen = false;
   int storesOpened = 0;
+  OwnerSyncRemoteAdapter? fakeSyncRemote;
 
   Future<void> open() async {
     root = await Directory.systemTemp.createTemp('driveit_owner_test_');
@@ -127,6 +128,7 @@ class DeliveryFixture {
               sourceRoots: [root.path],
             )
           : null,
+      fakeSyncRemote: fakeSyncRemote,
     );
     if (application) {
       await archiveHive?.close();
@@ -330,12 +332,15 @@ class DeliveryArchiveAuthorizer implements DeviceArchiveAuthorizer {
   Future<bool> verifyDeviceAccess() async => true;
 }
 
-class DeliverySyncRemote implements OwnerSyncRemoteAdapter {
+class DeliverySyncRemote
+    implements OwnerSyncRemoteAdapter, OwnerSyncDownloadAdapter {
   bool failNext = false;
   Completer<void>? holdNext;
   Completer<void>? enteredNext;
   final Map<String, OwnerSyncMutation> records = {};
   final List<String> calls = [];
+  final List<OwnerSyncRemoteChange> _changes = [];
+  OwnerSyncMutation? forcedDownloadMutation;
 
   @override
   Future<OwnerSyncReceipt> apply(OwnerSyncMutation mutation) async {
@@ -355,12 +360,55 @@ class DeliverySyncRemote implements OwnerSyncRemoteAdapter {
         previous.payloadFingerprint != mutation.payloadFingerprint) {
       throw const OwnerSyncConflict('remote_payload_conflict');
     }
-    records.putIfAbsent(mutation.idempotencyKey, () => mutation);
+    if (!records.containsKey(mutation.idempotencyKey)) {
+      records[mutation.idempotencyKey] = mutation;
+      _changes.add(
+        OwnerSyncRemoteChange(
+          cursor: '${_changes.length + 1}',
+          mutation: mutation,
+        ),
+      );
+    }
     return OwnerSyncReceipt(
       ownerScope: mutation.ownerScope,
       idempotencyKey: mutation.idempotencyKey,
       payloadFingerprint: mutation.payloadFingerprint,
       remoteId: 'remote:${mutation.idempotencyKey}',
+    );
+  }
+
+  @override
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  }) async {
+    final filtered = _changes
+        .where(
+          (change) =>
+              int.parse(change.cursor) > int.parse(afterCursor.isEmpty ? '0' : afterCursor) &&
+              change.mutation.ownerId == ownerId,
+        )
+        .take(limit)
+        .toList(growable: false);
+    final forced = forcedDownloadMutation;
+    if (forced != null) {
+      forcedDownloadMutation = null;
+      return OwnerSyncDownloadPage(
+        ownerId: ownerId,
+        fromCursor: afterCursor,
+        nextCursor: afterCursor.isEmpty ? '0' : afterCursor,
+        changes: [OwnerSyncRemoteChange(cursor: 'forced', mutation: forced)],
+      );
+    }
+    final next = filtered.length == limit
+        ? filtered.last.cursor
+        : '${_changes.length}';
+    return OwnerSyncDownloadPage(
+      ownerId: ownerId,
+      fromCursor: afterCursor,
+      nextCursor: next,
+      changes: filtered,
     );
   }
 }
@@ -599,6 +647,130 @@ void main() {
       expect(returnedA.pendingSyncKeys(), isEmpty);
       expect((await workerReturnedA.runOnce()).attempted, 0);
       expect(returnedA.career().totalDistanceMeters, 6000);
+    },
+  );
+
+  test(
+    'two synthetic devices auto-retry and pull one proven drive without owner leakage',
+    () async {
+      await f.closeRuntime();
+      final remote = DeliverySyncRemote()..failNext = true;
+      f.fakeSyncRemote = remote;
+      await f.boot();
+      f.matcher.fail = true;
+
+      final drive = await f.record();
+      await f.save(drive);
+      final sourceIdentity =
+          (await f.runtime.gps.requireBinding(drive.id)).provenance.sourceIdentity;
+      await f.runtime.owner.syncSettled;
+      expect(f.runtime.owner.lease.drives(), hasLength(1));
+      expect(f.runtime.owner.worldErrorCode, 'owner_world_retry_pending');
+      expect(remote.calls, hasLength(1));
+      expect(remote.records, isEmpty);
+      expect(f.runtime.owner.syncErrorCode, 'owner_sync_retry_pending');
+      final key = f.runtime.owner.lease.pendingSyncKeys().single;
+      expect(
+        f.runtime.owner.lease.syncRecord(key)!['state'],
+        'retryableFailure',
+      );
+
+      // A resume is one lifecycle retry; it is not a polling loop.
+      f.runtime.owner.onOwnerResumed();
+      await f.runtime.owner.syncSettled;
+      expect(remote.calls, hasLength(2));
+      expect(remote.records, hasLength(1));
+      expect(f.runtime.owner.lease.syncRecord(key)!['state'], 'acknowledged');
+
+      final receiverRoot = await Directory.systemTemp.createTemp(
+        'driveit_device2_sync_',
+      );
+      final receiverAuth = TestAuth();
+      String? receiverFailGroup;
+      final receiver = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: receiverAuth,
+        openStore: (owner) => OwnerScopedLocalStore.open(
+          root: receiverRoot.path,
+          owner: owner,
+          beforeFlush: (group) async {
+            if (group == receiverFailGroup) {
+              throw StateError('Synthetic receiver flush interruption');
+            }
+          },
+        ),
+        driveInProgress: () async => false,
+      );
+      try {
+        await receiver.start();
+        expect(receiver.state, LocalOwnerState.ready);
+        receiverFailGroup = 'drive_telemetry';
+        await expectLater(
+          receiver.lease.downloadSync(remote),
+          throwsStateError,
+        );
+        expect(receiver.lease.drives(), isEmpty);
+        receiverFailGroup = null;
+        final first = await receiver.lease.downloadSync(remote);
+        expect(first.applied, 1);
+        expect(receiver.lease.drives().single.id, drive.id);
+        expect(receiver.lease.requireDrive(drive.id).route, hasLength(301));
+        expect(receiver.lease.telemetry(drive.id)!.points, hasLength(301));
+        expect(receiver.lease.score(drive.id), isNotNull);
+        expect(
+          receiver.lease.read<Map>(
+            'drive_source_provenance_v1',
+            drive.id,
+          )!['sourceIdentity'],
+          sourceIdentity,
+        );
+
+        final repeated = await receiver.lease.downloadSync(remote);
+        expect(repeated.applied, 0);
+        expect(receiver.lease.drives(), hasLength(1));
+
+        final validMutation = remote.records.values.single;
+        final incompletePayload = Map<String, dynamic>.from(
+          validMutation.payload,
+        )..remove('sourceProvenance');
+        remote.forcedDownloadMutation = OwnerSyncMutation(
+          version: validMutation.version,
+          kind: validMutation.kind,
+          ownerScope: validMutation.ownerScope,
+          ownerId: validMutation.ownerId,
+          idempotencyKey: validMutation.idempotencyKey,
+          payloadFingerprint: validMutation.payloadFingerprint,
+          sourceIdentity: validMutation.sourceIdentity,
+          payload: incompletePayload,
+        );
+        await expectLater(
+          receiver.lease.downloadSync(remote),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        expect(receiver.lease.drives(), hasLength(1));
+
+        receiverAuth.emit(b);
+        await receiver.settled;
+        expect(receiver.lease.drives(), isEmpty);
+        final wrongOwner = remote.records.values.single;
+        remote.forcedDownloadMutation = wrongOwner;
+        await expectLater(
+          receiver.lease.downloadSync(remote),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        expect(receiver.lease.drives(), isEmpty);
+
+        receiverAuth.emit(a);
+        await receiver.settled;
+        expect(receiver.lease.drives(), hasLength(1));
+        final redelivery = await receiver.lease.downloadSync(remote);
+        expect(redelivery.applied, 0);
+        expect(receiver.lease.drives(), hasLength(1));
+      } finally {
+        await receiver.close();
+        await receiverAuth.events.close();
+        await receiverRoot.delete(recursive: true);
+      }
     },
   );
 

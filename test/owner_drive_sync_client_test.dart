@@ -153,6 +153,10 @@ void main() {
       final key = await clientA.enqueueDrive('local-drive-1');
       expect(await clientA.enqueueDrive('local-drive-1'), key);
       expect(clientA.pendingKeys(), [key]);
+      final queued = OwnerSyncMutation.fromMap(
+        Map.from(clientA.readRecord(key)!['mutation'] as Map),
+      );
+      expect(queued.payload['roads'], isEmpty);
 
       final remote = _FakeRemote()..failNext = true;
       expect(await clientA.send(key, remote), isFalse);

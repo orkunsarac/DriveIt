@@ -42,20 +42,39 @@ Ek bir koruma olarak, kuyrukta bekleyen upsert sürüşü yerel History tombston
 ## Güvenlik ve açık sınırlar
 
 - `LocalOwnershipGate.production` ve `main()` değişmedi; gate kapalı.
-- Owner açılışında/finalization sonrasında otomatik olan tek adım yerel outbox reconciliation'dır. Gönderim için `OwnerDriveSyncWorker` açıkça çağrılmalı ve adapter enjekte edilmelidir; lifecycle otomatik worker, login sonrası upload, ağ erişimi veya Supabase adapter'ı başlatmaz.
+- Production composition'da owner açılışı/finalization sonrasında otomatik olan adım yalnız yerel outbox reconciliation'dır; production remote adapter/worker yoktur. Sentetik kabul composition'ı açıkça fake adapter verirse lifecycle owner-ready/finalization'da bir bounded worker pass çalıştırabilir ve `onOwnerResumed()` ile tek bir retry pass tetikleyebilir. Bu test yolu gerçek Supabase/HTTP kullanmaz.
 - Gerçek A55/DriveIt verisi veya Supabase kullanılmadı; backend deploy yapılmadı.
 - Outbox A/B/guest/legacy Hive namespace'lerinden ayrıdır.
 - Outbox flush hatası + store kapat/aç kontrollü hata testiyle crash-gap recovery doğrulandı; bu gerçek OS process kill/power-loss kabulü değildir. Fake remote gerçek sunucu idempotency garantisi değildir.
 - Tombstone/remote revision ve multi-device merge çözümü eksiktir.
 
+İki bağımsız local store ile fake pull/cursor kabulinin ayrıntılı wire ve güvenlik sözleşmesi `docs/drive_sync_contract_phase6.md` içindedir. Download uygulaması sınırlı olarak History/route/telemetry/provenance ve mevcut Score snapshot'ını kopyalar; World/Career'ın diğer cihazdaki türetilmiş projection'larının eşitlenmesi bu kabulde iddia edilmez.
+
 ## Testler
 
 - `owner_drive_sync_client_test.dart`: 5/5 geçti.
-- `owned_drive_delivery_test.dart`: 24/24 geçti.
-- Tam `flutter test --timeout=2m --no-pub`: 905 geçti, 2 koşullu atlandı.
+- `owned_drive_delivery_test.dart`: 25/25 geçti.
+- Tam `flutter test --timeout=2m`: 908 geçti, 2 koşullu atlandı.
 - Atlananlar: izole Android compile-time guard gerektiren test ve Windows'ta
   sentetik symlink oluşturulamayan test.
 - `flutter analyze`: yeni uyarı yok; önceden var olan 4 info.
 - `git diff --check`: başarılı.
 
 Aşama 6 için tamamlanan kapsam: yeni, proven account drive'ın gerçek kontrollü finalization yolundan kalıcı owner-scoped outbox'a alınması; owner açılışında crash-gap reconciliation; açıkça enjekte edilen fake remote worker ile offline/retry/ACK/idempotency dikey dilimi. Gerçek senkronizasyon, otomatik uzak worker, tombstone replikasyonu ve A55 release kabulü tamamlanmış değildir.
+
+## İstemci/fake kabul kapanışı
+
+Client/fake sync kabulü TAMAMLANDI: ayrı iki owner-scoped store arasında
+sentetik upload/download, kalıcı ACK/cursor, kontrollü flush kesintisinden
+retry, duplicate önleme ve A/B izolasyonu doğrulandı.
+
+Aşama 8 gerçek backend kabul listesinde zorunlu olarak kalan işler:
+
+- Production worker ve Supabase sync henüz yok.
+- Delete sync fail-closed; tombstone identity/time/version/provenance eksik.
+- Server lease/heartbeat/fencing eksik.
+- Server cursor/snapshot tutarlılığı henüz gerçek sunucuda kanıtlanmadı.
+- Cross-device World/Career projection eksik.
+
+Production ownership gate KAPALI. Aşama 5 fiziksel A55 release kabulü
+bekliyor. Fake kabul gerçek sunucu veya fiziksel release kabulü sayılmaz.

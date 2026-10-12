@@ -7,6 +7,7 @@ import 'owned_foreground_bootstrap.dart';
 import 'owner_scoped_local_store.dart';
 import 'supabase_account_service.dart';
 import 'local_source_writer_fence.dart';
+import 'owner_drive_sync_client.dart';
 import '../features/my_world/services/road_matching_service.dart';
 
 /// Dependencies must be supplied explicitly by the synthetic harness. There is
@@ -22,6 +23,7 @@ class ControlledOwnershipDependencies {
     required this.detachForeground,
     this.writerFence,
     this.worldRoadMatching,
+    this.fakeSyncRemote,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -33,6 +35,8 @@ class ControlledOwnershipDependencies {
   final Future<void> Function(LocalOwnerGpsBridge) detachForeground;
   final LocalSourceWriterFence? writerFence;
   final RoadMatchingService? worldRoadMatching;
+  /// Synthetic acceptance only; never configured by production composition.
+  final OwnerSyncRemoteAdapter? fakeSyncRemote;
 }
 
 class ControlledOwnershipRuntime {
@@ -108,6 +112,7 @@ abstract final class LocalOwnershipBootstrap {
         openStore: controlled.openStore,
         driveInProgress: busy,
         worldRoadMatching: controlled.worldRoadMatching,
+        syncRemoteForTesting: controlled.fakeSyncRemote,
         activeSessionOwner: () async {
           final session = await journal.active();
           if (session == null) return null;

@@ -5,6 +5,13 @@ import 'package:crypto/crypto.dart';
 import 'gps_session_ownership.dart';
 import 'local_source_bundle.dart';
 import 'owner_scoped_local_store.dart';
+import 'gps_hive_transfer_sink.dart';
+import 'gps_session_transfer.dart';
+import 'drive_score_storage_service.dart';
+import '../models/drive_session.dart';
+import '../models/drive_score_record.dart';
+import '../models/canonical_telemetry_point.dart';
+import 'drive_source_provenance.dart';
 
 enum OwnerSyncMutationKind { driveUpsert, driveTombstone }
 
@@ -123,12 +130,55 @@ abstract interface class OwnerSyncRemoteAdapter {
   Future<OwnerSyncReceipt> apply(OwnerSyncMutation mutation);
 }
 
+class OwnerSyncRemoteChange {
+  const OwnerSyncRemoteChange({required this.cursor, required this.mutation});
+  final String cursor;
+  final OwnerSyncMutation mutation;
+}
+
+class OwnerSyncDownloadPage {
+  const OwnerSyncDownloadPage({
+    required this.ownerId,
+    required this.fromCursor,
+    required this.nextCursor,
+    required this.changes,
+  });
+  final String ownerId;
+  final String fromCursor;
+  final String nextCursor;
+  final List<OwnerSyncRemoteChange> changes;
+}
+
+/// Optional download half of the future protocol. Implementations must scope
+/// the cursor and every row to the authenticated owner; clients still verify
+/// all returned evidence before applying it.
+abstract interface class OwnerSyncDownloadAdapter {
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  });
+}
+
+class OwnerSyncDownloadResult {
+  const OwnerSyncDownloadResult({
+    required this.applied,
+    required this.duplicates,
+    required this.cursor,
+  });
+  final int applied;
+  final int duplicates;
+  final String cursor;
+}
+
 /// Durable queue for only new, proven, account-owned drives. Construction is
 /// explicit and there is no production network adapter or automatic worker.
 class OwnerDriveSyncClient {
   OwnerDriveSyncClient({required this.store, required this.requireCurrent});
 
   static const boxName = 'owner_sync_outbox_v1';
+  static const downloadStateBox = 'owner_sync_download_v1';
+  static const receivedBox = 'owner_sync_received_v1';
   static const contractVersion = 1;
 
   final OwnerScopedLocalStore store;
@@ -162,7 +212,11 @@ class OwnerDriveSyncClient {
     if (provenance?.isProven != true || provenance!.ownerScope != store.scope) {
       throw StateError('Only proven owner drive sources can be queued');
     }
-    final payload = source.toMap();
+    // World map-matching roads are a mutable derived projection. They have
+    // their own lifecycle and must not mutate the immutable drive upsert (or
+    // change its fingerprint after a server ACK). Route/telemetry remain the
+    // canonical inputs from which this device can derive its own World state.
+    final payload = source.toMap()..['roads'] = <dynamic>[];
     final key = _idempotencyKey(
       accountId,
       OwnerSyncMutationKind.driveUpsert,
@@ -379,6 +433,314 @@ class OwnerDriveSyncClient {
     return true;
   }
 
+  /// Applies one server page to this account's separate local replica. The
+  /// cursor advances only after all rows are durable and read back. Importing
+  /// rows stay hidden from History until the finalization marker is committed.
+  /// Deletion changes and legacy/unproven rows fail closed.
+  Future<OwnerSyncDownloadResult> downloadOnce(
+    OwnerSyncDownloadAdapter remote, {
+    int limit = 32,
+  }) async {
+    requireCurrent();
+    final accountId = _requireAccount();
+    if (limit <= 0 || limit > 100) {
+      throw ArgumentError.value(limit, 'limit');
+    }
+    final stateKey = 'drive_cursor_v1';
+    final previous = store.read<Map>(owner, downloadStateBox, stateKey);
+    if (previous != null &&
+        (previous['ownerId'] != accountId ||
+            previous['ownerScope'] != store.scope ||
+            previous['version'] != 1 ||
+            previous['cursor'] is! String)) {
+      throw const OwnerSyncConflict('download_cursor_owner_conflict');
+    }
+    final cursor = previous?['cursor'] as String? ?? '';
+    final page = await remote.download(
+      ownerId: accountId,
+      afterCursor: cursor,
+      limit: limit,
+    );
+    requireCurrent();
+    if (page.ownerId != accountId ||
+        page.fromCursor != cursor ||
+        (page.nextCursor.isEmpty && page.changes.isNotEmpty) ||
+        page.changes.length > limit) {
+      throw const OwnerSyncConflict('download_page_scope_or_cursor_conflict');
+    }
+    // Validate the entire page before any local write. A cross-owner or
+    // unsupported mutation therefore cannot partially affect this account.
+    for (final change in page.changes) {
+      if (change.cursor.isEmpty ||
+          change.mutation.kind != OwnerSyncMutationKind.driveUpsert) {
+        throw const OwnerSyncConflict('download_change_unsupported');
+      }
+      _validateMutationOwner(change.mutation);
+    }
+    var applied = 0;
+    var duplicates = 0;
+    for (final change in page.changes) {
+      requireCurrent();
+      final wasApplied = await _applyDownloadedDrive(change.mutation);
+      if (wasApplied) {
+        applied++;
+      } else {
+        duplicates++;
+      }
+    }
+    requireCurrent();
+    await store.put(owner, downloadStateBox, stateKey, {
+      'version': 1,
+      'ownerId': accountId,
+      'ownerScope': store.scope,
+      'cursor': page.nextCursor,
+    });
+    requireCurrent();
+    final saved = store.read<Map>(owner, downloadStateBox, stateKey);
+    if (saved?['cursor'] != page.nextCursor ||
+        saved?['ownerId'] != accountId ||
+        saved?['ownerScope'] != store.scope) {
+      throw StateError('Download checkpoint read-back failed');
+    }
+    return OwnerSyncDownloadResult(
+      applied: applied,
+      duplicates: duplicates,
+      cursor: page.nextCursor,
+    );
+  }
+
+  Future<bool> _applyDownloadedDrive(OwnerSyncMutation mutation) async {
+    if (mutation.kind != OwnerSyncMutationKind.driveUpsert) {
+      throw const OwnerSyncConflict('download_tombstone_not_supported');
+    }
+    final bundle = LocalSourceBundle.fromMap(mutation.payload);
+    bundle.validate();
+    final provenance = bundle.sourceProvenance;
+    if (bundle.ownerScope != store.scope ||
+        provenance?.isProven != true ||
+        provenance!.ownerScope != store.scope ||
+        provenance.sourceIdentity != mutation.sourceIdentity ||
+        !_isUuid(mutation.sourceIdentity)) {
+      throw const OwnerSyncConflict('download_provenance_invalid');
+    }
+    final driveId = bundle.drive.id;
+    final receivedKey = mutation.idempotencyKey;
+    final receipt = store.read<Map>(owner, receivedBox, receivedKey);
+    if (receipt != null &&
+        (receipt['ownerId'] != owner.userId ||
+            receipt['ownerScope'] != store.scope ||
+            receipt['sourceIdentity'] != mutation.sourceIdentity ||
+            receipt['driveId'] != driveId ||
+            receipt['payloadFingerprint'] != mutation.payloadFingerprint)) {
+      throw const OwnerSyncConflict('download_receipt_conflict');
+    }
+    if (receipt?['state'] == 'completed') {
+      _verifyDownloadedDrive(bundle, mutation);
+      return false;
+    }
+
+    final priorDrive = store.read<DriveSession>(owner, 'drives', driveId);
+    final priorFinalization = store.read<Map>(
+      owner,
+      'owned_drive_finalization_v1',
+      driveId,
+    );
+    final priorProvenance = store.read<Map>(
+      owner,
+      'drive_source_provenance_v1',
+      driveId,
+    );
+    if (priorDrive != null) {
+      final p = priorProvenance == null
+          ? null
+          : DriveSourceProvenance.fromMap(priorProvenance);
+      final matchingImport =
+          priorFinalization?['state'] == 'sync_importing' &&
+          priorFinalization?['sourceIdentity'] == mutation.sourceIdentity &&
+          priorFinalization?['payloadFingerprint'] ==
+              mutation.payloadFingerprint;
+      if ((p == null && !matchingImport) ||
+          (p != null &&
+              (p.isProven != true ||
+                  p.sourceIdentity != mutation.sourceIdentity)) ||
+          (priorFinalization?['state'] != 'completed' && !matchingImport)) {
+        throw const OwnerSyncConflict('download_local_drive_identity_conflict');
+      }
+      if (jsonEncode(driveTransferManifest(priorDrive)) !=
+          jsonEncode(driveTransferManifest(bundle.drive))) {
+        throw const OwnerSyncConflict('download_local_drive_content_conflict');
+      }
+    } else if (priorFinalization != null &&
+        (priorFinalization['state'] != 'sync_importing' ||
+            priorFinalization['sourceIdentity'] != mutation.sourceIdentity ||
+            priorFinalization['payloadFingerprint'] !=
+                mutation.payloadFingerprint)) {
+      throw const OwnerSyncConflict('download_finalization_conflict');
+    }
+
+    // The pending marker is written first: owner History readers exclude it.
+    // It is also the durable retry descriptor after a process interruption.
+    await store.put(owner, 'owned_drive_finalization_v1', driveId, {
+      'state': 'sync_importing',
+      'derivedReady': false,
+      'syncImport': true,
+      'ownerId': owner.userId,
+      'ownerScope': store.scope,
+      'sourceIdentity': mutation.sourceIdentity,
+      'payloadFingerprint': mutation.payloadFingerprint,
+      'idempotencyKey': receivedKey,
+    });
+    await store.put(owner, receivedBox, receivedKey, {
+      'version': 1,
+      'state': 'applying',
+      'ownerId': owner.userId,
+      'ownerScope': store.scope,
+      'sourceIdentity': mutation.sourceIdentity,
+      'driveId': driveId,
+      'payloadFingerprint': mutation.payloadFingerprint,
+    });
+
+    final existingDrive = store.read<DriveSession>(owner, 'drives', driveId);
+    if (existingDrive != null &&
+        jsonEncode(driveTransferManifest(existingDrive)) !=
+        jsonEncode(driveTransferManifest(bundle.drive))) {
+      throw const OwnerSyncConflict('download_drive_payload_conflict');
+    }
+    // Re-put even a matching value: a prior attempt may have failed after Hive
+    // put but before flush, and in-memory equality is not durability evidence.
+    await store.put(owner, 'drives', driveId, bundle.drive);
+    final telemetry = bundle.telemetry;
+    if (telemetry == null) {
+      throw const OwnerSyncConflict('download_telemetry_missing');
+    }
+    final existingTelemetry = store.read<DriveTelemetryRecord>(
+      owner,
+      'drive_telemetry',
+      driveId,
+    );
+    if (existingTelemetry != null &&
+        !_sameTelemetry(existingTelemetry, telemetry)) {
+      throw const OwnerSyncConflict('download_telemetry_conflict');
+    }
+    await store.put(owner, 'drive_telemetry', driveId, telemetry);
+    final priorSourceEvidence = store.read<Map>(
+      owner,
+      'drive_source_provenance_v1',
+      driveId,
+    );
+    if (priorSourceEvidence != null &&
+        jsonEncode(priorSourceEvidence) != jsonEncode(provenance.toMap())) {
+      throw const OwnerSyncConflict('download_source_evidence_conflict');
+    }
+    await store.put(
+      owner,
+      'drive_source_provenance_v1',
+      driveId,
+      provenance.toMap(),
+    );
+    final score = bundle.score;
+    if (score != null) {
+      final scoreKey = DriveScoreStorageService.keyFor(
+        driveId,
+        score.algorithmVersion,
+      );
+      final priorScore = store.read<DriveScoreRecord>(
+        owner,
+        'drive_scores',
+        scoreKey,
+      );
+      if (priorScore != null &&
+          jsonEncode(_scoreMap(priorScore)) != jsonEncode(_scoreMap(score))) {
+        throw const OwnerSyncConflict('download_score_conflict');
+      }
+      await store.put(owner, 'drive_scores', scoreKey, score);
+    }
+
+    _verifyDownloadedCore(bundle, mutation);
+    await store.put(owner, 'owned_drive_finalization_v1', driveId, {
+      'state': 'completed',
+      'derivedReady': true,
+      'syncImport': true,
+      'ownerId': owner.userId,
+      'ownerScope': store.scope,
+      'sourceIdentity': mutation.sourceIdentity,
+      'payloadFingerprint': mutation.payloadFingerprint,
+      'idempotencyKey': receivedKey,
+    });
+    await store.put(owner, receivedBox, receivedKey, {
+      'version': 1,
+      'state': 'completed',
+      'ownerId': owner.userId,
+      'ownerScope': store.scope,
+      'sourceIdentity': mutation.sourceIdentity,
+      'driveId': driveId,
+      'payloadFingerprint': mutation.payloadFingerprint,
+    });
+    _verifyDownloadedDrive(bundle, mutation);
+    return true;
+  }
+
+  void _verifyDownloadedCore(LocalSourceBundle bundle, OwnerSyncMutation m) {
+    final id = bundle.drive.id;
+    final drive = store.read<DriveSession>(owner, 'drives', id);
+    final telemetry = store.read<DriveTelemetryRecord>(
+      owner,
+      'drive_telemetry',
+      id,
+    );
+    final p = store.read<Map>(owner, 'drive_source_provenance_v1', id);
+    if (drive == null ||
+        jsonEncode(driveTransferManifest(drive)) !=
+            jsonEncode(driveTransferManifest(bundle.drive)) ||
+        telemetry == null ||
+        !_sameTelemetry(telemetry, bundle.telemetry!) ||
+        p == null ||
+        jsonEncode(p) != jsonEncode(bundle.sourceProvenance!.toMap()) ||
+        m.ownerId != owner.userId ||
+        m.ownerScope != store.scope) {
+      throw StateError('Downloaded drive read-back failed');
+    }
+  }
+
+  void _verifyDownloadedDrive(LocalSourceBundle bundle, OwnerSyncMutation m) {
+    _verifyDownloadedCore(bundle, m);
+    final finalization = store.read<Map>(
+      owner,
+      'owned_drive_finalization_v1',
+      bundle.drive.id,
+    );
+    final receipt = store.read<Map>(owner, receivedBox, m.idempotencyKey);
+    if (finalization?['state'] != 'completed' ||
+        finalization?['sourceIdentity'] != m.sourceIdentity ||
+        finalization?['payloadFingerprint'] != m.payloadFingerprint ||
+        receipt?['state'] != 'completed' ||
+        receipt?['payloadFingerprint'] != m.payloadFingerprint) {
+      throw StateError('Downloaded drive completion evidence invalid');
+    }
+  }
+
+  static bool _sameTelemetry(
+    DriveTelemetryRecord left,
+    DriveTelemetryRecord right,
+  ) =>
+      left.driveSessionId == right.driveSessionId &&
+      left.dataVersion == right.dataVersion &&
+      left.createdAt == right.createdAt &&
+      jsonEncode(left.acquisitionMetadata) ==
+          jsonEncode(right.acquisitionMetadata) &&
+      jsonEncode(left.points.map(GpsSessionTransfer.pointContent).toList()) ==
+          jsonEncode(right.points.map(GpsSessionTransfer.pointContent).toList());
+
+  static Map<String, Object?> _scoreMap(DriveScoreRecord value) => {
+    'driveId': value.driveId,
+    'algorithm': value.algorithmVersion,
+    'telemetryVersion': value.telemetryDataVersion,
+    'calculatedAt': value.calculatedAt.toIso8601String(),
+    'total': value.totalScore,
+    'confidence': value.overallConfidence,
+    'categories': value.categories.map((category) => category.toMap()).toList(),
+  };
+
   List<String> pendingKeys() {
     requireCurrent();
     _requireAccount();
@@ -458,7 +820,8 @@ class OwnerDriveSyncClient {
     if (mutation.kind == OwnerSyncMutationKind.driveUpsert) {
       final bundle = LocalSourceBundle.fromMap(mutation.payload);
       bundle.validate();
-      if (bundle.ownerScope != owner.targetStore ||
+      if (bundle.telemetry == null ||
+          bundle.ownerScope != owner.targetStore ||
           bundle.sourceProvenance?.isProven != true ||
           bundle.sourceProvenance!.sourceIdentity != mutation.sourceIdentity) {
         throw const OwnerSyncConflict('mutation_source_provenance_conflict');

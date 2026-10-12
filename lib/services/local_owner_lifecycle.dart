@@ -157,6 +157,14 @@ class LocalOwnerLease implements PosterOperationBoundary {
         remote: remote,
       );
 
+  Future<OwnerSyncDownloadResult> downloadSync(
+    OwnerSyncDownloadAdapter remote,
+  ) =>
+      OwnerDriveSyncClient(
+        store: _store,
+        requireCurrent: requireCurrent,
+      ).downloadOnce(remote);
+
   Future<void> preparePublication(String id, Iterable<PlanetSegment> segments) {
     final frozen = List<PlanetSegment>.unmodifiable(segments);
     return _runtime.withOwnerOperation((current) async {
@@ -597,10 +605,18 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     required this.driveInProgress,
     this.activeSessionOwner,
     this.worldRoadMatching,
-  });
+    this.syncRemoteForTesting,
+  }) {
+    if (syncRemoteForTesting != null &&
+        (!gate.enabled || !LocalOwnershipGate.syntheticRuntimeAvailable)) {
+      throw StateError('Automatic sync adapter is test-only');
+    }
+  }
   final LocalOwnershipGate gate;
   final LocalOwnerAuth auth;
   final RoadMatchingService? worldRoadMatching;
+  /// Fake adapter only. Production composition must leave this null.
+  final OwnerSyncRemoteAdapter? syncRemoteForTesting;
   final Future<OwnerScopedLocalStore> Function(GpsOwner) openStore;
 
   /// Must return true for unfinished/recoverable sessions too; errors block.
@@ -632,8 +648,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final Set<int> _scheduledSyncEpochs = {};
   final Set<int> _syncRescheduleEpochs = {};
 
-  /// Local-only reconciliation. It creates durable outbox rows but never
-  /// contacts a remote service or starts a network retry loop.
+  /// Reconciles locally and, only in an explicitly synthetic composition,
+  /// performs one bounded fake-remote pass. No timer or retry loop is started.
   void scheduleOwnerSync(LocalOwnerLease captured) {
     if (!captured.isCurrent || captured.owner.kind != GpsOwnerKind.account) {
       return;
@@ -646,11 +662,24 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     }
     _syncWork = _exclusive(() async {
       captured.requireCurrent();
-      await OwnerDriveSyncClient(
+      final client = OwnerDriveSyncClient(
         store: captured._store,
         requireCurrent: captured.requireCurrent,
-      ).reconcileFinalizedDrives();
+      );
+      await client.reconcileFinalizedDrives();
       if (captured.isCurrent) _syncErrorCode = null;
+      final fakeRemote = syncRemoteForTesting;
+      if (fakeRemote != null) {
+        final result = await OwnerDriveSyncWorker(
+          client: client,
+          remote: fakeRemote,
+        ).runOnce(limit: 16);
+        if (captured.isCurrent) {
+          _syncErrorCode = result.notAcknowledged == 0
+              ? null
+              : 'owner_sync_retry_pending';
+        }
+      }
     }, fromAuthEvent: true).catchError((Object error, StackTrace stack) {
       // A failed outbox flush is recoverable by the same owner on next start.
       // Keep the successful drive finalization and expose a safe status code.
@@ -661,6 +690,15 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       if (rerun && captured.isCurrent) scheduleOwnerSync(captured);
       if (captured.isCurrent) notifyListeners();
     });
+  }
+
+  /// Lifecycle hook for a resumed application. Each call is one bounded
+  /// attempt; retryable rows are not spun on while offline.
+  void onOwnerResumed() {
+    final current = _lease;
+    if (syncRemoteForTesting != null && current != null && current.isCurrent) {
+      scheduleOwnerSync(current);
+    }
   }
 
   /// Save completion never awaits this worker. Jobs remain durable on error;

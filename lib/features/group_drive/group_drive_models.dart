@@ -2,6 +2,48 @@ enum GroupDriveStatus { active, ended, expired }
 
 enum GroupDriveRole { administrator, member }
 
+enum GroupSharingStatus { off, sharing, paused }
+
+/// Explicit test input only. There is no GPS provider in this delivery.
+class GroupSyntheticLocation {
+  GroupSyntheticLocation({
+    required this.latitude,
+    required this.longitude,
+    required this.recordedAt,
+    required this.sequence,
+  }) {
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude.abs() > 90 ||
+        longitude.abs() > 180 ||
+        sequence <= 0 ||
+        !recordedAt.isUtc) {
+      throw const GroupDriveException('invalid_location');
+    }
+  }
+  final double latitude;
+  final double longitude;
+  final DateTime recordedAt;
+  final int sequence;
+}
+
+/// A revocable publication fence. Old grants cannot survive pause/resume,
+/// rejoining, owner epoch changes, or a new publishing client.
+class GroupLocationGrant {
+  const GroupLocationGrant({
+    required this.groupId,
+    required this.membershipId,
+    required this.publicationId,
+    required this.ownerEpoch,
+    required this.startedAt,
+  });
+  final String groupId;
+  final String membershipId;
+  final String publicationId;
+  final int ownerEpoch;
+  final DateTime startedAt;
+}
+
 class GroupDriveException implements Exception {
   const GroupDriveException(this.code);
   final String code;
@@ -54,6 +96,9 @@ class GroupDriveMember {
     required this.joinedAt,
     required this.joinOrder,
     required this.role,
+    this.sharingStatus = GroupSharingStatus.off,
+    this.location,
+    this.colorIndex = 0,
   });
   final String membershipId;
   final String accountId;
@@ -61,6 +106,9 @@ class GroupDriveMember {
   final DateTime joinedAt;
   final int joinOrder;
   final GroupDriveRole role;
+  final GroupSharingStatus sharingStatus;
+  final GroupSyntheticLocation? location;
+  final int colorIndex;
 }
 
 class GroupDriveSnapshot {

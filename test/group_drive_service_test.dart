@@ -131,7 +131,9 @@ void main() {
     );
     expect(outcomes.where((value) => value == 'joined'), hasLength(9));
     expect(outcomes.where((value) => value == 'group_full'), hasLength(1));
-    expect((await admin.current())!.members, hasLength(10));
+    final members = (await admin.current())!.members;
+    expect(members, hasLength(10));
+    expect(members.map((member) => member.colorIndex).toSet(), hasLength(10));
   });
 
   test(
@@ -289,7 +291,17 @@ void main() {
       await f.open();
       try {
         final client = service.forOwner(f.runtime.owner.lease);
-        await client.create();
+        final group = await client.create();
+        final grant = await client.startSharing(group.id, consent: true);
+        await client.publishSynthetic(
+          grant,
+          GroupSyntheticLocation(
+            latitude: 10,
+            longitude: 20,
+            recordedAt: service.simulationTime,
+            sequence: 1,
+          ),
+        );
         service.available = false;
         await expectLater(client.current(), throwsA(errorCode('offline')));
         final drive = await f.record();
@@ -299,6 +311,11 @@ void main() {
           hasLength(301),
         );
         expect(f.runtime.owner.lease.pendingSyncKeys(), hasLength(1));
+        service.available = true;
+        expect(
+          (await client.current())!.members.single.sharingStatus,
+          GroupSharingStatus.sharing,
+        );
       } finally {
         await f.close();
       }

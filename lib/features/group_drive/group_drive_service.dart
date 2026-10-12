@@ -10,6 +10,9 @@ import 'group_drive_models.dart';
 /// in a server transaction. No Supabase or GPS dependency exists here.
 abstract interface class GroupDriveService {
   bool get isSimulation;
+
+  /// Test clock only; a real remote adapter must not manufacture GPS samples.
+  DateTime get simulationTime;
   GroupDriveClient forOwner(LocalOwnerLease lease);
 }
 
@@ -21,6 +24,17 @@ abstract interface class GroupDriveClient {
   Future<GroupDriveSnapshot> extend(String groupId);
   Future<void> leave(String groupId);
   Future<void> end(String groupId);
+  Future<GroupLocationGrant> startSharing(
+    String groupId, {
+    required bool consent,
+  });
+  Future<GroupDriveSnapshot> pauseSharing(String groupId);
+  Future<GroupDriveSnapshot> stopSharing(String groupId);
+  Future<void> publishSynthetic(
+    GroupLocationGrant grant,
+    GroupSyntheticLocation point,
+  );
+  Future<void> close();
 }
 
 /// Explicitly injected, in-memory simulator. Mutations run synchronously after
@@ -39,15 +53,20 @@ class FakeGroupDriveService implements GroupDriveService {
   final _updates = StreamController<void>.broadcast(sync: true);
   final Map<String, _Group> _groups = {};
   final Map<String, String> _membership = {};
+  final Set<_FakeClient> _clients = {};
   bool available = true;
   bool _closed = false;
   @override
   bool get isSimulation => true;
+  @override
+  DateTime get simulationTime => _now;
 
   @override
   GroupDriveClient forOwner(LocalOwnerLease lease) {
     _actor(lease);
-    return _FakeClient(this, lease);
+    final client = _FakeClient(this, lease);
+    _clients.add(client);
+    return client;
   }
 
   String _actor(LocalOwnerLease lease) {
@@ -81,6 +100,7 @@ class FakeGroupDriveService implements GroupDriveService {
       if (group.status == GroupDriveStatus.active &&
           !now.isBefore(group.expiresAt)) {
         group.status = GroupDriveStatus.expired;
+        group.stopAllSharing();
         group.revision++;
         changed = true;
       }
@@ -88,7 +108,23 @@ class FakeGroupDriveService implements GroupDriveService {
     if (changed) _notify();
   }
 
-  void _notify() => _updates.add(null);
+  void _notify() {
+    if (!_closed) _updates.add(null);
+  }
+
+  void _revokePublisher(String clientId) {
+    var changed = false;
+    for (final group in _groups.values) {
+      for (final sharing in group.sharing.values) {
+        if (sharing.issuerClient == clientId) {
+          sharing.withdraw(GroupSharingStatus.paused);
+          group.revision++;
+          changed = true;
+        }
+      }
+    }
+    if (changed) _notify();
+  }
 
   _Group? _current(String actor) => _groups[_membership[actor]];
 
@@ -116,14 +152,39 @@ class FakeGroupDriveService implements GroupDriveService {
 
   Future<void> close() async {
     _closed = true;
+    for (final client in _clients.toList()) {
+      await client.close();
+    }
     await _updates.close();
   }
 }
 
 class _FakeClient implements GroupDriveClient {
-  _FakeClient(this.service, this.lease);
+  _FakeClient(this.service, this.lease) {
+    lease.changes.addListener(_ownerChanged);
+  }
   final FakeGroupDriveService service;
   final LocalOwnerLease lease;
+  final _id = DriveSourceProvenance.newUuidV4();
+  bool _closed = false;
+  void _ownerChanged() {
+    if (!lease.isCurrent) service._revokePublisher(_id);
+  }
+
+  void _requireOpen() {
+    if (_closed) throw const GroupDriveException('client_closed');
+    service._actor(lease);
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    lease.changes.removeListener(_ownerChanged);
+    service._clients.remove(this);
+    service._revokePublisher(_id);
+  }
+
   @override
   Stream<GroupDriveSnapshot?> get changes {
     service._actor(lease);
@@ -210,6 +271,7 @@ class _FakeClient implements GroupDriveClient {
       service._request(lease, 'leave', (actor, _) {
         final group = service._authorized(actor, groupId);
         group.members.remove(actor);
+        group.sharing.remove(actor);
         service._membership.remove(actor);
         if (group.members.isEmpty) {
           group.status = GroupDriveStatus.ended;
@@ -230,9 +292,111 @@ class _FakeClient implements GroupDriveClient {
       service._request(lease, 'end', (actor, _) {
         final group = service._authorized(actor, groupId, admin: true);
         group.status = GroupDriveStatus.ended;
+        group.stopAllSharing();
         group.revision++;
         service._notify();
       });
+
+  @override
+  Future<GroupLocationGrant> startSharing(
+    String groupId, {
+    required bool consent,
+  }) async {
+    _requireOpen();
+    return service._request(lease, 'startSharing', (actor, now) {
+      _requireOpen();
+      if (!consent) throw const GroupDriveException('consent_required');
+      final group = service._authorized(actor, groupId);
+      final member = group.members[actor]!;
+      final grant = GroupLocationGrant(
+        groupId: groupId,
+        membershipId: member.membershipId,
+        publicationId: DriveSourceProvenance.newUuidV4(),
+        ownerEpoch: lease.epoch,
+        startedAt: now,
+      );
+      final sharing = group.sharing[actor]!;
+      sharing.withdraw(GroupSharingStatus.sharing);
+      sharing.grant = grant;
+      sharing.issuerClient = _id;
+      group.revision++;
+      service._notify();
+      return grant;
+    });
+  }
+
+  /// Withdrawal is synchronous in this fake backend, including when its
+  /// transport fault switch is offline. No awaited request can slip a sample
+  /// between the user's pause and the publication fence being revoked.
+  Future<GroupDriveSnapshot> _withdraw(
+    String groupId,
+    GroupSharingStatus status,
+  ) async {
+    _requireOpen();
+    final actor = service._actor(lease);
+    service._expire(service._now);
+    final group = service._authorized(actor, groupId);
+    group.sharing[actor]!.withdraw(status);
+    group.revision++;
+    service._notify();
+    return group.snapshot(service._now);
+  }
+
+  @override
+  Future<GroupDriveSnapshot> pauseSharing(String groupId) =>
+      _withdraw(groupId, GroupSharingStatus.paused);
+  @override
+  Future<GroupDriveSnapshot> stopSharing(String groupId) =>
+      _withdraw(groupId, GroupSharingStatus.off);
+
+  @override
+  Future<void> publishSynthetic(
+    GroupLocationGrant grant,
+    GroupSyntheticLocation point,
+  ) async {
+    _requireOpen();
+    return service._request(lease, 'publishSynthetic', (actor, now) {
+      _requireOpen();
+      final group = service._authorized(actor, grant.groupId);
+      final sharing = group.sharing[actor]!;
+      if (sharing.status != GroupSharingStatus.sharing ||
+          sharing.issuerClient != _id ||
+          sharing.grant?.publicationId != grant.publicationId ||
+          sharing.grant?.startedAt != grant.startedAt ||
+          grant.ownerEpoch != lease.epoch ||
+          grant.membershipId != group.members[actor]!.membershipId) {
+        throw const GroupDriveException('publication_revoked');
+      }
+      final age = now.difference(point.recordedAt);
+      if (age.isNegative ||
+          age > const Duration(seconds: 15) ||
+          point.recordedAt.isBefore(sharing.grant!.startedAt) ||
+          point.sequence <= sharing.lastSequence ||
+          (sharing.location != null &&
+              point.recordedAt.isBefore(sharing.location!.recordedAt))) {
+        throw const GroupDriveException('stale_location');
+      }
+      sharing.location = point;
+      sharing.lastSequence = point.sequence;
+      group.revision++;
+      service._notify();
+    });
+  }
+}
+
+class _Sharing {
+  GroupSharingStatus status = GroupSharingStatus.off;
+  GroupLocationGrant? grant;
+  String? issuerClient;
+  GroupSyntheticLocation? location;
+  int lastSequence = 0;
+  void withdraw(GroupSharingStatus next) {
+    status = next;
+    grant = null;
+    issuerClient = null;
+    location = null;
+    lastSequence = 0;
+  }
 }
 
 class _Group {
@@ -252,7 +416,22 @@ class _Group {
   int revision = 1;
   int nextOrder = 0;
   final Map<String, GroupDriveMember> members = {};
+  final Map<String, _Sharing> sharing = {};
+  void stopAllSharing() {
+    for (final value in sharing.values) {
+      value.withdraw(GroupSharingStatus.off);
+    }
+  }
+
   void add(String actor, String displayName, DateTime now) {
+    sharing[actor] = _Sharing();
+    final usedColors = members.values
+        .map((member) => member.colorIndex)
+        .toSet();
+    final colorIndex = List.generate(
+      GroupDriveSnapshot.maximumMembers,
+      (index) => index,
+    ).firstWhere((index) => !usedColors.contains(index));
     members[actor] = GroupDriveMember(
       membershipId: DriveSourceProvenance.newUuidV4(),
       accountId: actor,
@@ -260,6 +439,7 @@ class _Group {
       joinedAt: now,
       joinOrder: nextOrder++,
       role: GroupDriveRole.member,
+      colorIndex: colorIndex,
     );
   }
 
@@ -284,6 +464,17 @@ class _Group {
         role: member.accountId == admin
             ? GroupDriveRole.administrator
             : GroupDriveRole.member,
+        colorIndex: member.colorIndex,
+        sharingStatus:
+            status == GroupDriveStatus.active && now.isBefore(expiresAt)
+            ? sharing[member.accountId]!.status
+            : GroupSharingStatus.off,
+        location:
+            status == GroupDriveStatus.active &&
+                now.isBefore(expiresAt) &&
+                sharing[member.accountId]!.status == GroupSharingStatus.sharing
+            ? sharing[member.accountId]!.location
+            : null,
       ),
     ),
   );

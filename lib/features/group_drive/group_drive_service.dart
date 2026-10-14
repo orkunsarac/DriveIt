@@ -23,6 +23,7 @@ abstract interface class GroupDriveClient {
   Future<GroupDriveSnapshot> join(GroupDriveInvite invite);
   Future<GroupDriveSnapshot> extend(String groupId);
   Future<void> leave(String groupId);
+  Future<GroupDriveSnapshot> ban(String groupId, String memberOwnerId);
   Future<void> end(String groupId);
   Future<GroupLocationGrant> startSharing(
     String groupId, {
@@ -286,6 +287,25 @@ class _FakeClient implements GroupDriveClient {
         }
         group.revision++;
         service._notify();
+      });
+
+  @override
+  Future<GroupDriveSnapshot> ban(String groupId, String memberOwnerId) =>
+      service._request(lease, 'ban', (actor, now) {
+        final group = service._authorized(actor, groupId, admin: true);
+        if (memberOwnerId == actor) {
+          throw const GroupDriveException('cannot_ban_administrator');
+        }
+        if (group.members.remove(memberOwnerId) == null) {
+          throw const GroupDriveException('member_not_found');
+        }
+        group.sharing.remove(memberOwnerId);
+        if (service._membership[memberOwnerId] == groupId) {
+          service._membership.remove(memberOwnerId);
+        }
+        group.revision++;
+        service._notify();
+        return group.snapshot(now);
       });
 
   @override

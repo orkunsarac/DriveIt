@@ -185,6 +185,7 @@ class DeviceDriveArchiveAccess {
 class _ArchiveAuthenticationLifecycle with WidgetsBindingObserver {
   _ArchiveAuthenticationLifecycle() {
     WidgetsBinding.instance.addObserver(this);
+    _diagnostic('observer_added');
   }
   bool _backgrounded = false;
   Completer<void>? _resumed;
@@ -193,6 +194,7 @@ class _ArchiveAuthenticationLifecycle with WidgetsBindingObserver {
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   void requireForeground() {
     if (_backgrounded || !_foreground) {
+      _diagnostic('foreground_rejected');
       throw StateError('archive_not_foreground');
     }
   }
@@ -211,6 +213,7 @@ class _ArchiveAuthenticationLifecycle with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _diagnostic('lifecycle_${state.name}');
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
@@ -220,6 +223,19 @@ class _ArchiveAuthenticationLifecycle with WidgetsBindingObserver {
         _resumed?.isCompleted == false) {
       _resumed!.complete();
     }
+  }
+
+  void _diagnostic(String event) {
+    const releaseAcceptance = bool.fromEnvironment(
+      'DRIVEIT_RELEASE_ACCEPTANCE',
+    );
+    const isolatedTest = bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST');
+    if (!kReleaseMode || !releaseAcceptance || !isolatedTest) return;
+    debugPrint(
+      'DRIVEIT_ARCHIVE_LIFECYCLE:$event:'
+      'flutter=${WidgetsBinding.instance.lifecycleState?.name ?? "null"}:'
+      'backgrounded=$_backgrounded',
+    );
   }
 
   void close() => WidgetsBinding.instance.removeObserver(this);

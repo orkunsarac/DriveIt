@@ -123,3 +123,27 @@ simultaneous recording/group subscriptions, and independent cancellation on Andr
 3. A55 native acceptance and earlier Phase 5 isolated-release acceptance remain pending.
 4. Fake groups are process-local, not communication between users/devices. Real backend and
    remote withdrawal/expiry semantics are outside scope.
+
+## Physical GPS diagnosis update — 2026-10-12
+
+The isolated A55 run reached the integration `main`, binding, `testWidgets` body, Home →
+Group screen, in-app consent, and Android location permission request. The user confirmed
+granting the Android permission. The test then timed out waiting for a fake-group member
+state containing a valid `deviceGps` sample. The test withheld coordinates by design.
+
+This proves the flow advanced past test startup and permission request, but does **not**
+prove whether Android emitted a provider callback, whether a sample was rejected by the
+existing 15-second freshness / 75 m accuracy / timestamp / bounds checks, or whether a
+publish reached the fake service. No filter was relaxed and no synthetic coordinate was
+substituted for a physical fix.
+
+A later single attempt through `tool/run_android_integration_test.ps1` produced no Flutter
+test output and no completion result; it was stopped rather than retried. Test-only,
+coordinate-free diagnostics were added for permission/provider state, stream callbacks,
+filter decisions, lifecycle/owner fences, fake publish, and member read-back. Those
+diagnostics have host coverage, but physical callback evidence remains unavailable.
+
+**Physical visible-app GPS acceptance remains PARTIAL and open.** The independent group-only
+background FGS remains a separate open acceptance item. No further Android test is planned
+until the user explicitly resumes device acceptance. Production ownership remains disabled;
+the real DriveIt package and user data were not targeted.

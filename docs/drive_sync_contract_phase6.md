@@ -6,6 +6,15 @@ created by this document or implementation.
 
 ## Identity and authorization
 
+Newly created mutations use contract v2 canonical JSON (recursively sorted
+object keys, list order preserved). Existing persisted v1 outbox rows retain
+their legacy JSON fingerprint and idempotency key; enqueue reconciliation
+reuses a matching v1 row by proven source identity and full payload comparison
+instead of creating a second logical upload. A source-identity or payload
+conflict fails closed. A server must treat contract encoding version as a
+decoder/fingerprint rule, not as permission to create two manifests for the
+same `(owner, source namespace, source identity, operation)`.
+
 - A syncable record is a newly finalized, account-owned drive with a proven
   immutable `sourceIdentity` (UUID v4), owner scope, complete drive/route,
   telemetry, and optional already-persisted Drive Score. `drive.id` remains a
@@ -25,6 +34,15 @@ created by this document or implementation.
   identity is not automatically inferred or merged.
 
 ## Upload, ACK, and retry
+
+The Phase 8 storage adapter must use a staged protocol: reserve a durable,
+owner-bound upload intent; upload canonical envelope bytes to a private
+staging object; then server-verify the object and atomically finalize the
+manifest, owner change event, intent and receipt in PostgreSQL. Storage upload
+alone is never a successful/visible drive. Retry after ambiguous responses
+uses the same idempotency key and bytes. Orphan cleanup first marks only an
+expired unfinalized intent cleanup-pending under a DB lock, then deletes that
+exact private object, then marks the intent expired. No general bucket sweep.
 
 - Upload v1 carries operation/version, authenticated-owner assertion, source
   identity/version/namespace, stable idempotency key, SHA-256 of canonical

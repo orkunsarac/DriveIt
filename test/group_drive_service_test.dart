@@ -284,6 +284,131 @@ void main() {
     },
   );
 
+  test('group location grants fence stale, paused, left and banned publishers', () async {
+    final ra = await runtime(a);
+    final rb = await runtime(b);
+    final admin = service.forOwner(ra.lease);
+    final member = service.forOwner(rb.lease);
+    final group = await admin.create();
+    await member.join(group.invite);
+
+    final firstGrant = await member.startSharing(group.id, consent: true);
+    await expectLater(
+      member.publishGps(
+        firstGrant,
+        GroupGpsLocation(
+          latitude: 41,
+          longitude: 29,
+          recordedAt: now.subtract(const Duration(seconds: 16)),
+          sequence: 1,
+          accuracyMeters: 5,
+        ),
+      ),
+      throwsA(errorCode('stale_location')),
+    );
+    await member.publishGps(
+      firstGrant,
+      GroupGpsLocation(
+        latitude: 41,
+        longitude: 29,
+        recordedAt: now,
+        sequence: 1,
+        accuracyMeters: 5,
+      ),
+    );
+    expect((await admin.current())!.members.last.location, isNotNull);
+
+    final paused = await member.pauseSharing(group.id);
+    expect(paused.members.last.location, isNull);
+    await expectLater(
+      member.publishGps(
+        firstGrant,
+        GroupGpsLocation(
+          latitude: 41,
+          longitude: 29,
+          recordedAt: now,
+          sequence: 2,
+          accuracyMeters: 5,
+        ),
+      ),
+      throwsA(errorCode('publication_revoked')),
+    );
+    final resumedGrant = await member.startSharing(group.id, consent: true);
+    expect(resumedGrant.publicationId, isNot(firstGrant.publicationId));
+    await member.publishGps(
+      resumedGrant,
+      GroupGpsLocation(
+        latitude: 41,
+        longitude: 29,
+        recordedAt: now,
+        sequence: 1,
+        accuracyMeters: 5,
+      ),
+    );
+
+    await admin.ban(group.id, b);
+    expect(await member.current(), isNull);
+    expect((await admin.current())!.members, hasLength(1));
+    await expectLater(
+      member.publishGps(
+        resumedGrant,
+        GroupGpsLocation(
+          latitude: 41,
+          longitude: 29,
+          recordedAt: now,
+          sequence: 2,
+          accuracyMeters: 5,
+        ),
+      ),
+      throwsA(errorCode('membership_required')),
+    );
+  });
+
+  test('owner epoch revokes old publication and clears coordinates for peers', () async {
+    final ra = await runtime(a);
+    final rb = await runtime(b);
+    final ownerClient = service.forOwner(ra.lease);
+    final peerClient = service.forOwner(rb.lease);
+    final group = await ownerClient.create();
+    await peerClient.join(group.invite);
+    final grant = await ownerClient.startSharing(group.id, consent: true);
+    await ownerClient.publishGps(
+      grant,
+      GroupGpsLocation(
+        latitude: 41,
+        longitude: 29,
+        recordedAt: now,
+        sequence: 1,
+        accuracyMeters: 5,
+      ),
+    );
+    expect((await peerClient.current())!.members.first.location, isNotNull);
+
+    auths[auths.length - 2].emit(
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    );
+    await ra.settled;
+    final peerSnapshot = (await peerClient.current())!;
+    final oldOwner = peerSnapshot.members.firstWhere(
+      (member) => member.accountId == a,
+    );
+    expect(oldOwner.sharingStatus, GroupSharingStatus.paused);
+    expect(oldOwner.location, isNull);
+    await expectLater(
+      ownerClient.publishGps(
+        grant,
+        GroupGpsLocation(
+          latitude: 41,
+          longitude: 29,
+          recordedAt: now,
+          sequence: 2,
+          accuracyMeters: 5,
+        ),
+      ),
+      throwsStateError,
+    );
+  });
+
   test(
     'offline group service leaves actual normal drive save and sync intact',
     () async {

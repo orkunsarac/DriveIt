@@ -33,6 +33,8 @@ import 'services/career_contribution_repository.dart';
 import 'services/local_lifecycle_journal.dart';
 import 'features/world_publish/segments/planet_segment_outbox.dart';
 import 'features/my_world/repositories/world_source_snapshot_repository.dart';
+import 'features/group_drive/group_drive_service.dart';
+import 'features/group_drive/group_gps_source.dart';
 
 void main() async {
   await startDriveIt();
@@ -94,6 +96,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     detachForeground: controlled.detachForeground,
     writerFence: controlled.writerFence,
     worldRoadMatching: controlled.worldRoadMatching,
+    groupDriveServiceForTesting: controlled.groupDriveServiceForTesting,
   );
   final runtime = (await LocalOwnershipBootstrap.run(
     gate: gate,
@@ -111,6 +114,8 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     mountApplication(
       DriveItApp(
         ownerRuntime: runtime,
+        groupDriveServiceForTesting:
+            dependencies.groupDriveServiceForTesting,
         ownerInitialRoute:
             recovery.canStartNewDrive &&
                 runtime.owner.lease.pendingDriveFinalizations().isEmpty
@@ -249,6 +254,7 @@ class DriveItApp extends StatefulWidget {
   final ControlledOwnershipRuntime? ownerRuntime;
   final String ownerInitialRoute;
   final DeviceDriveArchiveSnapshot? deviceArchiveSnapshot;
+  final FakeGroupDriveService? groupDriveServiceForTesting;
   final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
   deviceArchiveLoader;
   final Widget initialScreen;
@@ -262,6 +268,7 @@ class DriveItApp extends StatefulWidget {
     this.ownerRuntime,
     this.ownerInitialRoute = '/',
     this.deviceArchiveSnapshot,
+    this.groupDriveServiceForTesting,
     this.deviceArchiveLoader,
   });
 
@@ -342,6 +349,8 @@ class _DriveItAppState extends State<DriveItApp> {
           ? widget.initialScreen
           : _OwnedApplicationHome(
               runtime: widget.ownerRuntime!,
+              groupDriveServiceForTesting:
+                  widget.groupDriveServiceForTesting,
               archive: widget.deviceArchiveSnapshot,
               archiveLoader: widget.deviceArchiveLoader,
               initialRoute: widget.ownerInitialRoute,
@@ -353,11 +362,13 @@ class _DriveItAppState extends State<DriveItApp> {
 class _OwnedApplicationHome extends StatefulWidget {
   const _OwnedApplicationHome({
     required this.runtime,
+    this.groupDriveServiceForTesting,
     this.archive,
     this.archiveLoader,
     this.initialRoute = '/',
   });
   final ControlledOwnershipRuntime runtime;
+  final FakeGroupDriveService? groupDriveServiceForTesting;
   final String initialRoute;
   final DeviceDriveArchiveSnapshot? archive;
   final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
@@ -459,6 +470,16 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
                   : '/',
               deviceArchiveSnapshot: widget.archive,
               deviceArchiveLoader: widget.archiveLoader,
+              groupDriveServiceForTesting:
+                  widget.groupDriveServiceForTesting,
+              groupGpsSourceFactory:
+                  widget.groupDriveServiceForTesting != null && Platform.isAndroid
+                  ? () => AndroidGroupGpsSource(
+                      diagnostics: (event) => debugPrint(
+                        'A55_GROUP_GPS_DIAG:$event',
+                      ),
+                    )
+                  : null,
               legacyChild: const SizedBox.shrink(),
             ),
           ),

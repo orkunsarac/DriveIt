@@ -13,6 +13,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
     required this.lease,
     required this.client,
     required this.source,
+    this.diagnostics,
     DateTime Function()? clock,
   }) : clock = clock ?? DateTime.now {
     lease.changes.addListener(_ownerChanged);
@@ -21,6 +22,8 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   final LocalOwnerLease lease;
   final GroupDriveClient client;
   final GroupGpsSource source;
+  /// Optional, non-sensitive diagnostics supplied only by a controlled test composition.
+  final void Function(String event)? diagnostics;
   final DateTime Function() clock;
   StreamSubscription<Position>? _subscription;
   Timer? _permissionCheck;
@@ -39,6 +42,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       !_closed && lease.isCurrent && generation == _generation && _visible;
   void _ownerChanged() {
     if (!lease.isCurrent) {
+      diagnostics?.call('owner_epoch_invalidated');
       _halt();
     }
   }
@@ -55,11 +59,17 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
               m.membershipId == grant.membershipId &&
               m.sharingStatus == GroupSharingStatus.sharing,
         )) {
+      diagnostics?.call('grant_invalidated_group_or_membership');
       _halt();
+    } else {
+      diagnostics?.call('group_membership_valid');
     }
   }
 
   Future<void> start(String groupId, {required bool consent}) async {
+    diagnostics?.call(
+      'start_requested:consent:$consent,visible:$_visible,owner_current:${lease.isCurrent}',
+    );
     if (!consent) throw const GroupGpsException('consent_required');
     if (!_visible || !lease.isCurrent || _closed) {
       throw const GroupGpsException('foreground_required');
@@ -73,6 +83,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       const Duration(minutes: 1),
       onTimeout: () => throw const GroupGpsException('permission_timeout'),
     );
+    diagnostics?.call('permission_access_granted');
     if (!_valid(generation)) throw const GroupGpsException('context_changed');
     final grant = await client.startSharing(groupId, consent: true);
     if (!_valid(generation)) {
@@ -80,12 +91,20 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       throw const GroupGpsException('context_changed');
     }
     _grant = grant;
+    diagnostics?.call(
+      'sharing_grant_active:owner_current:${lease.isCurrent},visible:$_visible',
+    );
     _lastTimestamp = null;
     _sequence = 0;
     try {
       _subscription = source.positions().listen(
         (position) {
-          if (!_valid(generation) || !active) return;
+          if (!_valid(generation) || !active) {
+            diagnostics?.call(
+              'callback_rejected:invalid_generation_or_inactive',
+            );
+            return;
+          }
           _latest = position;
           if (!_sending) {
             _work = _pump(generation);
@@ -95,6 +114,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
         onError: (Object _) => unawaited(_fail('gps_stream_error', generation)),
         onDone: () => unawaited(_fail('gps_stream_ended', generation)),
       );
+      diagnostics?.call('position_subscription_created');
       _permissionCheck = Timer.periodic(const Duration(seconds: 2), (_) {
         if (!_checking && _valid(generation)) unawaited(_check(generation));
       });
@@ -146,8 +166,15 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
             position.latitude.abs() > 90 ||
             position.longitude.abs() > 180 ||
             (_lastTimestamp != null && !at.isAfter(_lastTimestamp!))) {
+          diagnostics?.call(
+            'position_rejected:${_rejectReason(position, at, age)}',
+          );
           continue;
         }
+        diagnostics?.call(
+          'position_accepted:age_seconds:${age.inSeconds},accuracy:${position.accuracy.round()},owner_current:${lease.isCurrent},group_grant:true',
+        );
+        diagnostics?.call('fake_publish_started');
         await client.publishGps(
           _grant!,
           GroupGpsLocation(
@@ -158,6 +185,16 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
             sequence: ++_sequence,
           ),
         );
+        diagnostics?.call('fake_publish_completed');
+        if (diagnostics != null) {
+          final snapshot = await client.current();
+          final member = snapshot?.members
+              .where((item) => item.membershipId == _grant?.membershipId)
+              .firstOrNull;
+          diagnostics?.call(
+            'fake_member_readback:device_gps:${member?.location?.origin == GroupLocationOrigin.deviceGps},sharing:${member?.sharingStatus == GroupSharingStatus.sharing}',
+          );
+        }
         if (!_valid(generation)) return;
         _lastTimestamp = at;
       }
@@ -189,6 +226,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _fail(String code, int generation) async {
     if (generation != _generation || _closed) return;
+    diagnostics?.call('sharing_failed:$code');
     final groupId = _grant?.groupId;
     _halt();
     errorCode = code;
@@ -217,12 +255,36 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    diagnostics?.call(
+      'lifecycle:${state.name},visible:${state == AppLifecycleState.resumed}',
+    );
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       unawaited(_fail('background_paused', _generation));
       _halt(); // Invalidates a pending permission request too.
     }
+  }
+
+  String _rejectReason(Position position, DateTime at, Duration age) {
+    if (position.isMocked) return 'mocked';
+    if (at.isBefore(_grant!.startedAt)) return 'before_grant';
+    if (age.isNegative) return 'future_timestamp';
+    if (age > const Duration(seconds: 15)) return 'stale';
+    if (!position.accuracy.isFinite || position.accuracy < 0) {
+      return 'invalid_accuracy';
+    }
+    if (position.accuracy > 75) return 'accuracy_over_75m';
+    if (!position.latitude.isFinite || !position.longitude.isFinite) {
+      return 'invalid_coordinates';
+    }
+    if (position.latitude.abs() > 90 || position.longitude.abs() > 180) {
+      return 'coordinates_out_of_range';
+    }
+    if (_lastTimestamp != null && !at.isAfter(_lastTimestamp!)) {
+      return 'non_monotonic_timestamp';
+    }
+    return 'unknown';
   }
 
   Future<void> close() async {

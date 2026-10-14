@@ -57,6 +57,7 @@ dependencies:
 dev_dependencies:
   integration_test:
     sdk: flutter
+  http: ^1.6.0
   sqflite_common_ffi: ^2.3.6
   flutter_test:
     sdk: flutter

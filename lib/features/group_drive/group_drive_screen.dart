@@ -82,6 +82,9 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         lease: widget.lease,
         client: _client,
         source: widget.gpsSource!,
+        diagnostics: widget.gpsSource is GroupGpsDiagnosticSource
+            ? (widget.gpsSource! as GroupGpsDiagnosticSource).diagnostics
+            : null,
         clock: () => widget.service.simulationTime,
       );
       _gps!.addListener(_onGpsChanged);

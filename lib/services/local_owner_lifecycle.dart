@@ -159,11 +159,10 @@ class LocalOwnerLease implements PosterOperationBoundary {
 
   Future<OwnerSyncDownloadResult> downloadSync(
     OwnerSyncDownloadAdapter remote,
-  ) =>
-      OwnerDriveSyncClient(
-        store: _store,
-        requireCurrent: requireCurrent,
-      ).downloadOnce(remote);
+  ) => OwnerDriveSyncClient(
+    store: _store,
+    requireCurrent: requireCurrent,
+  ).downloadOnce(remote);
 
   Future<void> preparePublication(String id, Iterable<PlanetSegment> segments) {
     final frozen = List<PlanetSegment>.unmodifiable(segments);
@@ -550,6 +549,12 @@ class LocalOwnerLease implements PosterOperationBoundary {
         store: _store,
         binding: binding,
         requireCurrent: requireCurrent,
+        ownerEpoch: () => epoch,
+      );
+      driveItReleaseAcceptanceDiagnostic(
+        'transfer_started',
+        binding: binding,
+        ownerEpoch: epoch,
       );
       await finalization.prepare();
       final sink = ScopedGpsTransferSink(_store, binding);
@@ -564,12 +569,26 @@ class LocalOwnerLease implements PosterOperationBoundary {
         sink,
         beforeAcknowledgement: finalization.derive,
       );
+      driveItReleaseAcceptanceDiagnostic(
+        'gps_transfer_acknowledged',
+        binding: binding,
+        ownerEpoch: epoch,
+      );
       requireCurrent();
-      if (!await ownership.verified(binding.journalId, binding.sessionId!) ||
-          !await GpsSessionTransfer(journal, sink).verify(
-            binding.sessionId!,
-            sourceIdentity: binding.provenance.sourceIdentity,
-          )) {
+      final sidecarVerified = await ownership.verified(
+        binding.journalId,
+        binding.sessionId!,
+      );
+      final journalVerified = await GpsSessionTransfer(journal, sink).verify(
+        binding.sessionId!,
+        sourceIdentity: binding.provenance.sourceIdentity,
+      );
+      driveItReleaseAcceptanceDiagnostic(
+        'receipts_verified sidecar=$sidecarVerified journal=$journalVerified',
+        binding: binding,
+        ownerEpoch: epoch,
+      );
+      if (!sidecarVerified || !journalVerified) {
         throw StateError('Owner save receipts incomplete');
       }
       await finalization.complete();
@@ -615,6 +634,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final LocalOwnershipGate gate;
   final LocalOwnerAuth auth;
   final RoadMatchingService? worldRoadMatching;
+
   /// Fake adapter only. Production composition must leave this null.
   final OwnerSyncRemoteAdapter? syncRemoteForTesting;
   final Future<OwnerScopedLocalStore> Function(GpsOwner) openStore;
@@ -642,6 +662,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       if (identical(work, _syncWork)) return;
     }
   }
+
   String? _syncErrorCode;
   String? get syncErrorCode => _syncErrorCode;
   Future<void> _syncWork = Future<void>.value();
@@ -660,36 +681,41 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       _syncRescheduleEpochs.add(captured.epoch);
       return;
     }
-    _syncWork = _exclusive(() async {
-      captured.requireCurrent();
-      final client = OwnerDriveSyncClient(
-        store: captured._store,
-        requireCurrent: captured.requireCurrent,
-      );
-      await client.reconcileFinalizedDrives();
-      if (captured.isCurrent) _syncErrorCode = null;
-      final fakeRemote = syncRemoteForTesting;
-      if (fakeRemote != null) {
-        final result = await OwnerDriveSyncWorker(
-          client: client,
-          remote: fakeRemote,
-        ).runOnce(limit: 16);
-        if (captured.isCurrent) {
-          _syncErrorCode = result.notAcknowledged == 0
-              ? null
-              : 'owner_sync_retry_pending';
-        }
-      }
-    }, fromAuthEvent: true).catchError((Object error, StackTrace stack) {
-      // A failed outbox flush is recoverable by the same owner on next start.
-      // Keep the successful drive finalization and expose a safe status code.
-      if (captured.isCurrent) _syncErrorCode = 'owner_sync_queue_pending';
-    }).whenComplete(() {
-      _scheduledSyncEpochs.remove(captured.epoch);
-      final rerun = _syncRescheduleEpochs.remove(captured.epoch);
-      if (rerun && captured.isCurrent) scheduleOwnerSync(captured);
-      if (captured.isCurrent) notifyListeners();
-    });
+    _syncWork =
+        _exclusive(() async {
+              captured.requireCurrent();
+              final client = OwnerDriveSyncClient(
+                store: captured._store,
+                requireCurrent: captured.requireCurrent,
+              );
+              await client.reconcileFinalizedDrives();
+              if (captured.isCurrent) _syncErrorCode = null;
+              final fakeRemote = syncRemoteForTesting;
+              if (fakeRemote != null) {
+                final result = await OwnerDriveSyncWorker(
+                  client: client,
+                  remote: fakeRemote,
+                ).runOnce(limit: 16);
+                if (captured.isCurrent) {
+                  _syncErrorCode = result.notAcknowledged == 0
+                      ? null
+                      : 'owner_sync_retry_pending';
+                }
+              }
+            }, fromAuthEvent: true)
+            .catchError((Object error, StackTrace stack) {
+              // A failed outbox flush is recoverable by the same owner on next start.
+              // Keep the successful drive finalization and expose a safe status code.
+              if (captured.isCurrent) {
+                _syncErrorCode = 'owner_sync_queue_pending';
+              }
+            })
+            .whenComplete(() {
+              _scheduledSyncEpochs.remove(captured.epoch);
+              final rerun = _syncRescheduleEpochs.remove(captured.epoch);
+              if (rerun && captured.isCurrent) scheduleOwnerSync(captured);
+              if (captured.isCurrent) notifyListeners();
+            });
   }
 
   /// Lifecycle hook for a resumed application. Each call is one bounded
@@ -704,11 +730,20 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   /// Save completion never awaits this worker. Jobs remain durable on error;
   /// a fresh owner lease on startup, resume or another save retries them.
   void scheduleWorldJobs(LocalOwnerLease captured) {
+    final pendingFinalizations = captured.pendingDriveFinalizations();
     if (!captured.isCurrent ||
-        captured.pendingDriveFinalizations().isNotEmpty ||
+        pendingFinalizations.isNotEmpty ||
         !_scheduledWorldEpochs.add(captured.epoch)) {
+      driveItReleaseAcceptanceDiagnostic(
+        'world_worker_not_scheduled pendingFinalizations=${pendingFinalizations.length}',
+        ownerEpoch: captured.epoch,
+      );
       return;
     }
+    driveItReleaseAcceptanceDiagnostic(
+      'world_worker_started',
+      ownerEpoch: captured.epoch,
+    );
     // A ready notification can arrive inside the Auth transition's ticket.
     // Enqueue a distinct operation after that transition; never nest a lease run.
     _worldWork =
@@ -721,6 +756,11 @@ class LocalOwnerLifecycle extends ChangeNotifier {
               final pending = await captured._store
                   .worldSources(captured.owner)
                   .getPendingJobs();
+              driveItReleaseAcceptanceDiagnostic(
+                'world_worker_finished pending=${pending.length} '
+                'states=${pending.map((job) => job.status.name).join(',')}',
+                ownerEpoch: captured.epoch,
+              );
               if (captured.isCurrent) {
                 _worldErrorCode =
                     pending.any(
@@ -734,6 +774,12 @@ class LocalOwnerLifecycle extends ChangeNotifier {
               }
             })
             .catchError((Object error, StackTrace stack) {
+              driveItReleaseAcceptanceDiagnostic(
+                'world_worker_failed',
+                ownerEpoch: captured.epoch,
+                error: error,
+                stackTrace: stack,
+              );
               if (captured.isCurrent) {
                 _worldErrorCode = 'owner_world_retry_pending';
               }

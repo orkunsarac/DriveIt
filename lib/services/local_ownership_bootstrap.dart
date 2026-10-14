@@ -9,6 +9,7 @@ import 'supabase_account_service.dart';
 import 'local_source_writer_fence.dart';
 import 'owner_drive_sync_client.dart';
 import '../features/my_world/services/road_matching_service.dart';
+import '../features/group_drive/group_drive_service.dart';
 
 /// Dependencies must be supplied explicitly by the synthetic harness. There is
 /// no release define, shared-box fallback, legacy migration or import here.
@@ -24,6 +25,7 @@ class ControlledOwnershipDependencies {
     this.writerFence,
     this.worldRoadMatching,
     this.fakeSyncRemote,
+    this.groupDriveServiceForTesting,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -37,6 +39,9 @@ class ControlledOwnershipDependencies {
   final RoadMatchingService? worldRoadMatching;
   /// Synthetic acceptance only; never configured by production composition.
   final OwnerSyncRemoteAdapter? fakeSyncRemote;
+  /// Opt-in test composition only. Android activation is independently
+  /// guarded by the isolated package and native manifest in startDriveIt.
+  final FakeGroupDriveService? groupDriveServiceForTesting;
 }
 
 class ControlledOwnershipRuntime {

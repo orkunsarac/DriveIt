@@ -15,6 +15,7 @@ import 'package:driveit_project/services/gps_session_store.dart';
 import 'package:driveit_project/services/gps_hive_transfer_sink.dart';
 import 'package:driveit_project/services/local_owner_gps_bridge.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/services/owner_drive_sync_client.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import 'package:driveit_project/services/supabase_local_owner_auth.dart';
 import 'package:driveit_project/widgets/local_owner_navigator.dart';
@@ -34,6 +35,38 @@ class TestAuth implements LocalOwnerAuth {
   }
 }
 
+class _BlockedAccountRemote implements OwnerSyncAccountRemoteAdapter {
+  _BlockedAccountRemote(this.ownerId);
+  final String ownerId;
+  final entered = Completer<void>();
+  final ready = Completer<void>();
+  int downloads = 0;
+  @override
+  Future<void> verifyBackend() async {
+    if (!entered.isCompleted) entered.complete();
+    await ready.future;
+  }
+
+  @override
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  }) async {
+    expect(ownerId, this.ownerId);
+    downloads++;
+    return OwnerSyncDownloadPage(
+      ownerId: ownerId,
+      fromCursor: afterCursor,
+      nextCursor: '',
+      changes: const [],
+    );
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
@@ -43,6 +76,70 @@ void main() {
   late GpsSessionStore journal;
   late GpsOwnershipStore sidecar;
   late LocalOwnerGpsBridge gps;
+  test(
+    'slow account backend does not block local writes or leak after owner change',
+    () async {
+      final sandbox = await Directory.systemTemp.createTemp(
+        'driveit_account_sync_',
+      );
+      final networkAuth = TestAuth();
+      final remotes = <String, _BlockedAccountRemote>{};
+      final firstRequest = Completer<void>();
+      final owner = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: networkAuth,
+        openStore: (identity) =>
+            OwnerScopedLocalStore.open(root: sandbox.path, owner: identity),
+        driveInProgress: () async => false,
+        accountSyncAdapter: (lease) {
+          final remote = _BlockedAccountRemote(lease.owner.userId!);
+          remotes[lease.owner.userId!] = remote;
+          if (lease.owner.userId == a && !firstRequest.isCompleted) {
+            firstRequest.complete();
+          }
+          if (lease.owner.userId != a) remote.ready.complete();
+          return remote;
+        },
+      );
+      try {
+        await owner.start();
+        // Startup's local reconciliation precedes the network request.
+        await firstRequest.future.timeout(const Duration(seconds: 2));
+        final aRemote = remotes[a]!;
+        await aRemote.entered.future.timeout(const Duration(seconds: 2));
+        final oldWork = owner.syncSettled;
+        await owner
+            .withOwnerOperation(
+              (lease) =>
+                  lease.put('drive_names', 'local-write', 'saved locally'),
+            )
+            .timeout(const Duration(seconds: 2));
+        networkAuth.emit(b);
+        await owner.settled.timeout(const Duration(seconds: 2));
+        expect(owner.lease.read('drive_names', 'local-write'), null);
+        aRemote.ready.complete();
+        await oldWork;
+        await owner.syncSettled;
+        expect(aRemote.downloads, 0);
+        expect(remotes[b]!.downloads, 1);
+        networkAuth.emit(null);
+        await owner.settled;
+        await owner.syncSettled;
+        expect(remotes.keys.toSet(), {
+          a,
+          b,
+        }); // Guest never creates a transport.
+      } finally {
+        for (final remote in remotes.values) {
+          if (!remote.ready.isCompleted) remote.ready.complete();
+        }
+        await owner.close();
+        owner.dispose();
+        await networkAuth.events.close();
+        await sandbox.delete(recursive: true);
+      }
+    },
+  );
   setUp(() async {
     root = await Directory.systemTemp.createTemp('driveit_5c2_');
     auth = TestAuth();

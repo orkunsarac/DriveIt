@@ -533,6 +533,7 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
     if (state == AppLifecycleState.resumed &&
         owner.state == LocalOwnerState.ready) {
       owner.scheduleWorldJobs(owner.lease);
+      owner.onOwnerResumed();
     }
   }
 

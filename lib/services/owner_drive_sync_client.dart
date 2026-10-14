@@ -221,6 +221,13 @@ abstract interface class OwnerSyncDownloadAdapter {
   });
 }
 
+/// Authenticated staged transport used by the normal owner composition.
+/// Readiness is verified before any local outbox data leaves the device.
+abstract interface class OwnerSyncAccountRemoteAdapter
+    implements OwnerSyncStagedUploadAdapter, OwnerSyncDownloadAdapter {
+  Future<void> verifyBackend();
+}
+
 class OwnerSyncDownloadResult {
   const OwnerSyncDownloadResult({
     required this.applied,
@@ -751,6 +758,15 @@ class OwnerDriveSyncClient {
   Future<OwnerSyncDownloadResult> downloadOnce(
     OwnerSyncDownloadAdapter remote, {
     int limit = 32,
+  }) async => applyDownloadPage(
+    await fetchDownloadPage(remote, limit: limit),
+    limit: limit,
+  );
+
+  /// Fetch outside the owner write barrier; a slow network must not block Save.
+  Future<OwnerSyncDownloadPage> fetchDownloadPage(
+    OwnerSyncDownloadAdapter remote, {
+    int limit = 32,
   }) async {
     requireCurrent();
     final accountId = _requireAccount();
@@ -773,6 +789,28 @@ class OwnerDriveSyncClient {
       limit: limit,
     );
     requireCurrent();
+    return page;
+  }
+
+  /// Apply a prefetched page under the owner's local write barrier. Recheck
+  /// the durable cursor so stale pages cannot race another import or deletion.
+  Future<OwnerSyncDownloadResult> applyDownloadPage(
+    OwnerSyncDownloadPage page, {
+    int limit = 32,
+  }) async {
+    requireCurrent();
+    final accountId = _requireAccount();
+    if (limit <= 0 || limit > 100) throw ArgumentError.value(limit, 'limit');
+    const stateKey = 'drive_cursor_v1';
+    final previous = store.read<Map>(owner, downloadStateBox, stateKey);
+    if (previous != null &&
+        (previous['ownerId'] != accountId ||
+            previous['ownerScope'] != store.scope ||
+            previous['version'] != 1 ||
+            previous['cursor'] is! String)) {
+      throw const OwnerSyncConflict('download_cursor_owner_conflict');
+    }
+    final cursor = previous?['cursor'] as String? ?? '';
     if (page.ownerId != accountId ||
         page.fromCursor != cursor ||
         (page.nextCursor.isEmpty && page.changes.isNotEmpty) ||
@@ -1330,20 +1368,22 @@ class OwnerDriveSyncClient {
 /// A bounded, explicitly invoked worker. Supplying the remote adapter is
 /// required; there is no timer, networking setup, or automatic production run.
 class OwnerDriveSyncWorker {
-  OwnerDriveSyncWorker({required this.client, required this.remote});
+  OwnerDriveSyncWorker({required this.client, this.remote});
 
   final OwnerDriveSyncClient client;
-  final OwnerSyncRemoteAdapter remote;
+  final OwnerSyncRemoteAdapter? remote;
 
   /// Processes a snapshot of at most [limit] pending keys once. A retry is a
   /// later explicit invocation, never an immediate loop on failure.
   Future<OwnerSyncWorkerResult> runOnce({int limit = 16}) async {
     if (limit <= 0) throw ArgumentError.value(limit, 'limit');
+    final transport = remote;
+    if (transport == null) throw StateError('Legacy sync transport missing');
     final keys = client.pendingKeys().take(limit).toList(growable: false);
     var acknowledged = 0;
     var notAcknowledged = 0;
     for (final key in keys) {
-      final ok = await client.send(key, remote);
+      final ok = await client.send(key, transport);
       if (ok) {
         acknowledged++;
       } else {

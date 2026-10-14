@@ -27,6 +27,7 @@ class ControlledOwnershipDependencies {
     this.fakeSyncRemote,
     this.groupDriveServiceForTesting,
     this.deviceGuestOwner,
+    this.accountSyncAdapter,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -46,6 +47,8 @@ class ControlledOwnershipDependencies {
   /// guarded by the isolated package and native manifest in startDriveIt.
   final FakeGroupDriveService? groupDriveServiceForTesting;
   final GpsOwner? deviceGuestOwner;
+  final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
+  accountSyncAdapter;
 }
 
 class ControlledOwnershipRuntime {
@@ -124,6 +127,7 @@ abstract final class LocalOwnershipBootstrap {
         gate: gate,
         auth: auth,
         deviceGuestOwner: controlled.deviceGuestOwner,
+        accountSyncAdapter: controlled.accountSyncAdapter,
         openStore: controlled.openStore,
         driveInProgress: busy,
         worldRoadMatching: controlled.worldRoadMatching,

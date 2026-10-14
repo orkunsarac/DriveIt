@@ -1,0 +1,29 @@
+# Dedicated Phase 8 project workspace. Do not run Supabase CLI from the repo
+# root for this milestone: the root workspace contains Planet migrations and a
+# pre-existing, intentionally untouched .temp link.
+project_id = "driveit-phase8-dev"
+
+[api]
+enabled = true
+schemas = ["public", "storage"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db.migrations]
+enabled = true
+schema_paths = ["./migrations/*.sql"]
+
+[db.seed]
+enabled = false
+
+[functions.phase8-drive-begin]
+verify_jwt = true
+
+[functions.phase8-drive-finalize]
+verify_jwt = true
+
+[functions.phase8-drive-download]
+verify_jwt = true
+
+[functions.phase8-drive-cleanup]
+verify_jwt = false

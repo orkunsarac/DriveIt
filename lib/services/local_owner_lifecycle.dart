@@ -626,7 +626,12 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     this.deviceGuestOwner,
     this.worldRoadMatching,
     this.syncRemoteForTesting,
+    this.accountSyncAdapter,
   }) {
+    if (accountSyncAdapter != null &&
+        (!gate.enabled || syncRemoteForTesting != null)) {
+      throw StateError('Account sync composition invalid');
+    }
     if (syncRemoteForTesting != null &&
         (!gate.enabled || !LocalOwnershipGate.syntheticRuntimeAvailable)) {
       throw StateError('Automatic sync adapter is test-only');
@@ -638,6 +643,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
 
   /// Fake adapter only. Production composition must leave this null.
   final OwnerSyncRemoteAdapter? syncRemoteForTesting;
+  final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
+  accountSyncAdapter;
   final Future<OwnerScopedLocalStore> Function(GpsOwner) openStore;
 
   /// Must return true for unfinished/recoverable sessions too; errors block.
@@ -674,8 +681,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final Set<int> _scheduledSyncEpochs = {};
   final Set<int> _syncRescheduleEpochs = {};
 
-  /// Reconciles locally and, only in an explicitly synthetic composition,
-  /// performs one bounded fake-remote pass. No timer or retry loop is started.
+  /// Reconcile under the local write barrier, then perform bounded network
+  /// work outside it. Account/epoch guards remain active across every await.
   void scheduleOwnerSync(LocalOwnerLease captured) {
     if (!captured.isCurrent || captured.owner.kind != GpsOwnerKind.account) {
       return;
@@ -686,15 +693,41 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       _syncRescheduleEpochs.add(captured.epoch);
       return;
     }
+    final client = OwnerDriveSyncClient(
+      store: captured._store,
+      requireCurrent: captured.requireCurrent,
+    );
     _syncWork =
         _exclusive(() async {
               captured.requireCurrent();
-              final client = OwnerDriveSyncClient(
-                store: captured._store,
-                requireCurrent: captured.requireCurrent,
-              );
               await client.reconcileFinalizedDrives();
               if (captured.isCurrent) _syncErrorCode = null;
+            }, fromAuthEvent: true)
+            .then((_) async {
+              captured.requireCurrent();
+              final accountRemote = accountSyncAdapter?.call(captured);
+              if (accountRemote != null) {
+                await accountRemote.verifyBackend();
+                captured.requireCurrent();
+                final result = await OwnerDriveSyncWorker(
+                  client: client,
+                ).runStagedOnce(accountRemote, limit: 4);
+                captured.requireCurrent();
+                final page = await client.fetchDownloadPage(
+                  accountRemote,
+                  limit: 1,
+                );
+                await _exclusive(() async {
+                  captured.requireCurrent();
+                  await client.applyDownloadPage(page, limit: 1);
+                }, fromAuthEvent: true);
+                if (captured.isCurrent) {
+                  _syncErrorCode = result.notAcknowledged == 0
+                      ? null
+                      : 'owner_sync_retry_pending';
+                }
+                return;
+              }
               final fakeRemote = syncRemoteForTesting;
               if (fakeRemote != null) {
                 final result = await OwnerDriveSyncWorker(
@@ -707,7 +740,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
                       : 'owner_sync_retry_pending';
                 }
               }
-            }, fromAuthEvent: true)
+            })
             .catchError((Object error, StackTrace stack) {
               // A failed outbox flush is recoverable by the same owner on next start.
               // Keep the successful drive finalization and expose a safe status code.
@@ -727,7 +760,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   /// attempt; retryable rows are not spun on while offline.
   void onOwnerResumed() {
     final current = _lease;
-    if (syncRemoteForTesting != null && current != null && current.isCurrent) {
+    if ((syncRemoteForTesting != null || accountSyncAdapter != null) &&
+        current != null &&
+        current.isCurrent) {
       scheduleOwnerSync(current);
     }
   }

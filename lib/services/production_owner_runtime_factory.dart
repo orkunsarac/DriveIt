@@ -19,6 +19,7 @@ import 'local_owner_lifecycle.dart';
 import 'owned_foreground_bootstrap.dart';
 import 'owner_scoped_local_store.dart';
 import 'supabase_local_owner_auth.dart';
+import 'supabase_owner_drive_sync_adapter.dart';
 
 /// No Auth UID is fabricated when cloud Auth isn't configured. The caller must
 /// obtain the user's explicit Guest choice before mounting the owner runtime.
@@ -49,8 +50,13 @@ class ProductionOwnerRuntimeDependencies {
 }
 
 /// Real application composition. This factory never creates fake Auth/GPS,
-/// a fake group service, or an automatic cloud-sync worker.
+/// a fake group service. Cloud sync requires a separate explicit build opt-in
+/// and an authenticated backend capability check; normal builds leave it off.
 abstract final class ProductionOwnerRuntimeFactory {
+  /// Leave false until the matching backend is deployed and accepted.
+  static const accountSyncEnabled = bool.fromEnvironment(
+    'DRIVEIT_ACCOUNT_SYNC_ENABLED',
+  );
   static Future<ProductionOwnerRuntimeDependencies> create() async {
     if (!LocalOwnershipGate.production.enabled ||
         !LocalOwnershipGate.localProductionActivation) {
@@ -102,6 +108,23 @@ abstract final class ProductionOwnerRuntimeFactory {
         provider: MapboxRoadMatchingProvider(),
       ),
       deviceGuestOwner: guestOwner,
+      accountSyncAdapter: !accountSyncEnabled
+          ? null
+          : (lease) {
+              // Use the SAME Auth project/client; never forward a Planet JWT
+              // to the separate Phase 8 project or fabricate a backend user.
+              if (!hasCloudAuth ||
+                  SupabaseConfig.url !=
+                      'https://viqngnjfgknpxtoapzcg.supabase.co' ||
+                  lease.owner.kind != GpsOwnerKind.account) {
+                throw StateError('Account sync Auth project not approved');
+              }
+              return SupabaseOwnerDriveSyncAdapter(
+                client: Supabase.instance.client,
+                ownerId: lease.owner.userId!,
+                requireCurrent: lease.requireCurrent,
+              );
+            },
     );
 
     return ProductionOwnerRuntimeDependencies(

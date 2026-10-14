@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -80,6 +81,93 @@ Map<String, Object?> _receipt({String? ownerScope, String? key}) => {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'a lost function response becomes a bounded retryable transport failure',
+    () async {
+      final pending = Completer<http.Response>();
+      final client = _client((_) => pending.future);
+      addTearDown(client.dispose);
+      final adapter = SupabaseOwnerDriveSyncAdapter(
+        client: client,
+        ownerId: _ownerA,
+        authenticatedUserId: () => _ownerA,
+        requireCurrent: () {},
+        requestTimeout: const Duration(milliseconds: 10),
+      );
+      await expectLater(
+        adapter.verifyBackend(),
+        throwsA(isA<OwnerSyncTransportFailure>()),
+      );
+      pending.complete(_json({'ok': false}));
+    },
+  );
+
+  test(
+    'backend readiness is owner-bound and requires the forward migration',
+    () async {
+      var revision = '202610150001';
+      final client = _client(
+        (_) async => _json({
+          'ok': true,
+          'contractVersion': 2,
+          'schemaRevision': revision,
+          'ownerScope': _scope(_ownerA),
+          'driveUpload': true,
+          'driveDownload': true,
+          'deleteSync': false,
+        }),
+      );
+      addTearDown(client.dispose);
+      final harness = _adapter(client);
+      await harness.adapter.verifyBackend();
+      revision = '202610120001';
+      await expectLater(
+        harness.adapter.verifyBackend(),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+    },
+  );
+
+  test(
+    'snapshot renewal retains the exact previous owner checkpoint',
+    () async {
+      final oldCursor = _cursor(_snapshot, 5);
+      const renewedSnapshot = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      var renewalProof = oldCursor;
+      final client = _client(
+        (_) async => _json({
+          'ok': true,
+          'snapshotId': renewedSnapshot,
+          'from': 5,
+          'next': 5,
+          'highWater': 5,
+          'hasMore': false,
+          'nextCursor': _cursor(renewedSnapshot, 5),
+          'resumedFromCursor': renewalProof,
+          'changes': <Object>[],
+        }),
+      );
+      addTearDown(client.dispose);
+      final harness = _adapter(client);
+      final page = await harness.adapter.download(
+        ownerId: _ownerA,
+        afterCursor: oldCursor,
+        limit: 1,
+      );
+      expect(page.fromCursor, oldCursor);
+      expect(page.nextCursor, _cursor(renewedSnapshot, 5));
+      renewalProof = '';
+      await expectLater(
+        harness.adapter.download(
+          ownerId: _ownerA,
+          afterCursor: oldCursor,
+          limit: 1,
+        ),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+    },
+  );
 
   test(
     'begin upload enforces immutable owner descriptor and response',

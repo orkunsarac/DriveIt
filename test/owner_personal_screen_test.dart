@@ -9,6 +9,7 @@ import 'package:driveit_project/models/canonical_telemetry_point.dart';
 import 'package:driveit_project/screens/drive_detail_screen.dart';
 import 'package:driveit_project/screens/home_screen.dart';
 import 'package:driveit_project/screens/history_screen.dart';
+import 'package:driveit_project/screens/world_mode_selection_screen.dart';
 import 'package:driveit_project/screens/profile_settings_screen.dart';
 import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
@@ -365,6 +366,27 @@ void main() {
     await disabled.close();
     disabled.dispose();
   });
+
+  testWidgets(
+    'normal owner World route exposes My World and real Planet entry',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: runtime,
+            legacyChild: const SizedBox.shrink(),
+          ),
+        ),
+      );
+      await tester.pump();
+      Navigator.of(tester.element(find.byType(HomeScreen))).pushNamed('/world');
+      await tester.pumpAndSettle();
+      expect(find.byType(WorldModeSelectionScreen), findsOneWidget);
+      expect(find.byKey(const Key('my_world_card')), findsOneWidget);
+      expect(find.byKey(const Key('driveit_planet_card')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'poster route is owner scoped and never builds the legacy screen',

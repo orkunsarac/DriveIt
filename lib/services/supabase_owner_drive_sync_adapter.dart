@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -7,16 +8,16 @@ import 'owner_drive_sync_client.dart';
 
 /// Real Supabase transport for the Phase 8 M1 staged-drive contract.
 ///
-/// This adapter is intentionally opt-in. It is not installed by application
-/// bootstrap or the production owner lifecycle. Every operation checks the
+/// This adapter is intentionally opt-in. The normal factory supplies it only
+/// in an explicitly cloud-enabled build after backend acceptance. Every operation checks the
 /// currently authenticated Supabase UID against the immutable owner captured
 /// by the caller before making a request.
-class SupabaseOwnerDriveSyncAdapter
-    implements OwnerSyncStagedUploadAdapter, OwnerSyncDownloadAdapter {
+class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
   SupabaseOwnerDriveSyncAdapter({
     required SupabaseClient client,
     required String ownerId,
     required this.requireCurrent,
+    this.requestTimeout = const Duration(seconds: 30),
     String? Function()? authenticatedUserId,
   }) : _client = client,
        _ownerId = ownerId.toLowerCase(),
@@ -42,6 +43,7 @@ class SupabaseOwnerDriveSyncAdapter
   final SupabaseClient _client;
   final String _ownerId;
   final void Function() requireCurrent;
+  final Duration requestTimeout;
   final String? Function() _authenticatedUserId;
 
   String get _ownerScope =>
@@ -53,6 +55,23 @@ class SupabaseOwnerDriveSyncAdapter
       throw const OwnerSyncConflict('authenticated_owner_mismatch');
     }
     requireCurrent();
+  }
+
+  @override
+  Future<void> verifyBackend() async {
+    final data = await _invokeJson('phase8-drive-begin', {
+      'action': 'capabilities',
+    });
+    _assertOwner();
+    if (data['ok'] != true ||
+        data['contractVersion'] != 2 ||
+        data['schemaRevision'] != '202610150001' ||
+        data['ownerScope'] != _ownerScope ||
+        data['driveUpload'] != true ||
+        data['driveDownload'] != true ||
+        data['deleteSync'] != false) {
+      throw const OwnerSyncConflict('backend_contract_not_ready');
+    }
   }
 
   @override
@@ -139,7 +158,10 @@ class SupabaseOwnerDriveSyncAdapter
               upsert: false,
             ),
             retryAttempts: 0,
-          );
+          )
+          .timeout(requestTimeout);
+    } on TimeoutException {
+      throw const OwnerSyncTransportFailure('storage_timeout');
     } on StorageException catch (error) {
       if (error.statusCode == '409' && error.error == 'Duplicate') {
         // Never upsert/replace a staged object. The caller will proceed to the
@@ -213,8 +235,12 @@ class SupabaseOwnerDriveSyncAdapter
       throw const OwnerSyncConflict('download_response_invalid');
     }
     final expectedFrom = decodedCursor?.sequence ?? 0;
+    final renewed =
+        decodedCursor != null && data['resumedFromCursor'] == afterCursor;
     if (from != expectedFrom ||
-        (decodedCursor != null && decodedCursor.snapshotId != snapshotId)) {
+        (decodedCursor != null &&
+            decodedCursor.snapshotId != snapshotId &&
+            !renewed)) {
       throw const OwnerSyncConflict('download_snapshot_cursor_conflict');
     }
     if (next < from || next > highWater) {
@@ -277,11 +303,16 @@ class SupabaseOwnerDriveSyncAdapter
   ) async {
     _assertOwner();
     try {
-      final response = await _client.functions.invoke(function, body: body);
+      final response = await _client.functions
+          .invoke(function, body: body)
+          .timeout(requestTimeout);
+      _assertOwner();
       if (response.data is! Map) {
         throw const OwnerSyncConflict('function_response_invalid');
       }
       return Map<String, dynamic>.from(response.data as Map);
+    } on TimeoutException {
+      throw const OwnerSyncTransportFailure('function_timeout');
     } on FunctionException catch (error) {
       _throwFunctionFailure(error);
     }

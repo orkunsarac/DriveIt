@@ -1,5 +1,13 @@
 # DriveIt Phase 8 backend contract and implementation boundary
 
+2026-10-15 update: the normal app now has real Planet DEV Auth. The newer
+`phase8_m1_normal_runtime_delivery.md` records local M1 server acceptance,
+the forward correction migration, the guarded normal factory connection and
+the pending same-Auth-project deployment decision. Earlier statements below
+that tools are absent or the normal owner runtime is unavailable are historical.
+No cross-project JWT trust or remote deployment is implied. The four milestone
+boundaries and privacy/causality rules below remain in force.
+
 Status: client staging contract implemented locally. The user has created a
 separate Phase 8 DEV project; local backend candidate files are prepared, but
 no remote project has been queried or changed, no migration has been applied,

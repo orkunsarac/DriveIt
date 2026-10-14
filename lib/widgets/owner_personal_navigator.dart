@@ -8,6 +8,7 @@ import '../screens/drive_detail_screen.dart';
 import 'local_owner_navigator.dart';
 import 'local_owner_view.dart';
 import '../screens/my_world_map_screen.dart';
+import '../screens/world_mode_selection_screen.dart';
 import '../screens/world_trace_detail_screen.dart';
 import '../features/drive_poster/poster_screens.dart';
 import '../services/device_drive_archive.dart';
@@ -17,8 +18,8 @@ import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
 import '../features/group_drive/group_gps_source.dart';
 
-/// Controlled harness only. Unfinished routes deliberately remain unregistered
-/// rather than falling back to a global personal data consumer.
+/// Owner navigation shared by the normal application and controlled tests.
+/// Unfinished routes remain unregistered instead of using shared personal data.
 class OwnerPersonalNavigator extends StatelessWidget {
   const OwnerPersonalNavigator({
     super.key,
@@ -87,7 +88,10 @@ class OwnerPersonalNavigator extends StatelessWidget {
         ownerLease: lease,
         deviceArchiveLoader: deviceArchiveLoader,
       ),
-      '/world': (_, lease, _) => MyWorldMapScreen(ownerLease: lease),
+      '/world': (_, lease, _) => WorldModeSelectionScreen(
+        loadData: lease.worldMap,
+        myWorldBuilder: (_) => MyWorldMapScreen(ownerLease: lease),
+      ),
       '/world-trace': (_, lease, id) => id is String
           ? OwnedWorldTraceDetailScreen(lease: lease, traceId: id)
           : const OwnerAccessUnavailable(),

@@ -31,20 +31,27 @@ async function responseJson(response: Response): Promise<Record<string, unknown>
   return await response.json() as Record<string, unknown>;
 }
 
-Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated and replay safe", async () => {
+Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and replay safe", async () => {
+  // Remote execution is opt-in and restricted to the explicitly approved
+  // Planet DEV project. Defaults remain the existing localhost acceptance.
+  const remoteRef = Deno.env.get("PHASE8_REMOTE_PROJECT_REF");
+  const remote = remoteRef !== undefined;
+  assert(!remote || remoteRef === "viqngnjfgknpxtoapzcg", "remote target must be the approved Planet DEV project");
   const url = Deno.env.get("PHASE8_LOCAL_URL");
   const anonKey = Deno.env.get("PHASE8_LOCAL_ANON_KEY");
   const serviceKey = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_KEY");
   const anonBearer = Deno.env.get("PHASE8_LOCAL_ANON_BEARER");
   const serviceBearer = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_BEARER");
   const cleanupToken = Deno.env.get("PHASE8_LOCAL_CLEANUP_TOKEN");
-  assert(url === "http://127.0.0.1:54321", "test URL must be local");
-  assert(anonKey && serviceKey && anonBearer && serviceBearer && cleanupToken,
-    "local test credentials are required");
+  assert(url === (remote ? "https://viqngnjfgknpxtoapzcg.supabase.co" : "http://127.0.0.1:54321"),
+    "test URL must match the explicitly selected acceptance target");
+  assert(anonKey && serviceKey && anonBearer && serviceBearer && (remote || cleanupToken),
+    "server-side test credentials are required");
 
   const admin = localClient(url, serviceKey, serviceBearer);
   const anon = localClient(url, anonKey, anonBearer);
   const runId = crypto.randomUUID();
+  if (remote) console.info(`phase8_synthetic_run=${runId}`);
   const password = `P8-${crypto.randomUUID()}-OnlyLocal!`;
   const userAResult = await admin.auth.admin.createUser({
     email: `phase8-a-${runId}@example.invalid`, password, email_confirm: true,
@@ -67,6 +74,7 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
 
   const existingBucket = await admin.storage.getBucket(bucket);
   if (existingBucket.error) {
+    assert(!remote, "remote acceptance must not create or reconfigure a bucket");
     const created = await admin.storage.createBucket(bucket, {
       public: false,
       fileSizeLimit: 10 * 1024 * 1024,
@@ -95,6 +103,13 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
     },
     body: JSON.stringify(body),
   });
+
+  const forbiddenManifestRead = await clientB.from("phase8_drive_manifests").select("source_identity");
+  assert(Boolean(forbiddenManifestRead.error), "B cannot bypass Edge through direct manifest access");
+  const forbiddenAnonymousRead = await anon.from("phase8_drive_manifests").select("source_identity");
+  assert(Boolean(forbiddenAnonymousRead.error), "anonymous direct manifest access is denied");
+  const forbiddenOwnerRpc = await clientB.rpc("phase8_drive_sync_capabilities", { p_owner_id: userA.id });
+  assert(Boolean(forbiddenOwnerRpc.error), "authenticated client cannot call a service-only RPC with a forged owner");
 
   const sourceIdentity = crypto.randomUUID();
   const scopeA = ownerScope(userA.id);
@@ -207,6 +222,12 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
     contentType: "application/json", upsert: false,
   });
   assert(!upload.error, `A can upload its reserved object (${upload.error?.message ?? ""})`);
+  // Negative reads must also run AFTER the object exists; a missing object
+  // alone is not evidence that private Storage is enforcing owner isolation.
+  const existingObjectForB = await clientB.storage.from(bucket).download(objectPath);
+  assert(Boolean(existingObjectForB.error), "B cannot read A's existing private staged object");
+  const existingObjectForAnon = await anon.storage.from(bucket).download(objectPath);
+  assert(Boolean(existingObjectForAnon.error), "anonymous client cannot read an existing private object");
 
   const finalizeResponse = await invoke("phase8-drive-finalize", tokenA, { intentId });
   assert(finalizeResponse.ok, `finalize succeeds (${finalizeResponse.status})`);
@@ -259,7 +280,10 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
   assert(conflictResponse.status === 409, "same idempotency key with changed hash conflicts");
   await conflictResponse.body?.cancel();
 
-  const downloadA = await responseJson(await invoke("phase8-drive-download", tokenA, { action: "begin", limit: 1 }));
+  const secondClientA = localClient(url, anonKey, anonBearer);
+  const secondSignInA = await secondClientA.auth.signInWithPassword({ email: userA.email!, password });
+  assert(!secondSignInA.error && secondSignInA.data.session, "same owner signs in through an independent second client");
+  const downloadA = await responseJson(await invoke("phase8-drive-download", secondSignInA.data.session.access_token, { action: "begin", limit: 1 }));
   assert(downloadA.changes instanceof Array && downloadA.changes.length === 1,
     `A receives one first page response: ${JSON.stringify(downloadA)}`);
   assert(downloadA.next === 1 && downloadA.highWater === 2 && downloadA.hasMore === true, "first page stays bounded below snapshot high-water");
@@ -312,7 +336,9 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
     Array.isArray(laterPage.changes) && laterPage.changes.length === 1,
     "later sync discovers the new drive instead of remaining pinned to an old snapshot");
   const expired = await admin.from("phase8_drive_snapshots")
-    .update({ expires_at: new Date(Date.now() - 1000).toISOString() })
+    // This is only our synthetic snapshot. Do not assume Windows and the
+    // remote Edge/DB clocks agree within one second when expiring a fixture.
+    .update({ expires_at: new Date(0).toISOString() })
     .eq("id", downloadA.snapshotId).eq("owner_id", userA.id);
   assert(!expired.error, "expire only the synthetic owner's previous snapshot");
   const recoveredPage = await responseJson(await invoke("phase8-drive-download", tokenA, {
@@ -384,6 +410,15 @@ Deno.test("local Phase 8 Edge staging/finalization/download is owner isolated an
   });
   assert(cleanupAuthFailure.status === 401, "cleanup rejects a wrong scheduler token");
   await cleanupAuthFailure.body?.cancel();
+
+  if (remote) {
+    // Do not age fixtures or run the global orphan sweep on a shared project.
+    // The caller removes ONLY this run's UUID-bound fixtures afterwards.
+    const finalObject = await admin.storage.from(bucket).download(objectPath);
+    assert(!finalObject.error, "finalized object remains available to server download");
+    console.info("phase8_remote_m1_core_acceptance=passed; cleanup_wrong_token=denied; global_orphan_sweep=not_run");
+    return;
+  }
 
   const orphanSource = crypto.randomUUID();
   const orphanBytes = new TextEncoder().encode("synthetic-stale-staging-object");

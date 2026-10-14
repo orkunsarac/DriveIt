@@ -137,9 +137,28 @@ class SupabaseAccountService extends ChangeNotifier
     _controlledOwner = owner;
   }
 
+  /// Fences real account switches against active local GPS operations in the
+  /// explicitly activated normal-app composition. No fake Auth is accepted.
+  void attachOwnerForProduction(LocalOwnerLifecycle owner) {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !owner.gate.enabled ||
+        _controlledOwner != null) {
+      throw StateError('Production Auth owner unavailable');
+    }
+    _controlledOwner = owner;
+  }
+
   void detachOwnerForTesting(LocalOwnerLifecycle owner) {
     if (!identical(_controlledOwner, owner)) {
       throw StateError('Auth owner conflict');
+    }
+    _controlledOwner = null;
+  }
+
+  void detachOwnerForProduction(LocalOwnerLifecycle owner) {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !identical(_controlledOwner, owner)) {
+      throw StateError('Production Auth owner conflict');
     }
     _controlledOwner = null;
   }

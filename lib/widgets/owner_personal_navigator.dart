@@ -83,7 +83,10 @@ class OwnerPersonalNavigator extends StatelessWidget {
         ownedDetailBuilder: (lease, id) =>
             OwnedDriveDetailScreen(lease: lease, driveId: id),
       ),
-      '/profile': (_, lease, _) => ProfileSettingsScreen(ownerLease: lease),
+      '/profile': (_, lease, _) => ProfileSettingsScreen(
+        ownerLease: lease,
+        deviceArchiveLoader: deviceArchiveLoader,
+      ),
       '/world': (_, lease, _) => MyWorldMapScreen(ownerLease: lease),
       '/world-trace': (_, lease, id) => id is String
           ? OwnedWorldTraceDetailScreen(lease: lease, traceId: id)

@@ -47,6 +47,7 @@ void main() {
   Future<ControlledOwnershipRuntime> boot({
     bool busy = false,
     Future<LocalOwnerAuth> Function()? restore,
+    GpsOwner? deviceGuestOwner,
   }) async {
     final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
     return (await LocalOwnershipBootstrap.run(
@@ -56,6 +57,7 @@ void main() {
         descriptor: descriptor,
         databaseFactory: databaseFactoryFfiNoIsolate,
         restoreAuth: restore ?? () async => auth,
+        deviceGuestOwner: deviceGuestOwner,
         producerRunning: () async => busy,
         openStore: (owner) =>
             OwnerScopedLocalStore.open(root: root.path, owner: owner),
@@ -110,6 +112,36 @@ void main() {
     expect(() => old.read('drive_names', 'same'), throwsStateError);
     expect(handle.owner.lease.read('drive_names', 'same'), null);
     await handle.closeAfterProducerDetached();
+  });
+  test('persistent device Guest identity survives native handoff decoding', () async {
+    auth.userId = null;
+    const guestIdentity = 'a1b2c3d4-e5f6-4789-8abc-def012345678';
+    final handle = await boot(
+      deviceGuestOwner: GpsOwner.deviceGuest(guestIdentity),
+    );
+    try {
+      expect(handle.owner.lease.owner.guestIdentity, guestIdentity);
+      final session = await handle.gps.start(startNative: (_, _) async {});
+      final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
+      final binding = await handle.gps.requireBinding(session.id);
+      expect(binding.owner.guestIdentity, guestIdentity);
+      final recovered = await OwnedForegroundBootstrap.decode(
+        descriptor
+            .forSession(session, binding, ownerEpoch: handle.owner.lease.epoch)
+            .encode(),
+      );
+
+      expect(recovered.handoff!.ownerGuestIdentity, guestIdentity);
+      expect(
+        (await recovered.verifyHandoff(
+          databaseFactoryFfiNoIsolate,
+          session.id,
+        )).targetStore,
+        handle.owner.lease.owner.targetStore,
+      );
+    } finally {
+      await handle.closeAfterProducerDetached();
+    }
   });
   test('failed Auth restore never opens scoped stores or journal', () async {
     await expectLater(

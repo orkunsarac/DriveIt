@@ -42,8 +42,9 @@ void main() {
     binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
       call,
     ) async {
-      expect(call.method, 'hasSecureDeviceLock');
-      return secure;
+      if (call.method == 'isDeviceArchiveRuntimeAllowed') return true;
+      if (call.method == 'hasSecureDeviceLock') return secure;
+      fail('Unexpected archive security method: ${call.method}');
     });
   });
   tearDown(() {

@@ -179,11 +179,20 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openProfileSettings(BuildContext context) async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => ProfileSettingsScreen(ownerLease: widget.ownerLease),
-      ),
-    );
+    final navigator = Navigator.of(context);
+    if (widget.ownerLease != null) {
+      // The owner navigator owns the profile route and its scoped services
+      // (including the read-only device archive loader). Do not bypass it by
+      // constructing ProfileSettingsScreen directly from Home.
+      await navigator.pushNamed<void>('/profile');
+    } else {
+      // Preserve the legacy/gate-off profile path unchanged.
+      await navigator.push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => ProfileSettingsScreen(ownerLease: widget.ownerLease),
+        ),
+      );
+    }
     await _loadProfile();
   }
 

@@ -26,6 +26,7 @@ class ControlledOwnershipDependencies {
     this.worldRoadMatching,
     this.fakeSyncRemote,
     this.groupDriveServiceForTesting,
+    this.deviceGuestOwner,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -37,11 +38,14 @@ class ControlledOwnershipDependencies {
   final Future<void> Function(LocalOwnerGpsBridge) detachForeground;
   final LocalSourceWriterFence? writerFence;
   final RoadMatchingService? worldRoadMatching;
+
   /// Synthetic acceptance only; never configured by production composition.
   final OwnerSyncRemoteAdapter? fakeSyncRemote;
+
   /// Opt-in test composition only. Android activation is independently
   /// guarded by the isolated package and native manifest in startDriveIt.
   final FakeGroupDriveService? groupDriveServiceForTesting;
+  final GpsOwner? deviceGuestOwner;
 }
 
 class ControlledOwnershipRuntime {
@@ -66,7 +70,12 @@ class ControlledOwnershipRuntime {
     }
     await dependencies.detachForeground(gps);
     await owner.close();
-    SupabaseAccountService.instance.detachOwnerForTesting(owner);
+    if (LocalOwnershipGate.localProductionActivation &&
+        !LocalOwnershipGate.syntheticRuntimeAvailable) {
+      SupabaseAccountService.instance.detachOwnerForProduction(owner);
+    } else {
+      SupabaseAccountService.instance.detachOwnerForTesting(owner);
+    }
     await gps.ownership.close();
     await gps.journal.close();
     if (writerFence != null) {
@@ -114,6 +123,7 @@ abstract final class LocalOwnershipBootstrap {
       runtime = LocalOwnerLifecycle(
         gate: gate,
         auth: auth,
+        deviceGuestOwner: controlled.deviceGuestOwner,
         openStore: controlled.openStore,
         driveInProgress: busy,
         worldRoadMatching: controlled.worldRoadMatching,
@@ -138,7 +148,12 @@ abstract final class LocalOwnershipBootstrap {
         ownership: ownership,
         journalId: controlled.descriptor.journalId,
       );
-      SupabaseAccountService.instance.attachOwnerForTesting(runtime);
+      if (LocalOwnershipGate.localProductionActivation &&
+          !LocalOwnershipGate.syntheticRuntimeAvailable) {
+        SupabaseAccountService.instance.attachOwnerForProduction(runtime);
+      } else {
+        SupabaseAccountService.instance.attachOwnerForTesting(runtime);
+      }
       authAttached = true;
       await controlled.attachForeground(bridge, controlled.descriptor);
       return ControlledOwnershipRuntime(
@@ -149,7 +164,12 @@ abstract final class LocalOwnershipBootstrap {
       );
     } catch (_) {
       if (authAttached) {
-        SupabaseAccountService.instance.detachOwnerForTesting(runtime!);
+        if (LocalOwnershipGate.localProductionActivation &&
+            !LocalOwnershipGate.syntheticRuntimeAvailable) {
+          SupabaseAccountService.instance.detachOwnerForProduction(runtime!);
+        } else {
+          SupabaseAccountService.instance.detachOwnerForTesting(runtime!);
+        }
       }
       await runtime?.close();
       await sidecar?.close();

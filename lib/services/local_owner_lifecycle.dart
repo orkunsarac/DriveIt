@@ -623,6 +623,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     required this.openStore,
     required this.driveInProgress,
     this.activeSessionOwner,
+    this.deviceGuestOwner,
     this.worldRoadMatching,
     this.syncRemoteForTesting,
   }) {
@@ -644,6 +645,10 @@ class LocalOwnerLifecycle extends ChangeNotifier {
 
   /// Only durable sidecar evidence may answer this. Null is unknown, not guest.
   final Future<GpsOwner?> Function()? activeSessionOwner;
+
+  /// Stable local installation identity used only when Auth explicitly has no
+  /// account. Existing test and legacy callers retain the anonymous guest.
+  final GpsOwner? deviceGuestOwner;
   LocalOwnerState _state = LocalOwnerState.disabled;
   int _epoch = 0;
   int _worldRevision = 0;
@@ -818,6 +823,10 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   static GpsOwner ownerFor(String? id) =>
       id == null ? const GpsOwner.guest() : GpsOwner.account(id);
 
+  GpsOwner _ownerForAuth(String? id) => id == null
+      ? deviceGuestOwner ?? const GpsOwner.guest()
+      : GpsOwner.account(id);
+
   Future<void> start() async {
     if (!gate.enabled || _closed || _subscription != null) return;
     _subscription = auth.changes.listen(
@@ -842,7 +851,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     if (_closed || !gate.enabled) return;
     final GpsOwner next;
     try {
-      next = ownerFor(id);
+      next = _ownerForAuth(id);
     } catch (_) {
       _requested = null;
       _invalidate(LocalOwnerState.failed, 'invalid_owner_identity');

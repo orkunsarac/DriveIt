@@ -2,10 +2,12 @@
 // ignore_for_file: implementation_imports
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:hive/hive.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:hive/src/hive_impl.dart';
 import 'package:hive/src/binary/binary_reader_impl.dart';
 import 'package:hive/src/binary/binary_writer_impl.dart';
@@ -71,6 +73,11 @@ class DeviceDriveArchiveSnapshot {
     return sha256.convert(utf8.encode(jsonEncode(sorted))).toString();
   }
 
+  /// Empty archive is a valid, honest result when this installation has never
+  /// had the legacy Hive drives file. It does not create that source file.
+  factory DeviceDriveArchiveSnapshot.empty() =>
+      DeviceDriveArchiveSnapshot._(const {}, _digest(const {}));
+
   factory DeviceDriveArchiveSnapshot.restore(String serialized) {
     final value = jsonDecode(serialized) as Map<String, dynamic>;
     if (value['version'] != 1 ||
@@ -133,6 +140,60 @@ class DeviceDriveArchiveSnapshot {
     } finally {
       await writers.resume();
     }
+  }
+
+  /// Captures the already-existing legacy source for the production read-only
+  /// archive. The owner operation serializes account changes around this call;
+  /// [sourceIsQuiescent] additionally rejects an active/recoverable GPS writer.
+  /// Two byte-for-byte captures plus the before/after quiescence check prevent
+  /// a partial snapshot from becoming visible. This method performs no Hive
+  /// put/delete, migration, import, or owner-store write.
+  static Future<DeviceDriveArchiveSnapshot> prepareReadOnly({
+    required SavedDriveArchiveSource source,
+    required Future<bool> Function() sourceIsQuiescent,
+  }) async {
+    if (!await sourceIsQuiescent()) {
+      throw StateError('archive_source_busy');
+    }
+    Map<String, String> capture() =>
+        source.capture().map((id, bytes) => MapEntry(id, base64Encode(bytes)));
+    final first = capture();
+    final second = capture();
+    if (!await sourceIsQuiescent() || _digest(first) != _digest(second)) {
+      throw StateError('archive_source_changed');
+    }
+    return DeviceDriveArchiveSnapshot.restore(
+      jsonEncode({'version': 1, 'rows': first, 'fingerprint': _digest(first)}),
+    );
+  }
+}
+
+/// Reads only the existing legacy `drives.hive` in the app documents folder.
+/// A missing file yields an empty snapshot without opening/creating a Hive box.
+/// The isolated Hive registry is closed after capture; no app-global box or
+/// owner-scoped repository is exposed to archive screens.
+Future<DeviceDriveArchiveSnapshot> loadLegacyDeviceDriveArchiveSnapshot({
+  required Future<bool> Function() sourceIsQuiescent,
+}) async {
+  final documents = await getApplicationDocumentsDirectory();
+  final sourceFile = File(
+    '${documents.path}${Platform.pathSeparator}drives.hive',
+  );
+  if (!await sourceFile.exists()) return DeviceDriveArchiveSnapshot.empty();
+  if (!await sourceIsQuiescent()) throw StateError('archive_source_busy');
+
+  final hive = HiveImpl()..init(documents.path);
+  hive
+    ..registerAdapter(DriveSessionAdapter())
+    ..registerAdapter(RoutePointAdapter());
+  try {
+    final box = await hive.openBox<DriveSession>('drives');
+    return await DeviceDriveArchiveSnapshot.prepareReadOnly(
+      source: SavedDriveArchiveSource(box),
+      sourceIsQuiescent: sourceIsQuiescent,
+    );
+  } finally {
+    await hive.close();
   }
 }
 

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common/sqlite_api.dart';
 import '../config/local_ownership_gate.dart';
 import 'gps_session_store.dart';
@@ -48,6 +49,7 @@ class OwnedForegroundBootstrap {
         reservationId: binding.reservationId,
         ownerKind: binding.owner.wireKind,
         ownerUserId: binding.owner.userId,
+        ownerGuestIdentity: binding.owner.guestIdentity,
         targetStore: binding.targetStore,
         sourceIdentity: provenance.sourceIdentity!,
         sourceIdentityVersion: provenance.identityVersion!,
@@ -94,26 +96,60 @@ class OwnedForegroundBootstrap {
     );
   }
 
-  static Future<OwnedForegroundBootstrap> decode(String value) async {
-    if (!LocalOwnershipGate.syntheticRuntimeAvailable) {
-      throw StateError(
-        'Controlled GPS unavailable outside isolated test build',
-      );
+  /// Opens the real application's owner journal under its private Android
+  /// support directory. The root is fixed by the application; callers cannot
+  /// supply arbitrary paths or share the legacy GPS journal.
+  static Future<OwnedForegroundBootstrap> prepareForProduction() async {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !LocalOwnershipGate.production.enabled) {
+      throw StateError('Local production owner runtime is not enabled');
     }
+    final support = await getApplicationSupportDirectory();
+    final supportRoot = await support.resolveSymbolicLinks();
+    final directory = Directory(
+      '$supportRoot${Platform.pathSeparator}driveit_owner_runtime_v1',
+    );
+    await _ensurePrivateDirectory(directory);
+    final real = await directory.resolveSymbolicLinks();
+    if (!_isDirectChild(real, supportRoot, 'driveit_owner_runtime_v1')) {
+      throw StateError('Production GPS root is outside app support storage');
+    }
+    final marker = File('$real/production_owner_runtime_v1');
+    if (await marker.exists()) {
+      if (await marker.readAsString() != 'production_owner_runtime_v1') {
+        throw StateError('Production GPS root marker conflict');
+      }
+    } else {
+      await marker.writeAsString('production_owner_runtime_v1', flush: true);
+    }
+    return OwnedForegroundBootstrap._(real);
+  }
+
+  static Future<OwnedForegroundBootstrap> decode(String value) async {
     final row = jsonDecode(value);
     if (row is! Map || row['version'] != 1 || row['root'] is! String) {
       throw StateError('GPS descriptor invalid');
     }
     final dir = Directory(row['root']);
     final real = await dir.resolveSymbolicLinks();
-    if (real != row['root'] ||
-        !real
-            .replaceAll('\\', '/')
-            .split('/')
-            .last
-            .startsWith('driveit_owner_test_') ||
-        await File('$real/controlled_owner_test_v1').readAsString() !=
-            'controlled_owner_test_v1') {
+    if (real != row['root']) throw StateError('GPS descriptor root unverified');
+    if (LocalOwnershipGate.syntheticRuntimeAvailable &&
+        await _hasMarker(real, 'controlled_owner_test_v1')) {
+      if (!real
+          .replaceAll('\\', '/')
+          .split('/')
+          .last
+          .startsWith('driveit_owner_test_')) {
+        throw StateError('Synthetic GPS root required');
+      }
+    } else if (LocalOwnershipGate.localProductionActivation &&
+        await _hasMarker(real, 'production_owner_runtime_v1')) {
+      final support = await getApplicationSupportDirectory();
+      final supportRoot = await support.resolveSymbolicLinks();
+      if (!_isDirectChild(real, supportRoot, 'driveit_owner_runtime_v1')) {
+        throw StateError('Production GPS root is outside app support storage');
+      }
+    } else {
       throw StateError('GPS descriptor root unverified');
     }
     final handoffRow = row['handoff'];
@@ -125,6 +161,34 @@ class OwnedForegroundBootstrap {
       throw StateError('GPS journal identity conflict');
     }
     return result;
+  }
+
+  static Future<void> _ensurePrivateDirectory(Directory directory) async {
+    final type = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (type == FileSystemEntityType.link) {
+      throw StateError('GPS root cannot be a symbolic link');
+    }
+    if (type == FileSystemEntityType.notFound) {
+      await directory.create(recursive: true);
+    } else if (type != FileSystemEntityType.directory) {
+      throw StateError('GPS root is not a directory');
+    }
+  }
+
+  static Future<bool> _hasMarker(String root, String marker) async {
+    final file = File('$root/$marker');
+    return await file.exists() && await file.readAsString() == marker;
+  }
+
+  static bool _isDirectChild(String path, String parent, String name) {
+    final separator = Platform.pathSeparator;
+    final expected = '$parent$separator$name';
+    return Platform.isWindows
+        ? path.toLowerCase() == expected.toLowerCase()
+        : path == expected;
   }
 
   Future<GpsSessionStore> openJournal(DatabaseFactory factory) =>
@@ -226,6 +290,7 @@ class OwnedForegroundHandoff {
     required this.reservationId,
     required this.ownerKind,
     required this.ownerUserId,
+    this.ownerGuestIdentity,
     required this.targetStore,
     required this.sourceIdentity,
     required this.sourceIdentityVersion,
@@ -236,6 +301,7 @@ class OwnedForegroundHandoff {
   final String reservationId;
   final String ownerKind;
   final String? ownerUserId;
+  final String? ownerGuestIdentity;
   final String targetStore;
   final String sourceIdentity;
   final int sourceIdentityVersion;
@@ -248,6 +314,7 @@ class OwnedForegroundHandoff {
     'reservationId': reservationId,
     'ownerKind': ownerKind,
     'ownerUserId': ownerUserId,
+    'ownerGuestIdentity': ownerGuestIdentity,
     'targetStore': targetStore,
     'sourceIdentity': sourceIdentity,
     'sourceIdentityVersion': sourceIdentityVersion,
@@ -274,9 +341,14 @@ class OwnedForegroundHandoff {
     }
     final kind = value['ownerKind'] as String;
     final userId = value['ownerUserId'] as String?;
+    final guestIdentity = value['ownerGuestIdentity'] as String?;
     final owner = switch (kind) {
-      'guest' when userId == null => const GpsOwner.guest(),
-      'account' when userId != null => GpsOwner.account(userId),
+      'guest' when userId == null && guestIdentity == null =>
+        const GpsOwner.guest(),
+      'guest' when userId == null && guestIdentity != null =>
+        GpsOwner.deviceGuest(guestIdentity),
+      'account' when userId != null && guestIdentity == null =>
+        GpsOwner.account(userId),
       _ => throw StateError('GPS handoff owner invalid'),
     };
     final targetStore = value['targetStore'] as String;
@@ -294,6 +366,7 @@ class OwnedForegroundHandoff {
       reservationId: value['reservationId'] as String,
       ownerKind: kind,
       ownerUserId: userId,
+      ownerGuestIdentity: guestIdentity,
       targetStore: targetStore,
       sourceIdentity: provenance.sourceIdentity!,
       sourceIdentityVersion: 1,

@@ -34,7 +34,9 @@ class AndroidDeviceArchiveAuthorizer implements DeviceArchiveAuthorizer {
     }
     _busy = true;
     try {
-      if (await _security.invokeMethod<bool>('hasSecureDeviceLock') != true ||
+      if (await _security.invokeMethod<bool>('isDeviceArchiveRuntimeAllowed') !=
+              true ||
+          await _security.invokeMethod<bool>('hasSecureDeviceLock') != true ||
           !await _authentication.isDeviceSupported()) {
         return false;
       }

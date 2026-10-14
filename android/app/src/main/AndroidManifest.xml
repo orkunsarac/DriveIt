@@ -23,6 +23,10 @@
             android:value="${driveItIsolatedOwnerRuntime}" />
 
         <meta-data
+            android:name="driveit.local_owner_runtime"
+            android:value="${driveItLocalOwnerRuntime}" />
+
+        <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyCDeF6ej2kpIDqMRIij3-tkvufa7v-rI-s"/>
 

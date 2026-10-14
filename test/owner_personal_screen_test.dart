@@ -12,8 +12,10 @@ import 'package:driveit_project/screens/history_screen.dart';
 import 'package:driveit_project/screens/profile_settings_screen.dart';
 import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/services/supabase_account_service.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import 'package:driveit_project/services/owner_personal_preferences.dart';
+import 'package:driveit_project/services/device_drive_archive.dart';
 import 'package:driveit_project/widgets/local_owner_view.dart';
 import 'package:driveit_project/widgets/owner_personal_navigator.dart';
 import 'package:driveit_project/features/world_publish/segments/planet_publication_section.dart';
@@ -21,6 +23,25 @@ import 'package:driveit_project/features/world_publish/segments/planet_segment.d
 import 'package:driveit_project/features/drive_poster/poster_screens.dart';
 import 'local_owner_integration_test.dart' show TestAuth, a, b;
 import 'planet_segment_test.dart' show fixture;
+
+class _AvailableGuestAccountGateway implements DriveItAccountGateway {
+  @override
+  bool get isAvailable => true;
+  @override
+  bool get hasSession => false;
+  @override
+  String? get currentDisplayName => null;
+  @override
+  Stream<dynamic> get authStateChanges => const Stream<dynamic>.empty();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _AcceptDeviceArchiveAuth implements DeviceArchiveAuthorizer {
+  @override
+  Future<bool> verifyDeviceAccess() async => true;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -201,7 +222,7 @@ void main() {
     },
   );
   testWidgets(
-    'scoped profile excludes global loader and cloud gateway fallback',
+    'scoped profile shows account actions and excludes legacy profile fallback',
     (tester) async {
       await tester.runAsync(
         () => OwnerProfileStore(runtime.lease).saveName('Profile A'),
@@ -215,16 +236,83 @@ void main() {
               legacyReads++;
               throw StateError('legacy forbidden');
             },
+            accountGateway: _AvailableGuestAccountGateway(),
           ),
         ),
       );
       await tester.pump();
       expect(legacyReads, 0);
       expect(find.text('Profile A'), findsOneWidget);
+      expect(find.text('DriveIt Hesabı'), findsOneWidget);
+      expect(find.text('Hesap Oluştur'), findsOneWidget);
+      expect(find.text('Giriş Yap'), findsOneWidget);
+      final loginButton = find.byKey(const ValueKey('driveit_account_login'));
+      await tester.ensureVisible(loginButton);
+      await tester.tap(loginButton);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('account_email')), findsOneWidget);
+      expect(find.byKey(const ValueKey('account_password')), findsOneWidget);
+      Navigator.of(
+        tester.element(find.byKey(const ValueKey('account_email'))),
+      ).pop();
+      await tester.pumpAndSettle();
       expect(tester.takeException(), null);
       await tester.runAsync(() => switchTo(b));
       await tester.pump();
       expect(find.text('Profile A'), findsNothing);
+    },
+  );
+  testWidgets(
+    'guest Home profile route exposes and opens the separate read-only device archive',
+    (tester) async {
+      await tester.runAsync(() => switchTo(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: runtime,
+            legacyChild: const SizedBox.shrink(),
+            deviceArchiveLoader: (lease) async {
+              lease.requireCurrent();
+              return DeviceDriveArchiveAccess(
+                gate: runtime.gate,
+                snapshot: DeviceDriveArchiveSnapshot.empty(),
+                authorizer: _AcceptDeviceArchiveAuth(),
+              );
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(runtime.lease.owner.kind, GpsOwnerKind.guest);
+      await tester.tap(find.byKey(const Key('home_profile_settings')));
+      await tester.pumpAndSettle();
+      expect(find.byType(ProfileSettingsScreen), findsOneWidget);
+      final archiveButton = find.byKey(const Key('profile_device_archive'));
+      expect(archiveButton, findsOneWidget);
+      expect(
+        find.text('Önceki DriveIt sürüşlerin. Yalnızca bu cihazda saklanır.'),
+        findsOneWidget,
+      );
+      await tester.ensureVisible(archiveButton);
+      await tester.tap(archiveButton);
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Cihaz arşivi • Salt okunur • Hiçbir hesaba aktarılmaz'),
+        findsOneWidget,
+      );
+      expect(find.text('Kayıtlı eski sürüş yok'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      Navigator.of(tester.element(find.text('Kayıtlı eski sürüş yok'))).pop();
+      await tester.pumpAndSettle();
+      Navigator.of(tester.element(find.byType(ProfileSettingsScreen))).pop();
+      // Home has an intentional repeating presentation animation.
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.runAsync(() => switchTo(a));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('home_profile_settings')));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(runtime.lease.owner.kind, GpsOwnerKind.account);
+      expect(find.byKey(const Key('profile_device_archive')), findsOneWidget);
     },
   );
   testWidgets(
@@ -295,7 +383,10 @@ void main() {
       ).pushNamed('/posters');
       await tester.pumpAndSettle();
       expect(find.byType(PosterCenterScreen), findsOneWidget);
-      expect(find.text('Henüz poster oluşturabileceğin bir sürüş yok.'), findsOneWidget);
+      expect(
+        find.text('Henüz poster oluşturabileceğin bir sürüş yok.'),
+        findsOneWidget,
+      );
       expect(find.text('legacy'), findsNothing);
       expect(tester.takeException(), null);
     },

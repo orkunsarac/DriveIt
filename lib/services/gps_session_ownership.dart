@@ -6,31 +6,69 @@ enum GpsOwnerKind { guest, account, legacyUnassigned }
 
 /// Local scope, not an authorization token. Never inferred from profile names.
 class GpsOwner {
-  const GpsOwner.guest() : kind = GpsOwnerKind.guest, userId = null;
-  const GpsOwner.legacy() : kind = GpsOwnerKind.legacyUnassigned, userId = null;
-  GpsOwner.account(String id) : kind = GpsOwnerKind.account, userId = id {
-    if (!RegExp(
-      r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-    ).hasMatch(id)) {
+  const GpsOwner.guest()
+    : kind = GpsOwnerKind.guest,
+      userId = null,
+      guestIdentity = null;
+  GpsOwner.deviceGuest(String id)
+    : kind = GpsOwnerKind.guest,
+      userId = null,
+      guestIdentity = id {
+    if (!_isCanonicalUuid(id)) {
+      throw ArgumentError('Device guest identity requires a canonical UUID');
+    }
+  }
+  const GpsOwner.legacy()
+    : kind = GpsOwnerKind.legacyUnassigned,
+      userId = null,
+      guestIdentity = null;
+  GpsOwner.account(String id)
+    : kind = GpsOwnerKind.account,
+      userId = id,
+      guestIdentity = null {
+    if (!_isCanonicalUuid(id)) {
       throw ArgumentError('Account ownership requires a canonical UUID');
     }
   }
   final GpsOwnerKind kind;
   final String? userId;
+  final String? guestIdentity;
   String get wireKind => switch (kind) {
     GpsOwnerKind.guest => 'guest',
     GpsOwnerKind.account => 'account',
     GpsOwnerKind.legacyUnassigned => 'legacy_unassigned',
   };
-  String get targetStore =>
-      jsonEncode(['local_account_store_v1', wireKind, userId]);
+  String get targetStore => jsonEncode([
+    'local_account_store_v1',
+    wireKind,
+    kind == GpsOwnerKind.guest ? guestIdentity : userId,
+  ]);
   String recordKey(String localId) => jsonEncode([targetStore, localId]);
   static GpsOwner fromRow(Map<String, Object?> row) => switch (row['kind']) {
-    'guest' when row['user_id'] == null => const GpsOwner.guest(),
+    'guest' when row['user_id'] == null => _guestFromRow(row),
     'account' => GpsOwner.account(row['user_id'] as String),
     'legacy_unassigned' when row['user_id'] == null => const GpsOwner.legacy(),
     _ => throw StateError('Unsupported ownership scope'),
   };
+
+  static GpsOwner _guestFromRow(Map<String, Object?> row) {
+    final target = row['target_store'];
+    if (target is String) {
+      final decoded = jsonDecode(target);
+      if (decoded is List &&
+          decoded.length == 3 &&
+          decoded[0] == 'local_account_store_v1' &&
+          decoded[1] == 'guest' &&
+          decoded[2] is String) {
+        return GpsOwner.deviceGuest(decoded[2] as String);
+      }
+    }
+    return const GpsOwner.guest();
+  }
+
+  static bool _isCanonicalUuid(String value) => RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+  ).hasMatch(value);
 }
 
 class GpsOwnershipManifest {
@@ -392,5 +430,4 @@ class GpsOwnershipStore {
   }
 
   Future<void> close() => db.close();
-
 }

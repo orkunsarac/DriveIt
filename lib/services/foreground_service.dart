@@ -113,6 +113,30 @@ class ForegroundService {
     _ownedTransfer = transfer;
   }
 
+  /// Binds a production owner session to the app-private journal descriptor.
+  /// The descriptor path and open handles must match exactly; no global
+  /// legacy journal fallback is installed when this validation fails.
+  static void attachForProduction(
+    LocalOwnerGpsBridge bridge,
+    OwnedForegroundBootstrap descriptor,
+  ) {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !LocalOwnershipGate.production.enabled ||
+        _ownedBridge != null ||
+        bridge.journalId != descriptor.journalId ||
+        bridge.journal.db.path.replaceAll('\\', '/') !=
+            descriptor.journalPath.replaceAll('\\', '/') ||
+        bridge.ownership.db.path.replaceAll('\\', '/') !=
+            descriptor.sidecarPath.replaceAll('\\', '/')) {
+      throw StateError('Production foreground configuration invalid');
+    }
+    final transfer = bridge.transfer;
+    OwnedDriveTransferRoute.attachForProduction(bridge.runtime.gate, transfer);
+    _ownedBridge = bridge;
+    _ownedDescriptor = descriptor;
+    _ownedTransfer = transfer;
+  }
+
   /// Allows an Android integration test to exercise the real UI/startService
   /// path while using a deterministic headless producer. This is available
   /// only after a synthetic owner bridge is attached in a debug build.
@@ -140,6 +164,18 @@ class ForegroundService {
     OwnedDriveTransferRoute.detachForTesting(_ownedTransfer!);
     _ownedTransfer = null;
     _ownedStartCallbackForTesting = null;
+  }
+
+  static Future<void> detachForProduction(LocalOwnerGpsBridge bridge) async {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !identical(_ownedBridge, bridge) ||
+        await FlutterForegroundTask.isRunningService) {
+      throw StateError('Production foreground still active');
+    }
+    _ownedBridge = null;
+    _ownedDescriptor = null;
+    OwnedDriveTransferRoute.detachForProduction(_ownedTransfer!);
+    _ownedTransfer = null;
   }
 
   static Future<GpsSessionStore>? _journal;

@@ -24,6 +24,9 @@ val isolatedTestDartDefines = providers.gradleProperty("dart-defines").orNull
 val driveItIsolatedTest =
     providers.gradleProperty("driveItIsolatedTest").orNull == "true" ||
         "DRIVEIT_ISOLATED_ANDROID_TEST=true" in isolatedTestDartDefines
+val driveItLocalOwnerActivation =
+    providers.gradleProperty("driveItLocalOwnerActivation").orNull == "true" ||
+        "DRIVEIT_LOCAL_OWNER_ACTIVATION=true" in isolatedTestDartDefines
 val flutterTarget = providers.gradleProperty("target").orNull
     ?.replace('\\', '/')
     ?.trimStart('/')
@@ -37,6 +40,15 @@ val baseApplicationId = "com.example.driveit_project"
 val isolatedApplicationId = "$baseApplicationId.isolated_test"
 val configuredApplicationId =
     if (driveItIsolatedTest) isolatedApplicationId else baseApplicationId
+
+if (driveItIsolatedTest && driveItLocalOwnerActivation) {
+    throw GradleException("Isolated test and local production owner activation cannot be combined.")
+}
+if (driveItLocalOwnerActivation && gradle.startParameter.taskNames.any {
+        it.contains("Debug", ignoreCase = true)
+    }) {
+    throw GradleException("Local production owner activation is release-only.")
+}
 
 // Flutter's integration_test runner installs the APK immediately after its
 // Gradle assemble task. Refuse to build a test target unless the package is
@@ -107,6 +119,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "false"
+        manifestPlaceholders["driveItLocalOwnerRuntime"] =
+            if (driveItLocalOwnerActivation && !driveItIsolatedTest) "true" else "false"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testApplicationId = "$configuredApplicationId.test"
     }
@@ -136,6 +150,13 @@ android {
     }
 }
 
+// The generated registrant includes integration_test because Flutter marks it
+// as a dev plugin. Keep that test plugin in debug and isolated acceptance APKs
+// only. A regular release gets a no-op registration bridge from src/release.
+if (!driveItIsolatedTest) {
+    android.sourceSets.getByName("release").java.srcDir("src/release/java")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
@@ -153,14 +174,11 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.3.0")
     androidTestImplementation("androidx.test:rules:1.2.0")
     androidTestImplementation("junit:junit:4.12")
-    // Flutter's generated release plugin registrant includes this class because
-    // integration_test is a dev dependency. Keeping the bridge on the release
-    // compile classpath prevents stale-registrant javac failure; it does not
-    // select a test Dart entrypoint, change the applicationId, or enable the
-    // isolated owner runtime. Those remain behind the exact test-only define,
-    // manifest marker, and isolated package checks above.
-    add("releaseImplementation", project(":integration_test"))
     if (driveItIsolatedTest) {
+        add("debugImplementation", project(":integration_test"))
+        add("releaseImplementation", project(":integration_test"))
         add("androidTestImplementation", project(":integration_test"))
+    } else {
+        add("debugImplementation", project(":integration_test"))
     }
 }

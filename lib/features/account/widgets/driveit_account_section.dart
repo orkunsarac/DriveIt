@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../../config/supabase_bootstrap.dart';
 import '../../../services/supabase_account_service.dart';
 import '../screens/driveit_account_screen.dart';
 import '../screens/driveit_account_settings_screen.dart';
@@ -22,6 +23,7 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
   DriveItAccountProfile? _account;
   bool _loading = true;
   bool _busy = false;
+  bool _availabilityRetrying = false;
   String? _error;
 
   String? get _effectiveCloudName => DriveItEffectiveProfile.displayName(
@@ -44,12 +46,16 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
   void initState() {
     super.initState();
     _service = widget.accountGateway ?? SupabaseAccountService.instance;
-    if (_service.isAvailable) {
+    _listenForAuthChanges();
+    _loadAccount();
+  }
+
+  void _listenForAuthChanges() {
+    if (_service.isAvailable && _authSubscription == null) {
       _authSubscription = _service.authStateChanges.listen(
         (_) => _loadAccount(),
       );
     }
-    _loadAccount();
   }
 
   @override
@@ -87,12 +93,25 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
     }
   }
 
+  Future<void> _retryAvailability() async {
+    if (_availabilityRetrying) return;
+    setState(() => _availabilityRetrying = true);
+    try {
+      await SupabaseBootstrap.initializeIfConfigured();
+      _listenForAuthChanges();
+      await _loadAccount();
+    } finally {
+      if (mounted) setState(() => _availabilityRetrying = false);
+    }
+  }
+
   Future<void> _openAccount({
     DriveItAccountMode mode = DriveItAccountMode.choices,
   }) async {
     await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
-        builder: (_) => DriveItAccountScreen(initialMode: mode),
+        builder: (_) =>
+            DriveItAccountScreen(initialMode: mode, accountGateway: _service),
       ),
     );
     await _loadAccount();
@@ -229,9 +248,21 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
           ),
           const SizedBox(height: 7),
           if (!available)
-            const Text(
-              'Çevrimiçi hesap hizmeti şu anda kullanılamıyor.',
-              style: TextStyle(color: Colors.white70),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Çevrimiçi hesap hizmeti şu anda kullanılamıyor. Yerel sürüşlerin kullanılmaya devam eder.',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                TextButton(
+                  key: const ValueKey('driveit_account_retry_auth'),
+                  onPressed: _availabilityRetrying ? null : _retryAvailability,
+                  child: Text(
+                    _availabilityRetrying ? 'Bağlanıyor…' : 'Yeniden Dene',
+                  ),
+                ),
+              ],
             )
           else if (_loading)
             const LinearProgressIndicator(minHeight: 2, color: _blue)
@@ -283,10 +314,12 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
               'Hesap Oluştur',
               () => _openAccount(mode: DriveItAccountMode.create),
               primary: true,
+              key: const ValueKey('driveit_account_create'),
             ),
             _button(
               'Giriş Yap',
               () => _openAccount(mode: DriveItAccountMode.login),
+              key: const ValueKey('driveit_account_login'),
             ),
           ],
           if (signedIn && !_loading) ...[

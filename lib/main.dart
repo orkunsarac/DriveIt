@@ -35,6 +35,7 @@ import 'features/world_publish/segments/planet_segment_outbox.dart';
 import 'features/my_world/repositories/world_source_snapshot_repository.dart';
 import 'features/group_drive/group_drive_service.dart';
 import 'features/group_drive/group_gps_source.dart';
+import 'services/production_owner_runtime_factory.dart';
 
 void main() async {
   await startDriveIt();
@@ -59,6 +60,24 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
       legacyBootstrap: legacyBootstrap ?? _legacyBootstrap,
     );
   }
+  if (controlled == null) {
+    if (!LocalOwnershipGate.localProductionActivation) {
+      throw StateError('Production owner dependencies are not enabled');
+    }
+    if (Platform.isAndroid &&
+        await const MethodChannel(
+              'driveit/device_archive_security',
+            ).invokeMethod<bool>('isLocalProductionOwnerRuntime') !=
+            true) {
+      throw StateError('Local production owner activation is not verified');
+    }
+    return _startProductionOwnerRuntime(
+      gate: gate,
+      confirmGuest: confirmGuest,
+      mountApplication: mountApplication,
+      legacyBootstrap: legacyBootstrap ?? _legacyBootstrap,
+    );
+  }
   // Controlled Android activation is test-only and cannot run in the real
   // application's sandbox, even if a caller supplies synthetic dependencies.
   if (Platform.isAndroid) {
@@ -70,8 +89,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
       throw StateError('Controlled Android runtime requires isolated package');
     }
   }
-  if (controlled == null ||
-      archiveSource == null ||
+  if (archiveSource == null ||
       unfinishedArchiveDrives == null ||
       controlled.writerFence == null) {
     throw StateError('Owner application dependencies incomplete');
@@ -114,8 +132,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     mountApplication(
       DriveItApp(
         ownerRuntime: runtime,
-        groupDriveServiceForTesting:
-            dependencies.groupDriveServiceForTesting,
+        groupDriveServiceForTesting: dependencies.groupDriveServiceForTesting,
         ownerInitialRoute:
             recovery.canStartNewDrive &&
                 runtime.owner.lease.pendingDriveFinalizations().isEmpty
@@ -161,6 +178,96 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
   }
 }
 
+Future<ControlledOwnershipRuntime?> _startProductionOwnerRuntime({
+  required LocalOwnershipGate gate,
+  required Future<bool> Function()? confirmGuest,
+  required void Function(Widget) mountApplication,
+  required Future<void> Function() legacyBootstrap,
+}) async {
+  if (!LocalOwnershipGate.localProductionActivation || !gate.enabled) {
+    throw StateError('Production owner gate configuration invalid');
+  }
+  await ForegroundService.init();
+  // A pre-existing legacy capture/recovery remains on the legacy UI until it
+  // is explicitly completed. The new journal never adopts it.
+  final legacyRecovery = await ForegroundService.inspectRecovery();
+  final composition = await ProductionOwnerRuntimeFactory.create();
+  if (composition.legacyRecoveryRequired || !legacyRecovery.canStartNewDrive) {
+    await legacyBootstrap();
+    return null;
+  }
+
+  final auth = composition.auth;
+  if (auth.userId == null && !await (confirmGuest ?? _confirmGuest)()) {
+    // The prompt stays mounted. No owner store or GPS session is opened until
+    // an explicit Guest choice is made.
+    return null;
+  }
+  if (auth.userId != null) {
+    LocalOwnerLifecycle.ownerFor(auth.userId); // Validate the actual Auth UUID.
+  }
+  final dependencies = composition.controlledBootstrap;
+  final runtime = (await LocalOwnershipBootstrap.run(
+    gate: gate,
+    legacyBootstrap: () async =>
+        throw StateError('Shared storage fallback is forbidden'),
+    controlled: dependencies,
+  ))!;
+  try {
+    ForegroundService.requireOwnerLease(runtime.owner.lease);
+    await initializeDateFormatting('tr_TR');
+    SupabaseAccountService.instance.startIdentitySync();
+    final recovery = await ForegroundService.inspectRecovery();
+    mountApplication(
+      DriveItApp(
+        ownerRuntime: runtime,
+        ownerInitialRoute:
+            recovery.canStartNewDrive &&
+                runtime.owner.lease.pendingDriveFinalizations().isEmpty
+            ? '/'
+            : '/drive',
+        deviceArchiveLoader: (lease) => runtime.owner.withOwnerOperation((
+          current,
+        ) async {
+          lease.requireCurrent();
+          if (!identical(current, lease)) {
+            throw StateError('Archive owner changed');
+          }
+          Future<bool> sourceIsQuiescent() async {
+            if (!lease.isCurrent || await dependencies.producerRunning()) {
+              return false;
+            }
+            if (await runtime.gps.journal.active() != null ||
+                (await runtime.gps.journal.recoverableSessions()).isNotEmpty) {
+              return false;
+            }
+            return lease.isCurrent;
+          }
+
+          final snapshot = await loadLegacyDeviceDriveArchiveSnapshot(
+            sourceIsQuiescent: sourceIsQuiescent,
+          );
+          lease.requireCurrent();
+          return DeviceDriveArchiveAccess(
+            gate: gate,
+            snapshot: snapshot,
+            authorizer: AndroidDeviceArchiveAuthorizer(),
+          );
+        }),
+      ),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(runtime.processWorldJobs());
+    });
+    return runtime;
+  } catch (_) {
+    if (!await dependencies.producerRunning()) {
+      await runtime.closeAfterProducerDetached();
+    }
+    rethrow;
+  }
+}
+
 Future<bool> _confirmGuest() {
   final choice = Completer<bool>();
   runApp(
@@ -174,6 +281,15 @@ Future<bool> _confirmGuest() {
                 'Misafir sürüşleri bu cihazda ayrı tutulur. Hesaba giriş yapmak '
                 'bu kayıtları otomatik aktarmaz.',
               ),
+              if (!SupabaseConfig.isConfigured)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                    'Çevrimiçi hesap girişi bu kurulumda yapılandırılmamış. '
+                    'Yerel Misafir olarak devam edebilirsin; bu kimlik bir '
+                    'DriveIt hesabı değildir.',
+                  ),
+                ),
               const DriveItAccountSection(),
               FilledButton(
                 onPressed: () {
@@ -349,8 +465,7 @@ class _DriveItAppState extends State<DriveItApp> {
           ? widget.initialScreen
           : _OwnedApplicationHome(
               runtime: widget.ownerRuntime!,
-              groupDriveServiceForTesting:
-                  widget.groupDriveServiceForTesting,
+              groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
               archive: widget.deviceArchiveSnapshot,
               archiveLoader: widget.deviceArchiveLoader,
               initialRoute: widget.ownerInitialRoute,
@@ -470,14 +585,13 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
                   : '/',
               deviceArchiveSnapshot: widget.archive,
               deviceArchiveLoader: widget.archiveLoader,
-              groupDriveServiceForTesting:
-                  widget.groupDriveServiceForTesting,
+              groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
               groupGpsSourceFactory:
-                  widget.groupDriveServiceForTesting != null && Platform.isAndroid
+                  widget.groupDriveServiceForTesting != null &&
+                      Platform.isAndroid
                   ? () => AndroidGroupGpsSource(
-                      diagnostics: (event) => debugPrint(
-                        'A55_GROUP_GPS_DIAG:$event',
-                      ),
+                      diagnostics: (event) =>
+                          debugPrint('A55_GROUP_GPS_DIAG:$event'),
                     )
                   : null,
               legacyChild: const SizedBox.shrink(),

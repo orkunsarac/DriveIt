@@ -12,6 +12,8 @@ import '../services/profile_storage_service.dart';
 import '../services/supabase_account_service.dart';
 import '../features/account/widgets/driveit_account_section.dart';
 import '../services/local_owner_lifecycle.dart';
+import '../services/device_drive_archive.dart';
+import 'device_drive_archive_screen.dart';
 import '../services/owner_personal_preferences.dart';
 import '../widgets/local_owner_view.dart';
 
@@ -23,6 +25,7 @@ class ProfileSettingsScreen extends StatefulWidget {
     this.imagePicker,
     this.accountGateway,
     this.ownerLease,
+    this.deviceArchiveLoader,
   });
 
   final MyWorldSettingsStore? worldSettings;
@@ -30,6 +33,8 @@ class ProfileSettingsScreen extends StatefulWidget {
   final ImagePicker? imagePicker;
   final DriveItAccountGateway? accountGateway;
   final LocalOwnerLease? ownerLease;
+  final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  deviceArchiveLoader;
 
   @override
   State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
@@ -71,9 +76,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
         : OwnerWorldSettings(widget.ownerLease!);
     _showIntro = !_worldSettings.skipIntroAnimation;
     _picker = widget.imagePicker ?? ImagePicker();
-    _accountGateway =
-        widget.accountGateway ??
-        (widget.ownerLease == null ? SupabaseAccountService.instance : null);
+    _accountGateway = widget.accountGateway ?? SupabaseAccountService.instance;
     widget.ownerLease?.changes.addListener(_ownerChanged);
     _authSubscription = _accountGateway?.authStateChanges.listen(
       (_) => _loadCloudProfile(),
@@ -315,6 +318,41 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     }
   }
 
+  Future<void> _openDeviceArchive() async {
+    final lease = widget.ownerLease;
+    final loader = widget.deviceArchiveLoader;
+    if (lease == null || loader == null || !lease.isCurrent) return;
+    DeviceDriveArchiveContext? archive;
+    try {
+      final access = await loader(lease);
+      lease.requireCurrent();
+      archive = await access.open(lease);
+      if (!mounted || !lease.isCurrent) {
+        archive.dispose();
+        return;
+      }
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => DeviceDriveArchiveScreen(archive: archive!),
+        ),
+      );
+    } on StateError catch (error) {
+      archive?.dispose();
+      if (!_current) return;
+      final message =
+          error.message.toString() == 'archive_recording_pending' ||
+              error.message.toString() == 'archive_source_busy'
+          ? 'Sürüş kaydı sürerken cihaz arşivi açılamaz.'
+          : 'Cihaz arşivi güvenli biçimde açılamadı. Kayıtların değiştirilmedi.';
+      _message(message);
+    } catch (_) {
+      archive?.dispose();
+      _message(
+        'Cihaz arşivi güvenli biçimde açılamadı. Kayıtların değiştirilmedi.',
+      );
+    }
+  }
+
   Widget _section(String label) => Padding(
     padding: const EdgeInsets.only(top: 24, bottom: 12),
     child: Text(
@@ -489,8 +527,23 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                   ),
                 ),
                 _section('DRIVEIT HESABI'),
-                if (_accountGateway != null && widget.ownerLease == null)
-                  DriveItAccountSection(accountGateway: _accountGateway),
+                DriveItAccountSection(accountGateway: _accountGateway),
+                if (widget.ownerLease != null &&
+                    widget.deviceArchiveLoader != null) ...[
+                  _section('CİHAZ ARŞİVİ'),
+                  _card(
+                    ListTile(
+                      key: const Key('profile_device_archive'),
+                      leading: const Icon(Icons.archive_outlined, color: _blue),
+                      title: const Text('Cihaz Arşivi'),
+                      subtitle: const Text(
+                        'Önceki DriveIt sürüşlerin. Yalnızca bu cihazda saklanır.',
+                      ),
+                      trailing: const Icon(Icons.chevron_right, size: 20),
+                      onTap: _openDeviceArchive,
+                    ),
+                  ),
+                ],
                 _section('AYARLAR'),
                 _section('DÜNYA'),
                 _card(

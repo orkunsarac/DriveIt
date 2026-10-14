@@ -20,9 +20,29 @@ abstract final class OwnedDriveTransferRoute {
     _transfer = transfer;
   }
 
+  static void attachForProduction(
+    LocalOwnershipGate gate,
+    OwnedDriveTransfer transfer,
+  ) {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !gate.enabled ||
+        _transfer != null) {
+      throw StateError('Production drive transfer unavailable');
+    }
+    _transfer = transfer;
+  }
+
   static void detachForTesting(OwnedDriveTransfer transfer) {
     if (!identical(_transfer, transfer)) {
       throw StateError('Controlled transfer conflict');
+    }
+    _transfer = null;
+  }
+
+  static void detachForProduction(OwnedDriveTransfer transfer) {
+    if (!LocalOwnershipGate.localProductionActivation ||
+        !identical(_transfer, transfer)) {
+      throw StateError('Production drive transfer conflict');
     }
     _transfer = null;
   }

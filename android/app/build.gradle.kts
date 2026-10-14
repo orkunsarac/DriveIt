@@ -30,6 +30,9 @@ val flutterTarget = providers.gradleProperty("target").orNull
     .orEmpty()
 val isAndroidIntegrationTestBuild =
     Regex("(^|/)integration_test/[^/]+\\.dart$").containsMatchIn(flutterTarget)
+val isAndroidInstrumentationBuild = gradle.startParameter.taskNames.any {
+    it.contains("AndroidTest", ignoreCase = true)
+}
 val baseApplicationId = "com.example.driveit_project"
 val isolatedApplicationId = "$baseApplicationId.isolated_test"
 val configuredApplicationId =
@@ -48,6 +51,13 @@ if (isAndroidIntegrationTestBuild && configuredApplicationId != isolatedApplicat
     throw GradleException(
         "Refusing Android integration_test target with applicationId $configuredApplicationId; " +
             "expected $isolatedApplicationId.",
+    )
+}
+if (isAndroidInstrumentationBuild &&
+    (!isAndroidIntegrationTestBuild || !driveItIsolatedTest ||
+        configuredApplicationId != isolatedApplicationId)) {
+    throw GradleException(
+        "Refusing Android instrumentation build without an isolated integration_test target.",
     )
 }
 
@@ -75,6 +85,11 @@ android {
     namespace = "com.example.driveit_project"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
+    if (driveItIsolatedTest) {
+        // The native FlutterTestRunner must target the actual release AOT app;
+        // normal builds retain AGP's default debug instrumentation variant.
+        testBuildType = "release"
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -92,6 +107,8 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "false"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testApplicationId = "$configuredApplicationId.test"
     }
 
     buildTypes {
@@ -108,6 +125,12 @@ android {
             if (driveItIsolatedTest) {
                 applicationIdSuffix = ".isolated_test"
                 manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "true"
+                // The release AndroidTest APK must retain AndroidJUnitRunner
+                // and the FlutterTestRunner test class; this affects only the
+                // isolated test release build, not a normal production release.
+                isMinifyEnabled = false
+                isShrinkResources = false
+                testProguardFiles("proguard-phase5-release-acceptance.pro")
             }
         }
     }
@@ -125,10 +148,19 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    // Match the versions selected by Flutter 3.44.8's integration_test
+    // release dependency constraints (runner 1.3.0 / rules 1.2.0 / JUnit 4.12).
+    androidTestImplementation("androidx.test:runner:1.3.0")
+    androidTestImplementation("androidx.test:rules:1.2.0")
+    androidTestImplementation("junit:junit:4.12")
+    // Flutter's generated release plugin registrant includes this class because
+    // integration_test is a dev dependency. Keeping the bridge on the release
+    // compile classpath prevents stale-registrant javac failure; it does not
+    // select a test Dart entrypoint, change the applicationId, or enable the
+    // isolated owner runtime. Those remain behind the exact test-only define,
+    // manifest marker, and isolated package checks above.
+    add("releaseImplementation", project(":integration_test"))
     if (driveItIsolatedTest) {
-        // Flutter's generated plugin registrant references integration_test
-        // even for an isolated release test target. Keep its Android bridge
-        // confined to builds that also receive the isolated package suffix.
-        add("releaseImplementation", project(":integration_test"))
+        add("androidTestImplementation", project(":integration_test"))
     }
 }

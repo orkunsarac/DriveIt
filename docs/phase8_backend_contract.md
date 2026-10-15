@@ -1,5 +1,12 @@
 # DriveIt Phase 8 backend contract and implementation boundary
 
+Staging-cancellation extension (2026-10-15): migration
+`202610160003` and three existing Edge updates support causalVersion 2 cancellation
+receipts bound to a real intent/hash, not a fabricated manifest sequence.
+See `phase8_m2_staging_cancellation_delivery.md` for the local implementation and
+`phase8_m2_staging_cancellation_planet_dev_acceptance.md` for successful hosted
+synthetic acceptance on Planet DEV. No APK rollout in this deployment task.
+
 2026-10-15 fencing repair acceptance: `202610160002` is deployed to the approved
 Planet DEV target. Both RPCs use non-retrying `PT409` for business fencing
 errors. Real synthetic M1/M2 acceptance passed; see

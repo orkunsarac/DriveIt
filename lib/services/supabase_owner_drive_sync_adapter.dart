@@ -17,6 +17,7 @@ class SupabaseOwnerDriveSyncAdapter
     implements
         OwnerSyncAccountRemoteAdapter,
         OwnerSyncDeletionAdapter,
+        OwnerSyncStagingCancellationAdapter,
         OwnerDriveLeaseTransport {
   SupabaseOwnerDriveSyncAdapter({
     required SupabaseClient client,
@@ -136,6 +137,7 @@ class SupabaseOwnerDriveSyncAdapter
       throw const OwnerSyncConflict('deletion_owner_invalid');
     }
     final data = await _invokeJson('phase8-drive-delete', {
+      if (mutation.payload['causalVersion'] == 2) 'action': 'cancelStaging',
       'mutation': mutation.toMap(),
     });
     if (data['ok'] != true ||
@@ -144,6 +146,33 @@ class SupabaseOwnerDriveSyncAdapter
       throw const OwnerSyncConflict('deletion_ack_invalid');
     }
     return OwnerSyncMutation.fromMap(data['mutation'] as Map);
+  }
+
+  @override
+  Future<({String intentId, String fingerprint})> observeStagingDrive(
+    String source,
+  ) async {
+    await _requireM2();
+    if (!_uuidV4.hasMatch(source)) {
+      throw const OwnerSyncConflict('source_invalid');
+    }
+    final data = await _invokeJson('phase8-drive-delete', {
+      'action': 'observeStaging',
+      'sourceIdentity': source,
+    });
+    if (data['ok'] != true ||
+        data['ownerId'] != _ownerId ||
+        data['sourceIdentity'] != source ||
+        data['intentId'] is! String ||
+        !_uuidV4.hasMatch(data['intentId'] as String) ||
+        data['payloadFingerprint'] is! String ||
+        !_sha256.hasMatch(data['payloadFingerprint'] as String)) {
+      throw const OwnerSyncConflict('cancellation_observation_invalid');
+    }
+    return (
+      intentId: data['intentId'] as String,
+      fingerprint: data['payloadFingerprint'] as String,
+    );
   }
 
   @override

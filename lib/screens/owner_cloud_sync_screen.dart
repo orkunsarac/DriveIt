@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import '../models/drive_session.dart';
 
 import '../services/local_owner_lifecycle.dart';
+import '../services/owner_drive_sync_client.dart';
 import '../widgets/local_owner_view.dart';
 
 /// Normal-app M1 entry. Opening this screen never starts network work.
@@ -27,11 +28,18 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
     try {
       final message = await action();
       if (mounted && widget.lease.isCurrent) setState(() => _message = message);
+    } on OwnerSyncConflict catch (error) {
+      if (mounted && widget.lease.isCurrent) {
+        setState(
+          () => _message =
+              'Sunucu veya veri doğrulaması reddedildi (${error.code}). Yerel sürüş korundu.',
+        );
+      }
     } catch (_) {
       if (mounted && widget.lease.isCurrent) {
         setState(
           () => _message =
-              'Bağlantı veya doğrulama başarısız. Çevrimdışı olabilirsin. '
+              'Bağlantı veya doğrulama tamamlanamadı. '
               'Yerel sürüşlerin korundu; yeniden deneyebilirsin.',
         );
       }
@@ -163,6 +171,8 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
                         ? 'Bulutta doğrulandı'
                         : candidate.state == 'deletionPending'
                         ? 'Bulut silme bekliyor; yükleme kapalı'
+                        : candidate.state == 'ineligibleTelemetry'
+                        ? 'Telemetri örneği yok; yalnız bu cihazda saklanır'
                         : candidate.state == 'conflict'
                         ? 'Çakışma; veri değiştirilmedi'
                         : 'Yerelde bekliyor'}',
@@ -173,6 +183,7 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
                         !available ||
                             _busy ||
                             candidate.state == 'conflict' ||
+                            candidate.state == 'ineligibleTelemetry' ||
                             candidate.state == 'deletionPending'
                         ? null
                         : () async {

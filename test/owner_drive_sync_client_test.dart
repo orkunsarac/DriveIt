@@ -21,6 +21,7 @@ import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 import 'package:driveit_project/services/drive_score_storage_service.dart';
 import 'package:driveit_project/services/supabase_owner_drive_sync_adapter.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/services/production_owner_runtime_factory.dart';
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'local_owner_integration_test.dart' show TestAuth;
@@ -63,6 +64,7 @@ class _FakeRemote implements OwnerSyncRemoteAdapter {
 
 class _DeletionRemote implements OwnerSyncDeletionAdapter {
   bool offline = false;
+  bool unavailable = false;
   bool loseAck = false;
   OwnerSyncMutation? accepted;
   String fingerprint = 'a' * 64;
@@ -73,6 +75,7 @@ class _DeletionRemote implements OwnerSyncDeletionAdapter {
     String source,
   ) async {
     if (offline) throw const OwnerSyncTransportFailure('offline');
+    if (unavailable) throw const OwnerSyncConflict('source_unavailable');
     return (sequence: 1, fingerprint: fingerprint);
   }
 
@@ -87,6 +90,55 @@ class _DeletionRemote implements OwnerSyncDeletionAdapter {
       throw const OwnerSyncTransportFailure('lost_ack');
     }
     return accepted!;
+  }
+}
+
+class _StagingCancellationRemote extends _M2AccountRemote
+    implements OwnerSyncStagingCancellationAdapter {
+  bool finalized = false;
+  bool finalizeWins = false;
+  bool loseCancelAck = false;
+  OwnerSyncMutation? cancellation;
+  int cancelCalls = 0;
+  Completer<void>? cancelBlock;
+  final enteredCancel = Completer<void>();
+  @override
+  Future<({int sequence, String fingerprint})> observeDrive(
+    String source,
+  ) async {
+    if (!finalized) throw const OwnerSyncConflict('source_unavailable');
+    return super.observeDrive(source);
+  }
+
+  @override
+  Future<({String intentId, String fingerprint})> observeStagingDrive(
+    String source,
+  ) async => (
+    intentId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    fingerprint: deletion.fingerprint,
+  );
+  @override
+  Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation) async {
+    if (mutation.payload['causalVersion'] != 2) {
+      return super.deleteDrive(mutation);
+    }
+    cancelCalls++;
+    if (finalizeWins) {
+      finalized = true;
+      throw const OwnerSyncConflict('source_already_finalized');
+    }
+    cancellation ??= mutation;
+    if (canonicalOwnerSyncJson(cancellation!.toMap()) !=
+        canonicalOwnerSyncJson(mutation.toMap())) {
+      throw const OwnerSyncConflict('cancellation_conflict');
+    }
+    if (!enteredCancel.isCompleted) enteredCancel.complete();
+    if (cancelBlock != null) await cancelBlock!.future;
+    if (loseCancelAck) {
+      loseCancelAck = false;
+      throw const OwnerSyncTransportFailure('lost_ack');
+    }
+    return cancellation!;
   }
 }
 
@@ -245,6 +297,7 @@ Future<void> _seedVerifiedDrive(
   String identity = sourceId,
   String driveId = 'local-drive-1',
   bool includeScore = false,
+  bool emptyTelemetry = false,
 }) async {
   final owner = store.owner;
   final now = DateTime.utc(2026, 10, 12, 9);
@@ -275,30 +328,32 @@ Future<void> _seedVerifiedDrive(
       'sourceIdentityVersion': 1,
       'sourceNamespace': 'drive_source_v1',
     },
-    points: [
-      CanonicalTelemetryPoint(
-        latitude: 40,
-        longitude: 29,
-        timestamp: now,
-        speedMps: 7,
-        headingDegrees: 90,
-        altitudeMeters: 10,
-        accuracyMeters: 4,
-        distanceFromPreviousMeters: 0,
-        accelerationMps2: 0,
-      ),
-      CanonicalTelemetryPoint(
-        latitude: 40.01,
-        longitude: 29.01,
-        timestamp: now.add(const Duration(seconds: 10)),
-        speedMps: 8,
-        headingDegrees: 90,
-        altitudeMeters: 11,
-        accuracyMeters: 4,
-        distanceFromPreviousMeters: 100,
-        accelerationMps2: 0,
-      ),
-    ],
+    points: emptyTelemetry
+        ? []
+        : [
+            CanonicalTelemetryPoint(
+              latitude: 40,
+              longitude: 29,
+              timestamp: now,
+              speedMps: 7,
+              headingDegrees: 90,
+              altitudeMeters: 10,
+              accuracyMeters: 4,
+              distanceFromPreviousMeters: 0,
+              accelerationMps2: 0,
+            ),
+            CanonicalTelemetryPoint(
+              latitude: 40.01,
+              longitude: 29.01,
+              timestamp: now.add(const Duration(seconds: 10)),
+              speedMps: 8,
+              headingDegrees: 90,
+              altitudeMeters: 11,
+              accuracyMeters: 4,
+              distanceFromPreviousMeters: 100,
+              accelerationMps2: 0,
+            ),
+          ],
   );
   final bundle = LocalSourceBundle(
     drive: drive,
@@ -342,6 +397,13 @@ Future<void> _seedVerifiedDrive(
 }
 
 void main() {
+  test('production M2 requires explicit M1 and deletion build opt-ins', () {
+    expect(
+      ProductionOwnerRuntimeFactory.accountDeletionEnabled,
+      const bool.fromEnvironment('DRIVEIT_ACCOUNT_SYNC_ENABLED') &&
+          const bool.fromEnvironment('DRIVEIT_ACCOUNT_DELETE_ENABLED'),
+    );
+  });
   late Directory root;
   late OwnerScopedLocalStore storeA;
   late OwnerScopedLocalStore storeB;
@@ -359,6 +421,211 @@ void main() {
     await storeB.close();
     await root.delete(recursive: true);
   });
+
+  test(
+    'empty telemetry stays local and never creates an upload attempt',
+    () async {
+      await _seedVerifiedDrive(storeA, emptyTelemetry: true);
+      final client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      expect(client.manualCandidates().single.state, 'ineligibleTelemetry');
+      expect((await client.reconcileFinalizedDrives()).queued, 0);
+      await expectLater(
+        client.enqueueDrive('local-drive-1'),
+        throwsA(
+          isA<OwnerSyncConflict>().having(
+            (e) => e.code,
+            'code',
+            'upload_telemetry_empty',
+          ),
+        ),
+      );
+      expect(client.pendingKeys(), isEmpty);
+      expect(client.hasCloudDrive('local-drive-1'), isFalse);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+    },
+  );
+
+  test(
+    'unfinalized upload deletion 404 preserves consent and blocks resurrection',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      final client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final remote = _M2AccountRemote()..failUploadOnce = true;
+      final key = await client.enqueueDrive('local-drive-1');
+      expect(await client.sendStaged(key, remote), isFalse);
+      expect(client.hasCloudDrive('local-drive-1'), isTrue);
+      await client.prepareCloudDeletion('local-drive-1');
+      remote.deletion.unavailable = true;
+      await expectLater(
+        client.sendCloudDeletion('local-drive-1', remote),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+      expect(
+        client.deletionStatus('local-drive-1')!['error'],
+        'source_unavailable',
+      );
+      expect(client.deletionStatus('local-drive-1')!['state'], 'conflict');
+      expect(remote.deletion.accepted, isNull);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      await expectLater(
+        client.sendStaged(key, remote),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+    },
+  );
+
+  test(
+    'staging cancellation persists across lost ACK/reopen and blocks old upload',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      await storeA
+          .repositories(ownerA)
+          .contribute(storeA.repositories(ownerA).source('local-drive-1')!);
+      var client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final remote = _StagingCancellationRemote()..failUploadOnce = true;
+      final key = await client.enqueueDrive('local-drive-1');
+      remote.deletion.fingerprint =
+          (client.readRecord(key)!['mutation'] as Map)['payloadFingerprint']
+              as String;
+      expect(await client.sendStaged(key, remote), isFalse);
+      await client.prepareCloudDeletion('local-drive-1');
+      remote.loseCancelAck = true;
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isFalse);
+      final first = jsonEncode(
+        client.deletionStatus('local-drive-1')!['mutation'],
+      );
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      await storeA.close();
+      storeA = await OwnerScopedLocalStore.open(root: root.path, owner: ownerA);
+      client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isTrue);
+      expect(
+        jsonEncode(client.deletionStatus('local-drive-1')!['mutation']),
+        first,
+      );
+      expect(client.deletionStatus('local-drive-1')!['state'], 'acknowledged');
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNull);
+      expect(remote.cancelCalls, 2);
+      await expectLater(
+        client.sendStaged(key, remote),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+      final replica = await OwnerScopedLocalStore.open(
+        root: '${root.path}/cancel-replica',
+        owner: ownerA,
+      );
+      try {
+        final second = OwnerDriveSyncClient(
+          store: replica,
+          requireCurrent: () {},
+        );
+        await second.applyDownloadPage(
+          OwnerSyncDownloadPage(
+            ownerId: accountA,
+            fromCursor: '',
+            nextCursor: 'cancel',
+            changes: [
+              OwnerSyncRemoteChange(
+                cursor: 'cancel',
+                mutation: remote.cancellation!,
+              ),
+            ],
+          ),
+        );
+        final upsert = OwnerSyncMutation.fromMap(
+          client.readRecord(key)!['mutation'] as Map,
+        );
+        await second.applyDownloadPage(
+          OwnerSyncDownloadPage(
+            ownerId: accountA,
+            fromCursor: 'cancel',
+            nextCursor: 'stale',
+            changes: [OwnerSyncRemoteChange(cursor: 'stale', mutation: upsert)],
+          ),
+        );
+        expect(replica.keys(ownerA, 'drives'), isEmpty);
+        final foreign = OwnerDriveSyncClient(
+          store: storeB,
+          requireCurrent: () {},
+        );
+        await expectLater(
+          foreign.applyDownloadPage(
+            OwnerSyncDownloadPage(
+              ownerId: accountA,
+              fromCursor: '',
+              nextCursor: 'cancel',
+              changes: [
+                OwnerSyncRemoteChange(
+                  cursor: 'cancel',
+                  mutation: remote.cancellation!,
+                ),
+              ],
+            ),
+          ),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        expect(storeB.keys(ownerB, OwnerDriveSyncClient.deletionBox), isEmpty);
+      } finally {
+        await replica.close();
+      }
+    },
+  );
+
+  test(
+    'finalize race switches once to real manifest tombstone with same consent',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      await storeA
+          .repositories(ownerA)
+          .contribute(storeA.repositories(ownerA).source('local-drive-1')!);
+      final client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final remote = _StagingCancellationRemote()
+        ..failUploadOnce = true
+        ..finalizeWins = true;
+      final key = await client.enqueueDrive('local-drive-1');
+      remote.deletion.fingerprint =
+          (client.readRecord(key)!['mutation'] as Map)['payloadFingerprint']
+              as String;
+      await client.sendStaged(key, remote);
+      await client.prepareCloudDeletion('local-drive-1');
+      final consent = client.deletionStatus('local-drive-1')!['deletionId'];
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isTrue);
+      expect(remote.cancelCalls, 1);
+      expect(remote.cancellation, isNull);
+      expect(remote.deletion.accepted!.payload['causalVersion'], 1);
+      expect(remote.deletion.accepted!.payload['deletionId'], consent);
+    },
+  );
+
+  test(
+    'late cancellation ACK after owner revocation cannot delete local data',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      var current = true;
+      final client = OwnerDriveSyncClient(
+        store: storeA,
+        requireCurrent: () {
+          if (!current) throw StateError('revoked owner');
+        },
+      );
+      final remote = _StagingCancellationRemote()..failUploadOnce = true;
+      final key = await client.enqueueDrive('local-drive-1');
+      remote.deletion.fingerprint =
+          (client.readRecord(key)!['mutation'] as Map)['payloadFingerprint']
+              as String;
+      await client.sendStaged(key, remote);
+      await client.prepareCloudDeletion('local-drive-1');
+      remote.cancelBlock = Completer<void>();
+      final work = client.sendCloudDeletion('local-drive-1', remote);
+      await remote.enteredCancel.future;
+      current = false;
+      final check = expectLater(work, throwsStateError);
+      remote.cancelBlock!.complete();
+      await check;
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      expect(storeB.keys(ownerB, OwnerDriveSyncClient.deletionBox), isEmpty);
+    },
+  );
 
   testWidgets(
     'M2 History asks explicit cloud consent and cancellation sends nothing',

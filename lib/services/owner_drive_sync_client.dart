@@ -236,6 +236,13 @@ abstract interface class OwnerSyncDeletionAdapter {
   Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation);
 }
 
+/// Optional M2 extension; a 404 alone is never a cancellation receipt.
+abstract interface class OwnerSyncStagingCancellationAdapter {
+  Future<({String intentId, String fingerprint})> observeStagingDrive(
+    String source,
+  );
+}
+
 class OwnerSyncDownloadResult {
   const OwnerSyncDownloadResult({
     required this.applied,
@@ -346,6 +353,77 @@ class OwnerDriveSyncClient {
     requireCurrent();
   }
 
+  Future<OwnerSyncMutation> _buildDeletionMutation(
+    Map row,
+    OwnerSyncDeletionAdapter remote, {
+    bool finalizedOnly = false,
+  }) async {
+    Map<String, Object?> evidence;
+    try {
+      final observed = await remote.observeDrive(
+        row['sourceIdentity'] as String,
+      );
+      requireCurrent();
+      if (observed.sequence < 1 ||
+          observed.fingerprint != row['expectedPayloadFingerprint']) {
+        throw const OwnerSyncConflict('deletion_observation_invalid');
+      }
+      evidence = {
+        'causalVersion': 1,
+        'observedRemoteSequence': observed.sequence,
+        'observedPayloadFingerprint': observed.fingerprint,
+      };
+    } on OwnerSyncConflict catch (error) {
+      if (finalizedOnly ||
+          error.code != 'source_unavailable' ||
+          remote is! OwnerSyncStagingCancellationAdapter) {
+        rethrow;
+      }
+      try {
+        final staged = await (remote as OwnerSyncStagingCancellationAdapter)
+            .observeStagingDrive(row['sourceIdentity'] as String);
+        requireCurrent();
+        if (!_isUuid(staged.intentId) ||
+            staged.fingerprint != row['expectedPayloadFingerprint']) {
+          throw const OwnerSyncConflict('cancellation_observation_invalid');
+        }
+        evidence = {
+          'causalVersion': 2,
+          'intentId': staged.intentId,
+          'cancelledPayloadFingerprint': staged.fingerprint,
+        };
+      } on OwnerSyncConflict catch (race) {
+        if (race.code != 'source_already_finalized') rethrow;
+        return _buildDeletionMutation(row, remote, finalizedOnly: true);
+      }
+    }
+    requireCurrent();
+    final m = _mutation(
+      kind: OwnerSyncMutationKind.driveTombstone,
+      accountId: owner.userId!,
+      sourceIdentity: row['sourceIdentity'] as String,
+      payload: {
+        'deletionId': row['deletionId'],
+        'deletedAt': row['deletedAt'],
+        ...evidence,
+      },
+    );
+    return OwnerSyncMutation(
+      version: m.version,
+      kind: m.kind,
+      ownerScope: m.ownerScope,
+      ownerId: m.ownerId,
+      sourceIdentity: m.sourceIdentity,
+      payload: m.payload,
+      payloadFingerprint: m.payloadFingerprint,
+      idempotencyKey: _idempotencyKey(
+        owner.userId!,
+        m.kind,
+        row['deletionId'] as String,
+      ),
+    );
+  }
+
   /// One bounded attempt. A response loss retains exactly the same operation.
   /// Data stays locally available/pending until a validated server ACK arrives.
   Future<bool> sendCloudDeletion(
@@ -373,49 +451,34 @@ class OwnerDriveSyncClient {
       if (row['mutation'] is Map) {
         mutation = OwnerSyncMutation.fromMap(row['mutation'] as Map);
       } else {
-        final observed = await remote.observeDrive(
-          row['sourceIdentity'] as String,
-        );
-        requireCurrent();
-        if (observed.sequence < 1 ||
-            observed.fingerprint != row['expectedPayloadFingerprint'] ||
-            !RegExp(r'^[0-9a-f]{64}$').hasMatch(observed.fingerprint)) {
-          throw const OwnerSyncConflict('deletion_observation_invalid');
-        }
-        mutation = _mutation(
-          kind: OwnerSyncMutationKind.driveTombstone,
-          accountId: owner.userId!,
-          sourceIdentity: row['sourceIdentity'] as String,
-          payload: {
-            'deletionId': row['deletionId'],
-            'deletedAt': row['deletedAt'],
-            'observedRemoteSequence': observed.sequence,
-            'observedPayloadFingerprint': observed.fingerprint,
-            'causalVersion': 1,
-          },
-        );
-        // Tombstone identity is the deletion UUID, NOT source UUID.
-        mutation = OwnerSyncMutation(
-          version: mutation.version,
-          kind: mutation.kind,
-          ownerScope: mutation.ownerScope,
-          ownerId: mutation.ownerId,
-          idempotencyKey: _idempotencyKey(
-            owner.userId!,
-            mutation.kind,
-            row['deletionId'] as String,
-          ),
-          payloadFingerprint: mutation.payloadFingerprint,
-          sourceIdentity: mutation.sourceIdentity,
-          payload: mutation.payload,
-        );
+        mutation = await _buildDeletionMutation(row, remote);
         await store.put(owner, deletionBox, 'drive:$driveId', {
           ...deletionStatus(driveId)!,
           'mutation': mutation.toMap(),
         });
       }
       _validateMutationOwner(mutation);
-      final ack = await remote.deleteDrive(mutation);
+      OwnerSyncMutation ack;
+      try {
+        ack = await remote.deleteDrive(mutation);
+      } on OwnerSyncConflict catch (race) {
+        if (mutation.payload['causalVersion'] != 2 ||
+            race.code != 'source_already_finalized') {
+          rethrow;
+        }
+        // Finalization won the source lock. No cancellation was accepted;
+        // use real manifest evidence with the SAME consent UUID/time, once.
+        mutation = await _buildDeletionMutation(
+          row,
+          remote,
+          finalizedOnly: true,
+        );
+        await store.put(owner, deletionBox, 'drive:$driveId', {
+          ...deletionStatus(driveId)!,
+          'mutation': mutation.toMap(),
+        });
+        ack = await remote.deleteDrive(mutation);
+      }
       requireCurrent();
       if (canonicalOwnerSyncSha256(ack.toMap()) !=
           canonicalOwnerSyncSha256(mutation.toMap())) {
@@ -594,6 +657,7 @@ class OwnerDriveSyncClient {
           break;
         }
       }
+      if (source.telemetry!.points.isEmpty) state = 'ineligibleTelemetry';
       if (deletionStatus(id) != null) state = 'deletionPending';
       result.add((drive: source.drive, key: key, state: state));
     }
@@ -620,6 +684,9 @@ class OwnerDriveSyncClient {
       throw StateError('Deleted owner drives cannot be queued');
     }
     final source = _verifiedLocalBundle(driveId);
+    if (source.telemetry!.points.isEmpty) {
+      throw const OwnerSyncConflict('upload_telemetry_empty');
+    }
     final provenance = source.sourceProvenance;
     if (provenance?.isProven != true || provenance!.ownerScope != store.scope) {
       throw StateError('Only proven owner drive sources can be queued');
@@ -715,6 +782,7 @@ class OwnerDriveSyncClient {
       final provenance = source?.sourceProvenance;
       if (source == null ||
           source.telemetry == null ||
+          source.telemetry!.points.isEmpty ||
           provenance?.isProven != true ||
           provenance!.ownerScope != store.scope) {
         // Unknown, legacy, incomplete, or contradictory evidence is not
@@ -951,6 +1019,12 @@ class OwnerDriveSyncClient {
     _assertNotDeleted(mutation);
     if (row['state'] == OwnerSyncMutationState.acknowledged.name) return true;
     if (row['state'] == OwnerSyncMutationState.conflict.name) return false;
+    final telemetry = mutation.payload['telemetry'];
+    if (telemetry is Map &&
+        telemetry['points'] is List &&
+        (telemetry['points'] as List).isEmpty) {
+      throw const OwnerSyncConflict('upload_telemetry_empty');
+    }
     final envelope = _envelopeBytes(mutation);
     if (envelope.isEmpty || envelope.length > maxStagedEnvelopeBytes) {
       throw const OwnerSyncConflict('staged_payload_size_invalid');
@@ -1737,6 +1811,19 @@ class OwnerDriveSyncClient {
       );
       if (deletedAt == null || !deletedAt.isUtc) {
         throw const OwnerSyncConflict('tombstone_timestamp_invalid');
+      }
+      if (mutation.payload['causalVersion'] == 2) {
+        if (!_isUuid(mutation.payload['deletionId'] as String) ||
+            mutation.payload['intentId'] is! String ||
+            !_isUuid(mutation.payload['intentId'] as String) ||
+            mutation.payload.containsKey('observedRemoteSequence') ||
+            mutation.payload['cancelledPayloadFingerprint'] is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(
+              mutation.payload['cancelledPayloadFingerprint'] as String,
+            )) {
+          throw const OwnerSyncConflict('cancellation_evidence_missing');
+        }
+        return;
       }
       if (!_isUuid(mutation.payload['deletionId'] as String) ||
           mutation.payload['observedRemoteSequence'] is! int ||

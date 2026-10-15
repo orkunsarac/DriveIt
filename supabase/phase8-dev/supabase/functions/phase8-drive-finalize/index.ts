@@ -11,6 +11,10 @@ Deno.serve(async (request) => {
     .select("id,owner_id,idempotency_key,source_identity,contract_version,payload_fingerprint,object_sha256,object_bytes,staging_path,state,receipt")
     .eq("id", body.intentId).eq("owner_id", auth.userId).maybeSingle();
   if (intentError || !intent) return failure("intent_not_found", 404);
+  const { data: cancelled, error: cancellationError } = await auth.admin.from("phase8_drive_cancellations")
+    .select("source_identity").eq("owner_id", auth.userId).eq("source_identity", intent.source_identity).maybeSingle();
+  if (cancellationError) return failure("cancellation_check_unavailable", 503);
+  if (cancelled) return failure("source_cancelled", 409);
   // ACK replay must pass the DB tombstone/fencing barrier too.
   if (intent.state !== "staging" && intent.state !== "finalized") return failure("intent_not_finalizable", 409);
   const { data: object, error: objectError } = await auth.admin.storage.from(bucket).download(intent.staging_path);

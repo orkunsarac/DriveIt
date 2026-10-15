@@ -39,6 +39,8 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   assert(!remote || remoteRef === "viqngnjfgknpxtoapzcg", "remote target must be the approved Planet DEV project");
   const remoteM2 = Deno.env.get("PHASE8_REMOTE_M2_ACCEPTANCE") === "APPROVED_SYNTHETIC_ONLY";
   assert(!remoteM2 || remote, "remote M2 switch requires the exact explicit remote target");
+  const remoteCancellation = Deno.env.get("PHASE8_REMOTE_CANCELLATION_ACCEPTANCE") === "APPROVED_SYNTHETIC_ONLY";
+  assert(!remoteCancellation || remoteM2, "remote cancellation requires the approved M2 target");
   const url = Deno.env.get("PHASE8_LOCAL_URL");
   const anonKey = Deno.env.get("PHASE8_LOCAL_ANON_KEY");
   const serviceKey = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_KEY");
@@ -528,10 +530,113 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   });
   assert(currentFinalize.ok, "current fenced session replays one durable ACK");
   await currentFinalize.body?.cancel();
-  if (remoteM2) {
+  if (remoteM2 && !remoteCancellation) {
     // Keep immutable deletion/fencing evidence. Operational cleanup disables
     // only this run's A account and removes B/unfinalized temporary objects.
     console.info(`phase8_remote_m2_acceptance=passed; retained_evidence_run=${runId}; global_cleanup=not_run`);
+    return;
+  }
+
+  // Cancellation requires its own explicit remote approval; ordinary M2 stops above.
+  const cancelledSource = crypto.randomUUID();
+  const emptyMutation = structuredClone(mutation);
+  emptyMutation.sourceIdentity = cancelledSource;
+  emptyMutation.idempotencyKey = await expectedDriveUpsertKey(userA.id, cancelledSource);
+  emptyMutation.payload.sourceProvenance.sourceIdentity = cancelledSource;
+  emptyMutation.payload.telemetry.metadata.sourceIdentity = cancelledSource;
+  emptyMutation.payload.telemetry.points = [];
+  emptyMutation.payloadFingerprint = await canonicalSha256(emptyMutation.payload);
+  const emptyBytes = new TextEncoder().encode(canonicalJson(emptyMutation));
+  const emptyBody = { ...beginBody, sourceIdentity: cancelledSource,
+    idempotencyKey: emptyMutation.idempotencyKey, payloadFingerprint: emptyMutation.payloadFingerprint,
+    objectSha256: await sha256Hex(emptyBytes), objectBytes: emptyBytes.byteLength };
+  const emptyBegin = await responseJson(await invoke("phase8-drive-begin", tokenA, emptyBody));
+  const emptyPath = `${userA.id}/${emptyBegin.intentId}/envelope.json`;
+  assert(!(await clientA.storage.from(bucket).upload(emptyPath, emptyBytes, { contentType: "application/json" })).error,
+    "synthetic empty telemetry reaches private staging");
+  const emptyFinalize = await invoke("phase8-drive-finalize", tokenA, { intentId: emptyBegin.intentId });
+  assert(emptyFinalize.status === 422, "empty telemetry is not a proven cloud drive");
+  await emptyFinalize.arrayBuffer();
+  const stagingObservation = await responseJson(await invoke("phase8-drive-delete", tokenA,
+    { action: "observeStaging", sourceIdentity: cancelledSource }));
+  assert(stagingObservation.ownerId === userA.id && stagingObservation.intentId === emptyBegin.intentId &&
+    stagingObservation.payloadFingerprint === emptyMutation.payloadFingerprint, "real staging identity evidence");
+  const cancelPayload = { deletionId: crypto.randomUUID(), deletedAt: new Date().toISOString(), causalVersion: 2,
+    intentId: emptyBegin.intentId, cancelledPayloadFingerprint: emptyMutation.payloadFingerprint };
+  const cancelMutation = { version: 2, kind: "driveTombstone", ownerId: userA.id, ownerScope: ownerScope(userA.id),
+    sourceIdentity: cancelledSource, payload: cancelPayload, payloadFingerprint: await canonicalSha256(cancelPayload),
+    idempotencyKey: `owner-sync-v2:${await sha256Hex(new TextEncoder().encode(`${ownerScope(userA.id)}|${userA.id}|driveTombstone|${cancelPayload.deletionId}`))}` };
+  const forbiddenCancel = await invoke("phase8-drive-delete", tokenB, { action: "cancelStaging", mutation: cancelMutation });
+  assert(forbiddenCancel.status === 422, "B cannot cancel A"); await forbiddenCancel.arrayBuffer();
+  const anonymousCancel = await invoke("phase8-drive-delete", null, { action: "cancelStaging", mutation: cancelMutation });
+  assert(anonymousCancel.status === 401, "anonymous cancel denied"); await anonymousCancel.arrayBuffer();
+  const cancelled = await responseJson(await invoke("phase8-drive-delete", tokenA, { action: "cancelStaging", mutation: cancelMutation }));
+  const cancelledReplay = await responseJson(await invoke("phase8-drive-delete", tokenA, { action: "cancelStaging", mutation: cancelMutation }));
+  assert(cancelled.ok === true && canonicalJson(cancelled.mutation) === canonicalJson(cancelMutation) &&
+    canonicalJson(cancelled) === canonicalJson(cancelledReplay), "lost cancel ACK retry returns identical receipt");
+  for (const [name, body] of [["phase8-drive-begin", emptyBody], ["phase8-drive-finalize", { intentId: emptyBegin.intentId }]] as const) {
+    const denied = await invoke(name, tokenA, body);
+    assert(denied.status === 409 && (await responseJson(denied)).error_code === "source_cancelled", "cancel barrier rejects old upload/finalize");
+  }
+  assert(!(await admin.storage.from(bucket).download(emptyPath)).error, "cancel security does not delete physical object");
+  assert(Boolean((await clientA.storage.from(bucket).download(emptyPath)).error), "cancel revokes owner staging access");
+  const cancelledDownload = await responseJson(await invoke("phase8-drive-download", tokenA, { action: "begin", limit: 100 }));
+  assert((cancelledDownload.changes as Record<string, unknown>[]).some(c =>
+    canonicalJson(c.mutation) === canonicalJson(cancelMutation)), "existing cursor carries cancellation barrier");
+
+  const raceSource = crypto.randomUUID();
+  const raceMutation = structuredClone(mutation);
+  raceMutation.sourceIdentity = raceSource;
+  raceMutation.idempotencyKey = await expectedDriveUpsertKey(userA.id, raceSource);
+  raceMutation.payload.sourceProvenance.sourceIdentity = raceSource;
+  raceMutation.payload.telemetry.metadata.sourceIdentity = raceSource;
+  raceMutation.payloadFingerprint = await canonicalSha256(raceMutation.payload);
+  const raceBytes = new TextEncoder().encode(canonicalJson(raceMutation));
+  const raceBegin = await responseJson(await invoke("phase8-drive-begin", tokenA, {
+    ...beginBody, sourceIdentity: raceSource, idempotencyKey: raceMutation.idempotencyKey,
+    payloadFingerprint: raceMutation.payloadFingerprint, objectSha256: await sha256Hex(raceBytes), objectBytes: raceBytes.byteLength,
+  }));
+  assert(!(await clientA.storage.from(bucket).upload(`${userA.id}/${raceBegin.intentId}/envelope.json`, raceBytes,
+    { contentType: "application/json" })).error, "race fixture staged");
+  const racePayload = { ...cancelPayload, deletionId: crypto.randomUUID(), intentId: raceBegin.intentId,
+    cancelledPayloadFingerprint: raceMutation.payloadFingerprint };
+  const raceCancel = { ...cancelMutation, sourceIdentity: raceSource, payload: racePayload,
+    payloadFingerprint: await canonicalSha256(racePayload),
+    idempotencyKey: `owner-sync-v2:${await sha256Hex(new TextEncoder().encode(`${ownerScope(userA.id)}|${userA.id}|driveTombstone|${racePayload.deletionId}`))}` };
+  const [cancelRace, finalizeRace] = await Promise.all([
+    invoke("phase8-drive-delete", tokenA, { action: "cancelStaging", mutation: raceCancel }),
+    invoke("phase8-drive-finalize", tokenA, { intentId: raceBegin.intentId }),
+  ]);
+  assert((cancelRace.status === 200 && finalizeRace.status === 409) ||
+    (cancelRace.status === 409 && finalizeRace.status === 200), "source lock linearizes concurrent cancel/finalize");
+  await cancelRace.arrayBuffer(); await finalizeRace.arrayBuffer();
+  const raceManifests = await admin.from("phase8_drive_manifests").select("source_identity", {count:"exact"})
+    .eq("owner_id", userA.id).eq("source_identity", raceSource);
+  const raceCancellations = await admin.from("phase8_drive_cancellations").select("source_identity", {count:"exact"})
+    .eq("owner_id", userA.id).eq("source_identity", raceSource);
+  assert(!raceManifests.error && !raceCancellations.error &&
+    Number(raceManifests.count) + Number(raceCancellations.count) === 1, "never both manifest and staging cancellation");
+
+  // Deterministically exercise finalize-first, regardless of the concurrent race winner.
+  const finalizedCancelPayload = { ...cancelPayload, deletionId: crypto.randomUUID(),
+    intentId: secondBegin.intentId, cancelledPayloadFingerprint: secondMutation.payloadFingerprint };
+  const finalizedCancel = { ...cancelMutation, sourceIdentity: secondSourceIdentity, payload: finalizedCancelPayload,
+    payloadFingerprint: await canonicalSha256(finalizedCancelPayload),
+    idempotencyKey: `owner-sync-v2:${await sha256Hex(new TextEncoder().encode(`${ownerScope(userA.id)}|${userA.id}|driveTombstone|${finalizedCancelPayload.deletionId}`))}` };
+  const finalizeFirst = await invoke("phase8-drive-delete", tokenA, { action: "cancelStaging", mutation: finalizedCancel });
+  assert(finalizeFirst.status === 409 && (await responseJson(finalizeFirst)).error_code === "source_already_finalized",
+    "finalize-first requires the standard tombstone path");
+  const finalizedObservation = await responseJson(await invoke("phase8-drive-delete", tokenA,
+    { action: "observe", sourceIdentity: secondSourceIdentity }));
+  const finalizedDeletePayload = { deletionId: finalizedCancelPayload.deletionId, deletedAt: finalizedCancelPayload.deletedAt,
+    causalVersion: 1, observedRemoteSequence: finalizedObservation.change_sequence,
+    observedPayloadFingerprint: finalizedObservation.payload_fingerprint };
+  const finalizedDelete = { ...finalizedCancel, payload: finalizedDeletePayload,
+    payloadFingerprint: await canonicalSha256(finalizedDeletePayload) };
+  const finalizedDeleted = await responseJson(await invoke("phase8-drive-delete", tokenA, { mutation: finalizedDelete }));
+  assert(finalizedDeleted.ok === true, "finalize-first transitions to a standard durable tombstone");
+  if (remoteCancellation) {
+    console.info(`phase8_remote_cancellation_acceptance=passed; retained_evidence_run=${runId}; global_cleanup=not_run`);
     return;
   }
 

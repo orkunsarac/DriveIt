@@ -45,6 +45,7 @@ Deno.serve(async (request) => {
     p_object_bytes: objectBytes,
   });
   if (error || !data || typeof data.intent_id !== "string") {
+    if (error?.message === "source_cancelled") return failure("source_cancelled", 409);
     console.error(JSON.stringify({ operation: "phase8_begin", code: "reservation_failed" }));
     return failure("reservation_failed", 409);
   }

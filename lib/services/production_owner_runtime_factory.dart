@@ -57,6 +57,11 @@ abstract final class ProductionOwnerRuntimeFactory {
   static const accountSyncEnabled = bool.fromEnvironment(
     'DRIVEIT_ACCOUNT_SYNC_ENABLED',
   );
+
+  /// Separate rollout opt-in; M1-only builds and Guest never gain cloud delete.
+  static const accountDeletionEnabled =
+      accountSyncEnabled &&
+      bool.fromEnvironment('DRIVEIT_ACCOUNT_DELETE_ENABLED');
   static Future<ProductionOwnerRuntimeDependencies> create() async {
     if (!LocalOwnershipGate.production.enabled ||
         !LocalOwnershipGate.localProductionActivation) {
@@ -123,13 +128,13 @@ abstract final class ProductionOwnerRuntimeFactory {
                 client: Supabase.instance.client,
                 ownerId: lease.owner.userId!,
                 requireCurrent: lease.requireCurrent,
-                deletionEnabled: false, // M2 server accepted; client rollout pending.
+                deletionEnabled: accountDeletionEnabled,
               );
             },
       // First real cloud acceptance is explicit, one selected drive at a time.
       // Startup/resume/Save may reconcile locally, but must never send a batch.
       automaticAccountSync: false,
-      cloudDeletionEnabled: false,
+      cloudDeletionEnabled: accountDeletionEnabled,
     );
 
     return ProductionOwnerRuntimeDependencies(

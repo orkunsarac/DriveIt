@@ -12,11 +12,46 @@ Deno.serve(async (request) => {
     const { data, error } = await auth.admin.from("phase8_drive_manifests")
       .select("source_identity,payload_fingerprint,change_sequence").eq("owner_id", auth.userId)
       .eq("source_identity", body.sourceIdentity).maybeSingle();
-    if (error || !data) return failure("source_unavailable", 404);
+    if (error) return failure("observation_unavailable", 503);
+    if (!data) return failure("source_unavailable", 404);
     return json({ ok: true, ownerId: auth.userId, ...data });
+  }
+  if (body.action === "observeStaging") {
+    if (typeof body.sourceIdentity !== "string" || !uuidV4.test(body.sourceIdentity)) return failure("source_invalid", 422);
+    const { data, error } = await auth.admin.from("phase8_drive_upload_intents")
+      .select("id,source_identity,payload_fingerprint,state").eq("owner_id", auth.userId)
+      .eq("source_identity", body.sourceIdentity).maybeSingle();
+    if (error) return failure("observation_unavailable", 503);
+    if (!data) return failure("source_unavailable", 404);
+    if (data.state === "finalized") return failure("source_already_finalized", 409);
+    return json({ ok: true, ownerId: auth.userId, intentId: data.id, sourceIdentity: data.source_identity,
+      payloadFingerprint: data.payload_fingerprint });
   }
   const m = body.mutation as Record<string, unknown> | undefined;
   const p = m?.payload as Record<string, unknown> | undefined;
+  if (body.action === "cancelStaging") {
+    if (!m || !p || m.version !== 2 || m.kind !== "driveTombstone" || m.ownerId !== auth.userId ||
+        m.ownerScope !== ownerScope(auth.userId) || typeof m.sourceIdentity !== "string" || !uuidV4.test(m.sourceIdentity) ||
+        typeof p.intentId !== "string" || !uuidV4.test(p.intentId) ||
+        typeof p.deletionId !== "string" || !uuidV4.test(p.deletionId) || p.causalVersion !== 2 ||
+        "observedRemoteSequence" in p || typeof p.cancelledPayloadFingerprint !== "string" || !/^[0-9a-f]{64}$/.test(p.cancelledPayloadFingerprint) ||
+        typeof p.deletedAt !== "string" || !p.deletedAt.endsWith("Z") || !Number.isFinite(Date.parse(p.deletedAt)) ||
+        m.payloadFingerprint !== await canonicalSha256(p)) return failure("cancellation_claim_invalid", 422);
+    const key = `owner-sync-v2:${await sha256Hex(new TextEncoder().encode(`${ownerScope(auth.userId)}|${auth.userId}|driveTombstone|${p.deletionId}`))}`;
+    if (m.idempotencyKey !== key) return failure("deletion_identity_invalid", 422);
+    const { data, error } = await auth.admin.rpc("phase8_cancel_staged_drive", {
+      p_owner_id: auth.userId, p_source_identity: m.sourceIdentity, p_intent_id: p.intentId,
+      p_deletion_id: p.deletionId, p_payload_fingerprint: p.cancelledPayloadFingerprint, p_mutation: m,
+    });
+    if (error || !data) {
+      if (error?.message === "source_already_finalized") return failure("source_already_finalized", 409);
+      if (error?.message === "source_unavailable") return failure("source_unavailable", 404);
+      if (error?.code === "22023") return failure("cancellation_claim_invalid", 422);
+      if (error?.code === "PT409" || error?.code === "23505") return failure("cancellation_conflict", 409);
+      return failure("cancellation_unavailable", 503);
+    }
+    return json({ ok: true, ...data });
+  }
   if (!m || !p || m.version !== 2 || m.kind !== "driveTombstone" || m.ownerId !== auth.userId ||
       m.ownerScope !== ownerScope(auth.userId) || typeof m.sourceIdentity !== "string" || !uuidV4.test(m.sourceIdentity) ||
       typeof p.deletionId !== "string" || !uuidV4.test(p.deletionId) || p.causalVersion !== 1 ||

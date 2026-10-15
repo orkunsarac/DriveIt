@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
+import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 
 import 'package:driveit_project/services/owner_drive_sync_client.dart';
 import 'package:driveit_project/services/supabase_owner_drive_sync_adapter.dart';
@@ -80,6 +82,120 @@ Map<String, Object?> _receipt({String? ownerScope, String? key}) => {
 };
 
 void main() {
+  test(
+    'staging cancellation uses exact owner evidence and existing delete endpoint',
+    () async {
+      var foreignOwner = true;
+      var cancelCalls = 0;
+      final payload = {
+        'deletionId': _snapshot,
+        'deletedAt': '2026-10-15T00:00:00.000Z',
+        'causalVersion': 2,
+        'intentId': _intent,
+        'cancelledPayloadFingerprint': _fingerprint,
+      };
+      final mutation = OwnerSyncMutation(
+        version: 2,
+        kind: OwnerSyncMutationKind.driveTombstone,
+        ownerId: _ownerA,
+        ownerScope: _scope(_ownerA),
+        sourceIdentity: _source,
+        payload: payload,
+        payloadFingerprint: canonicalOwnerSyncSha256(payload),
+        idempotencyKey:
+            'owner-sync-v2:${sha256.convert(utf8.encode('${_scope(_ownerA)}|$_ownerA|driveTombstone|$_snapshot'))}',
+      );
+      final client = _client((request) async {
+        final body = jsonDecode(request.body) as Map;
+        if (request.url.path.endsWith('phase8-drive-begin')) {
+          return _json({
+            'ok': true,
+            'schemaRevision': '202610160001',
+            'ownerScope': _scope(_ownerA),
+            'deleteSync': true,
+            'leaseFencing': true,
+          });
+        }
+        expect(request.url.path.endsWith('phase8-drive-delete'), true);
+        if (body['action'] == 'observeStaging') {
+          return _json({
+            'ok': true,
+            'ownerId': foreignOwner ? _ownerB : _ownerA,
+            'sourceIdentity': _source,
+            'intentId': _intent,
+            'payloadFingerprint': _fingerprint,
+          });
+        }
+        expect(body['action'], 'cancelStaging');
+        expect(body['mutation'], mutation.toMap());
+        cancelCalls++;
+        return _json({'ok': true, 'mutation': mutation.toMap(), 'sequence': 1});
+      });
+      try {
+        final adapter = SupabaseOwnerDriveSyncAdapter(
+          client: client,
+          ownerId: _ownerA,
+          requireCurrent: () {},
+          authenticatedUserId: () => _ownerA,
+          deletionEnabled: true,
+        );
+        await expectLater(
+          adapter.observeStagingDrive(_source),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        foreignOwner = false;
+        expect((await adapter.observeStagingDrive(_source)).intentId, _intent);
+        expect((await adapter.deleteDrive(mutation)).toMap(), mutation.toMap());
+        expect(cancelCalls, 1);
+      } finally {
+        await client.dispose();
+      }
+    },
+  );
+  test('M2 lease_fenced 409 is a conflict without automatic retry', () async {
+    var leaseCalls = 0;
+    final client = _client((request) async {
+      if (request.url.path.endsWith('phase8-drive-begin')) {
+        return _json({
+          'ok': true,
+          'schemaRevision': '202610160001',
+          'ownerScope': _scope(_ownerA),
+          'deleteSync': true,
+          'leaseFencing': true,
+        });
+      }
+      expect(request.url.path.endsWith('phase8-drive-lease'), isTrue);
+      leaseCalls++;
+      return _json({'ok': false, 'error_code': 'lease_fenced'}, status: 409);
+    });
+    try {
+      final adapter = SupabaseOwnerDriveSyncAdapter(
+        client: client,
+        ownerId: _ownerA,
+        requireCurrent: () {},
+        authenticatedUserId: () => _ownerA,
+        deletionEnabled: true,
+      );
+      await expectLater(
+        adapter.updateLease(
+          sourceIdentity: _source,
+          deviceId: _intent,
+          sessionId: 'synthetic-session',
+          fencingToken: 1,
+        ),
+        throwsA(
+          isA<OwnerSyncConflict>().having(
+            (e) => e.code,
+            'code',
+            'lease_fenced',
+          ),
+        ),
+      );
+      expect(leaseCalls, 1);
+    } finally {
+      await client.dispose();
+    }
+  });
   test(
     'M2 real adapter remains fail-closed without explicit activation',
     () async {

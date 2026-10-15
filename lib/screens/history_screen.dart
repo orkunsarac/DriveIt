@@ -316,8 +316,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
                         return Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            const Text(
-                              'Bulut silme bekliyor — sunucu henüz onaylamadı.',
+                            Text(
+                              pendingDeletion == 'conflict'
+                                  ? widget.ownerLease?.cloudDeletionErrorCode(
+                                              drive.id,
+                                            ) ==
+                                            'source_unavailable'
+                                        ? 'Bulut kaydı tamamlanmamış. Silme sunucuda onaylanmadı; kayıt korunuyor.'
+                                        : 'Bulut silme reddedildi. Kayıt korunuyor; yeniden deneyebilirsin.'
+                                  : 'Bulut silme bekliyor — sunucu henüz onaylamadı.',
                             ),
                             tile,
                           ],

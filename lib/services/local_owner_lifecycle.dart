@@ -237,6 +237,8 @@ class LocalOwnerLease implements PosterOperationBoundary {
   bool historyHasCloudEvidence(String id) => _deletionClient.hasCloudDrive(id);
   String? cloudDeletionState(String id) =>
       _deletionClient.deletionStatus(id)?['state'] as String?;
+  String? cloudDeletionErrorCode(String id) =>
+      _deletionClient.deletionStatus(id)?['error'] as String?;
 
   Future<bool> deleteCloudHistory(
     String id, {
@@ -269,7 +271,8 @@ class LocalOwnerLease implements PosterOperationBoundary {
         .where(
           (id) =>
               cloudDeletionState(id) != 'acknowledged' &&
-              cloudDeletionState(id) != 'conflict',
+              (cloudDeletionState(id) != 'conflict' ||
+                  cloudDeletionErrorCode(id) == 'source_unavailable'),
         )
         .take(4)
         .toList();

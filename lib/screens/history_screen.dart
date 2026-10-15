@@ -50,6 +50,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   void _ownerChanged() {
     if (mounted && widget.ownerLease?.isCurrent == false) {
       setState(() => _drives = const []);
+    } else if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadDrives();
+      });
     }
   }
 
@@ -133,13 +137,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _deleteDrive(DriveSession drive) async {
+    final lease = widget.ownerLease;
+    final cloudDelete =
+        lease?.cloudDeletionEnabled == true &&
+        lease!.historyHasCloudEvidence(drive.id);
     final result = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: const Color(0xff0a1b33),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Sürüşü sil'),
-        content: const Text('Bu kayıtlı sürüşü silmek istediğine emin misin?'),
+        content: Text(
+          cloudDelete
+              ? 'Bu sürüş hesabınızdan ve senkronize cihazlarınızdan silinecek.'
+              : 'Bu kayıtlı sürüşü silmek istediğine emin misin?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -162,7 +174,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
       return;
     }
     try {
-      if (widget.ownerLease case final lease?) {
+      if (cloudDelete) {
+        final acknowledged = await lease.deleteCloudHistory(
+          drive.id,
+          userConfirmed: true,
+        );
+        if (!mounted || !lease.isCurrent) return;
+        if (!acknowledged) {
+          _loadDrives();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Bulut silme isteği bekliyor. Sunucu henüz onaylamadı; sürüş korunuyor. Yeniden deneyebilirsin.',
+              ),
+            ),
+          );
+          return;
+        }
+      } else if (widget.ownerLease case final lease?) {
         await lease.deleteHistory(drive.id);
       } else {
         await DriveStorageService.deleteDrive(drive.id);
@@ -266,7 +295,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final drive = _drives[index];
-                        return _DriveListTile(
+                        final tile = _DriveListTile(
                           drive: drive,
                           name: _displayName(drive),
                           dateLabel: _date(drive.date),
@@ -277,6 +306,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           durationLabel: _duration(drive.durationSeconds),
                           onTap: () => _openDetail(drive),
                           onDelete: () => _deleteDrive(drive),
+                        );
+                        final pendingDeletion = widget.ownerLease
+                            ?.cloudDeletionState(drive.id);
+                        if (pendingDeletion == null ||
+                            pendingDeletion == 'acknowledged') {
+                          return tile;
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text(
+                              'Bulut silme bekliyor — sunucu henüz onaylamadı.',
+                            ),
+                            tile,
+                          ],
                         );
                       },
                     ),

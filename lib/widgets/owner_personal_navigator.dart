@@ -14,6 +14,7 @@ import '../features/drive_poster/poster_screens.dart';
 import '../services/device_drive_archive.dart';
 import '../services/android_device_archive_authorizer.dart';
 import '../screens/owned_drive_screen.dart';
+import '../screens/owner_cloud_sync_screen.dart';
 import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
 import '../features/group_drive/group_gps_source.dart';
@@ -88,6 +89,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
         ownerLease: lease,
         deviceArchiveLoader: deviceArchiveLoader,
       ),
+      '/cloud-sync': (_, lease, _) => OwnerCloudSyncScreen(lease: lease),
       '/world': (_, lease, _) => WorldModeSelectionScreen(
         loadData: lease.worldMap,
         myWorldBuilder: (_) => MyWorldMapScreen(ownerLease: lease),

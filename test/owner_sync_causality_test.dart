@@ -8,6 +8,39 @@ const deletion = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 void main() {
   final deletedAt = DateTime.utc(2026, 10, 13, 12);
 
+  testWidgets(
+    'M2 heartbeat ticks at 30 seconds and stops on owner revocation',
+    (tester) async {
+      final remote = _LeaseTransport();
+      var current = true;
+      final failures = <Object>[];
+      final heartbeat = OwnerDriveLeaseHeartbeat(
+        remote: remote,
+        requireCurrent: () {
+          if (!current) throw StateError('revoked');
+        },
+        onFailure: failures.add,
+      );
+      await heartbeat.start(
+        sourceIdentity: source,
+        deviceId: 'synthetic-device-a',
+        sessionId: 'synthetic-session-1',
+      );
+      expect(remote.calls, 1);
+      await tester.pump(const Duration(seconds: 29));
+      expect(remote.calls, 1);
+      await tester.pump(const Duration(seconds: 1));
+      expect(remote.calls, 2);
+      current = false;
+      await tester.pump(const Duration(seconds: 30));
+      expect(failures, hasLength(1));
+      expect(heartbeat.evidence, isNull);
+      await tester.pump(const Duration(minutes: 2));
+      expect(remote.calls, 2);
+      heartbeat.stop();
+    },
+  );
+
   test('tombstone evidence needs explicit immutable causal claims', () {
     final a = OwnerDriveDeletionEvidence(
       ownerId: ownerA,
@@ -122,6 +155,20 @@ void main() {
     );
     expect(() => _lease(expiresAt: deletedAt), throwsFormatException);
   });
+}
+
+class _LeaseTransport implements OwnerDriveLeaseTransport {
+  int calls = 0;
+  @override
+  Future<OwnerDriveLeaseEvidence> updateLease({
+    required String sourceIdentity,
+    required String deviceId,
+    required String sessionId,
+    int? fencingToken,
+  }) async {
+    calls++;
+    return _lease();
+  }
 }
 
 OwnerDriveLeaseEvidence _lease({

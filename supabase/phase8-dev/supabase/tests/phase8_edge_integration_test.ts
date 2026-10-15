@@ -19,7 +19,7 @@ function localClient(url: string, apiKey: string, bearerJwt: string) {
     const headers = new Headers(init?.headers);
     headers.set("apikey", apiKey);
     if (!headers.has("authorization")) headers.set("authorization", `Bearer ${bearerJwt}`);
-    return fetch(input, { ...init, headers });
+    return fetch(input, { ...init, headers, signal: init?.signal ?? AbortSignal.timeout(30000) });
   };
   return createClient(url, bearerJwt, {
     global: { fetch: fetchWithLocalHeaders },
@@ -37,6 +37,8 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   const remoteRef = Deno.env.get("PHASE8_REMOTE_PROJECT_REF");
   const remote = remoteRef !== undefined;
   assert(!remote || remoteRef === "viqngnjfgknpxtoapzcg", "remote target must be the approved Planet DEV project");
+  const remoteM2 = Deno.env.get("PHASE8_REMOTE_M2_ACCEPTANCE") === "APPROVED_SYNTHETIC_ONLY";
+  assert(!remoteM2 || remote, "remote M2 switch requires the exact explicit remote target");
   const url = Deno.env.get("PHASE8_LOCAL_URL");
   const anonKey = Deno.env.get("PHASE8_LOCAL_ANON_KEY");
   const serviceKey = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_KEY");
@@ -95,6 +97,7 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
     "staging bucket read-back confirms private access, byte limit, and JSON MIME restriction");
 
   const invoke = (name: string, token: string | null, body: unknown) => fetch(`${url}/functions/v1/${name}`, {
+    signal: AbortSignal.timeout(30000),
     method: "POST",
     headers: {
       apikey: anonKey,
@@ -195,7 +198,7 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   const capabilities = await responseJson(capabilityResponse);
   assert(capabilities.contractVersion === 2 && capabilities.schemaRevision === "202610150001" &&
     capabilities.ownerScope === scopeA && capabilities.deleteSync === false,
-    "forward migration advertises exact owner-bound M1 contract only");
+    "installed M1 clients retain their exact capability contract after M2 upgrade");
 
   const beginResponse = await invoke("phase8-drive-begin", tokenA, beginBody);
   assert(beginResponse.ok, `authenticated begin accepted (${beginResponse.status})`);
@@ -411,7 +414,7 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   assert(cleanupAuthFailure.status === 401, "cleanup rejects a wrong scheduler token");
   await cleanupAuthFailure.body?.cancel();
 
-  if (remote) {
+  if (remote && !remoteM2) {
     // Do not age fixtures or run the global orphan sweep on a shared project.
     // The caller removes ONLY this run's UUID-bound fixtures afterwards.
     const finalObject = await admin.storage.from(bucket).download(objectPath);
@@ -421,6 +424,117 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   }
 
   const orphanSource = crypto.randomUUID();
+  // M2 remote writes require a SECOND explicit synthetic-only switch. The
+  // legacy M1 remote command still returns above, without deleting anything.
+  const m2Capabilities = await responseJson(await invoke("phase8-drive-begin", tokenA, { action: "capabilities", milestone: 2 }));
+  assert(m2Capabilities.deleteSync === true && m2Capabilities.leaseFencing === true, "local M2 explicitly negotiated");
+  const observation = await responseJson(await invoke("phase8-drive-delete", tokenA, { action: "observe", sourceIdentity }));
+  assert(observation.payload_fingerprint === mutation.payloadFingerprint && observation.change_sequence === 1,
+    "M1 source revision is observed, never fabricated");
+  const deletionPayload = { deletionId: crypto.randomUUID(), deletedAt: new Date().toISOString(),
+    observedRemoteSequence: observation.change_sequence, observedPayloadFingerprint: observation.payload_fingerprint, causalVersion: 1 };
+  const deletionMutation = { version: 2, kind: "driveTombstone", ownerId: userA.id, ownerScope: scopeA, sourceIdentity,
+    idempotencyKey: `owner-sync-v2:${await sha256Hex(new TextEncoder().encode(`${scopeA}|${userA.id}|driveTombstone|${deletionPayload.deletionId}`))}`,
+    payloadFingerprint: await canonicalSha256(deletionPayload), payload: deletionPayload };
+  const deniedDeletion = await invoke("phase8-drive-delete", tokenB, { mutation: deletionMutation });
+  assert(deniedDeletion.status === 422, "B cannot delete A through verified Auth endpoint");
+  await deniedDeletion.body?.cancel();
+  const deniedAnonDeletion = await invoke("phase8-drive-delete", null, { mutation: deletionMutation });
+  assert(deniedAnonDeletion.status === 401, "anonymous deletion rejected");
+  await deniedAnonDeletion.body?.cancel();
+  const deleteResult = await responseJson(await invoke("phase8-drive-delete", tokenA, { mutation: deletionMutation }));
+  assert(deleteResult.ok === true && canonicalJson(deleteResult.mutation) === canonicalJson(deletionMutation), "atomic deletion receipt");
+  const deleteRetry = await responseJson(await invoke("phase8-drive-delete", tokenA, { mutation: deletionMutation }));
+  assert(canonicalJson(deleteRetry) === canonicalJson(deleteResult), "lost delete ACK replay is idempotent");
+  const oldBegin = await invoke("phase8-drive-begin", tokenA, beginBody);
+  assert(oldBegin.status === 409, "offline old upload cannot resurrect source");
+  await oldBegin.body?.cancel();
+  const oldFinalize = await invoke("phase8-drive-finalize", tokenA, { intentId });
+  assert(oldFinalize.status === 409, "finalized ACK shortcut cannot bypass tombstone");
+  await oldFinalize.body?.cancel();
+  const deletedPage = await responseJson(await invoke("phase8-drive-download", tokenA, { action: "begin", limit: 100 }));
+  const deletedChanges = deletedPage.changes as { mutation: { sourceIdentity: string; kind: string } }[];
+  const deletedSourceChanges = deletedChanges.filter(c => c.mutation.sourceIdentity === sourceIdentity);
+  assert(deletedSourceChanges.length === 2 && deletedSourceChanges.every(c => c.mutation.kind === "driveTombstone"),
+    "download never hands out deleted source as live upsert");
+  const secondADeletionPage = await responseJson(await invoke("phase8-drive-download", secondSignInA.data.session.access_token, {
+    action: "page", cursor: laterPage.nextCursor, limit: 100,
+  }));
+  assert(secondADeletionPage.from === 3 && secondADeletionPage.next === 4 &&
+    Array.isArray(secondADeletionPage.changes) && secondADeletionPage.changes.length === 1 &&
+    (secondADeletionPage.changes[0] as { mutation: { kind: string } }).mutation.kind === "driveTombstone",
+    "independent A session receives the ordered deletion through its cursor");
+  const changedDeletionPayload = { ...deletionPayload, causalVersion: 2 };
+  const changedDeletion = await invoke("phase8-drive-delete", tokenA, { mutation: {
+    ...deletionMutation, payload: changedDeletionPayload, payloadFingerprint: await canonicalSha256(changedDeletionPayload),
+  } });
+  assert(changedDeletion.status === 422, "changed causal evidence is rejected, not silently acknowledged");
+  await changedDeletion.body?.cancel();
+  const tombstoneCount = await admin.from("phase8_drive_tombstones").select("source_identity", { count: "exact" })
+    .eq("owner_id", userA.id).eq("source_identity", sourceIdentity);
+  assert(!tombstoneCount.error && tombstoneCount.count === 1, "one permanent synthetic tombstone");
+  const leaseSource = thirdSource;
+  const leaseDevice = crypto.randomUUID();
+  const leaseBody = { sourceIdentity: leaseSource, deviceId: leaseDevice, sessionId: "synthetic-local-session", action: "acquire" };
+  const acquired = await responseJson(await invoke("phase8-drive-lease", tokenA, leaseBody));
+  const lease = acquired.lease as Record<string, unknown>;
+  assert(acquired.ok === true && lease.fencing_token === 1, "real lease acquisition");
+  if (remoteM2) console.info("phase8_m2_checkpoint=lease_acquired");
+  const renewed = await responseJson(await invoke("phase8-drive-lease", tokenA, { ...leaseBody, action: "heartbeat", fencingToken: 1 }));
+  const renewal = renewed.lease as Record<string, unknown>;
+  assert(renewed.ok === true && renewal.fencing_token === 1 &&
+    Date.parse(String(renewal.expires_at)) - Date.parse(String(renewal.heartbeat_at)) === 180000, "heartbeat three minute server expiry");
+  if (remoteM2) console.info("phase8_m2_checkpoint=heartbeat_renewed");
+  const fenceStarted = performance.now();
+  const fenced = await invoke("phase8-drive-lease", tokenA, { ...leaseBody, action: "heartbeat", fencingToken: 2 });
+  assert(fenced.status === 409, "wrong fencing token rejected by real Edge/DB");
+  const fenceBody = await responseJson(fenced);
+  const fenceElapsedMs = Math.round(performance.now() - fenceStarted);
+  assert(fenceBody.error_code === "lease_fenced", "Edge preserves the public fencing error contract");
+  assert(fenceElapsedMs < 10000, "business fencing conflict returns promptly, without retry timeout");
+  console.info(`phase8_fencing_http=${fenced.status}; error_code=${fenceBody.error_code}; elapsed_ms=${fenceElapsedMs}`);
+  const rpcStarted = performance.now();
+  const rpcFenced = await admin.rpc("phase8_drive_lease", {
+    p_owner_id: userA.id, p_source_identity: leaseSource, p_device_id: leaseDevice,
+    p_session_id: leaseBody.sessionId, p_action: "heartbeat", p_fencing_token: 2,
+  });
+  const rpcElapsedMs = Math.round(performance.now() - rpcStarted);
+  assert(rpcFenced.status === 409 && rpcFenced.error?.code === "PT409" &&
+    rpcFenced.error.message === "lease_fenced" && rpcElapsedMs < 10000,
+    "PostgREST application SQLSTATE returns HTTP 409 without transaction retry");
+  console.info(`phase8_fencing_rpc_http=${rpcFenced.status}; sqlstate=${rpcFenced.error.code}; elapsed_ms=${rpcElapsedMs}`);
+  if (remoteM2) console.info("phase8_m2_checkpoint=wrong_fence_rejected");
+  const expireLease = await admin.from("phase8_drive_leases").update({
+    heartbeat_at: new Date(0).toISOString(), expires_at: new Date(180000).toISOString(),
+  }).eq("owner_id", userA.id).eq("source_identity", leaseSource).eq("device_id", leaseDevice)
+    .eq("fencing_token", 1).select("source_identity");
+  assert(!expireLease.error && expireLease.data?.length === 1, "expire only this run's synthetic lease, without waiting or clock assumptions");
+  if (remoteM2) console.info("phase8_m2_checkpoint=synthetic_lease_expired");
+  const expiredHeartbeat = await invoke("phase8-drive-lease", tokenA, { ...leaseBody, action: "heartbeat", fencingToken: 1 });
+  assert(expiredHeartbeat.status === 409, "expired lease heartbeat is rejected");
+  await expiredHeartbeat.body?.cancel();
+  const nextDevice = crypto.randomUUID();
+  const takeover = await responseJson(await invoke("phase8-drive-lease", tokenA, {
+    ...leaseBody, deviceId: nextDevice, sessionId: "synthetic-successor", action: "acquire",
+  }));
+  assert(takeover.ok === true && (takeover.lease as Record<string, unknown>).fencing_token === 2, "takeover increments server fencing token");
+  const staleFinalize = await invoke("phase8-drive-finalize", tokenA, {
+    intentId: thirdBegin.intentId, deviceId: leaseDevice, sessionId: leaseBody.sessionId, fencingToken: 1,
+  });
+  assert(staleFinalize.status === 409, "stale device epoch cannot replay finalized ACK");
+  await staleFinalize.body?.cancel();
+  const currentFinalize = await invoke("phase8-drive-finalize", tokenA, {
+    intentId: thirdBegin.intentId, deviceId: nextDevice, sessionId: "synthetic-successor", fencingToken: 2,
+  });
+  assert(currentFinalize.ok, "current fenced session replays one durable ACK");
+  await currentFinalize.body?.cancel();
+  if (remoteM2) {
+    // Keep immutable deletion/fencing evidence. Operational cleanup disables
+    // only this run's A account and removes B/unfinalized temporary objects.
+    console.info(`phase8_remote_m2_acceptance=passed; retained_evidence_run=${runId}; global_cleanup=not_run`);
+    return;
+  }
+
   const orphanBytes = new TextEncoder().encode("synthetic-stale-staging-object");
   const orphanBeginResponse = await invoke("phase8-drive-begin", tokenA, {
     ...beginBody,

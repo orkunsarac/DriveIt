@@ -10,6 +10,10 @@ Deno.serve(async (request) => {
   if (body.action === "capabilities") {
     const { data, error } = await auth.admin.rpc("phase8_drive_sync_capabilities", { p_owner_id: userId });
     if (error || !data) return failure("backend_not_ready", 503);
+    // Existing installed M1 clients require this exact capability revision.
+    // M2 is explicitly negotiated, never silently activated by an SQL upgrade.
+    if (body.milestone !== 2) return json({ ok: true, ...data,
+      schemaRevision: "202610150001", deleteSync: false, leaseFencing: false });
     return json({ ok: true, ...data });
   }
   const sourceIdentity = body.sourceIdentity;

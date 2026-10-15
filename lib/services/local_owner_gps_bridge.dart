@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'gps_session_ownership.dart';
 import 'gps_session_store.dart';
 import 'local_owner_lifecycle.dart';
@@ -62,7 +63,16 @@ class LocalOwnerGpsBridge {
     // An external Auth event may have revoked the UI during the durable write.
     // Keep the bound journal, but do not start a producer from a revoked view.
     lease.requireCurrent();
-    await startNative(session, await requireBinding(session.id));
+    final binding = await requireBinding(session.id);
+    await startNative(session, binding);
+    // M2 opt-in only, non-blocking. The journal and native producer do not
+    // depend on network reachability. Auth revocation stops the heartbeat.
+    unawaited(
+      lease.beginCloudDriveLease(
+        session.id,
+        binding.provenance.sourceIdentity!,
+      ),
+    );
     return session;
   });
 

@@ -28,6 +28,8 @@ class ControlledOwnershipDependencies {
     this.groupDriveServiceForTesting,
     this.deviceGuestOwner,
     this.accountSyncAdapter,
+    this.automaticAccountSync = true,
+    this.cloudDeletionEnabled = false,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -49,6 +51,8 @@ class ControlledOwnershipDependencies {
   final GpsOwner? deviceGuestOwner;
   final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
   accountSyncAdapter;
+  final bool automaticAccountSync;
+  final bool cloudDeletionEnabled;
 }
 
 class ControlledOwnershipRuntime {
@@ -128,6 +132,8 @@ abstract final class LocalOwnershipBootstrap {
         auth: auth,
         deviceGuestOwner: controlled.deviceGuestOwner,
         accountSyncAdapter: controlled.accountSyncAdapter,
+        automaticAccountSync: controlled.automaticAccountSync,
+        cloudDeletionEnabled: controlled.cloudDeletionEnabled,
         openStore: controlled.openStore,
         driveInProgress: busy,
         worldRoadMatching: controlled.worldRoadMatching,

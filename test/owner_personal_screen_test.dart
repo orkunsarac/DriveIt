@@ -11,6 +11,7 @@ import 'package:driveit_project/screens/home_screen.dart';
 import 'package:driveit_project/screens/history_screen.dart';
 import 'package:driveit_project/screens/world_mode_selection_screen.dart';
 import 'package:driveit_project/screens/profile_settings_screen.dart';
+import 'package:driveit_project/screens/owner_cloud_sync_screen.dart';
 import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/services/supabase_account_service.dart';
@@ -314,6 +315,49 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       expect(runtime.lease.owner.kind, GpsOwnerKind.account);
       expect(find.byKey(const Key('profile_device_archive')), findsOneWidget);
+    },
+  );
+  testWidgets(
+    'normal Profile cloud route is visible for Guest and account; Guest never syncs',
+    (tester) async {
+      await tester.runAsync(() => switchTo(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: runtime,
+            legacyChild: const SizedBox.shrink(),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('home_profile_settings')));
+      await tester.pumpAndSettle();
+      final cloud = find.byKey(const Key('profile_cloud_sync'));
+      await tester.ensureVisible(cloud);
+      await tester.tap(cloud);
+      await tester.pumpAndSettle();
+      expect(find.byType(OwnerCloudSyncScreen), findsOneWidget);
+      expect(find.text('Bekleyen yerel sürüş: 0'), findsOneWidget);
+      expect(
+        tester
+            .widget<OutlinedButton>(
+              find.byKey(const Key('cloud_check_connection')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(
+        find.textContaining('Otomatik toplu yükleme kapalı'),
+        findsOneWidget,
+      );
+      await tester.runAsync(() => switchTo(a));
+      await tester.pump(const Duration(milliseconds: 500));
+      // Owner navigation removes the old Guest route, not just its labels.
+      expect(find.byType(OwnerCloudSyncScreen), findsNothing);
+      await tester.tap(find.byKey(const Key('home_profile_settings')));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byKey(const Key('profile_cloud_sync')), findsOneWidget);
+      expect(tester.takeException(), isNull);
     },
   );
   testWidgets(

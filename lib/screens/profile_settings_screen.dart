@@ -528,6 +528,25 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 ),
                 _section('DRIVEIT HESABI'),
                 DriveItAccountSection(accountGateway: _accountGateway),
+                if (widget.ownerLease != null) ...[
+                  _section('BULUT SENKRONİZASYONU'),
+                  _card(
+                    ListTile(
+                      key: const Key('profile_cloud_sync'),
+                      leading: const Icon(
+                        Icons.cloud_sync_outlined,
+                        color: _blue,
+                      ),
+                      title: const Text('Bulut Senkronizasyonu'),
+                      subtitle: const Text(
+                        'Kontrollü DEV • Yalnız seçtiğin hesap sürüşü',
+                      ),
+                      trailing: const Icon(Icons.chevron_right, size: 20),
+                      onTap: () =>
+                          Navigator.of(context).pushNamed('/cloud-sync'),
+                    ),
+                  ),
+                ],
                 if (widget.ownerLease != null &&
                     widget.deviceArchiveLoader != null) ...[
                   _section('CİHAZ ARŞİVİ'),

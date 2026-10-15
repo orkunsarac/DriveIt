@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'owner_drive_sync_client.dart';
+import 'owner_sync_causality.dart';
 
 /// Real Supabase transport for the Phase 8 M1 staged-drive contract.
 ///
@@ -12,12 +13,17 @@ import 'owner_drive_sync_client.dart';
 /// in an explicitly cloud-enabled build after backend acceptance. Every operation checks the
 /// currently authenticated Supabase UID against the immutable owner captured
 /// by the caller before making a request.
-class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
+class SupabaseOwnerDriveSyncAdapter
+    implements
+        OwnerSyncAccountRemoteAdapter,
+        OwnerSyncDeletionAdapter,
+        OwnerDriveLeaseTransport {
   SupabaseOwnerDriveSyncAdapter({
     required SupabaseClient client,
     required String ownerId,
     required this.requireCurrent,
     this.requestTimeout = const Duration(seconds: 30),
+    this.deletionEnabled = false,
     String? Function()? authenticatedUserId,
   }) : _client = client,
        _ownerId = ownerId.toLowerCase(),
@@ -44,6 +50,11 @@ class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
   final String _ownerId;
   final void Function() requireCurrent;
   final Duration requestTimeout;
+
+  /// Remains OFF in the normal factory until real M2 server acceptance.
+  final bool deletionEnabled;
+  final Map<String, OwnerDriveLeaseEvidence> _leases = {};
+  final Map<String, String> _intentSources = {};
   final String? Function() _authenticatedUserId;
 
   String get _ownerScope =>
@@ -65,13 +76,114 @@ class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
     _assertOwner();
     if (data['ok'] != true ||
         data['contractVersion'] != 2 ||
-        data['schemaRevision'] != '202610150001' ||
+        !['202610150001', '202610160001'].contains(data['schemaRevision']) ||
         data['ownerScope'] != _ownerScope ||
         data['driveUpload'] != true ||
         data['driveDownload'] != true ||
-        data['deleteSync'] != false) {
+        (data['deleteSync'] != false && data['deleteSync'] != true)) {
       throw const OwnerSyncConflict('backend_contract_not_ready');
     }
+  }
+
+  Future<void> _requireM2() async {
+    _assertOwner();
+    if (!deletionEnabled) throw const OwnerSyncConflict('m2_not_activated');
+    final data = await _invokeJson('phase8-drive-begin', {
+      'action': 'capabilities',
+      'milestone': 2,
+    });
+    if (data['ok'] != true ||
+        data['schemaRevision'] != '202610160001' ||
+        data['ownerScope'] != _ownerScope ||
+        data['deleteSync'] != true ||
+        data['leaseFencing'] != true) {
+      throw const OwnerSyncConflict('m2_backend_not_ready');
+    }
+  }
+
+  @override
+  Future<({int sequence, String fingerprint})> observeDrive(
+    String source,
+  ) async {
+    await _requireM2();
+    if (!_uuidV4.hasMatch(source)) {
+      throw const OwnerSyncConflict('source_invalid');
+    }
+    final data = await _invokeJson('phase8-drive-delete', {
+      'action': 'observe',
+      'sourceIdentity': source,
+    });
+    final seq = _integer(data['change_sequence']);
+    final hash = data['payload_fingerprint'];
+    if (data['ok'] != true ||
+        data['ownerId'] != _ownerId ||
+        data['source_identity'] != source ||
+        seq == null ||
+        seq < 1 ||
+        hash is! String ||
+        !_sha256.hasMatch(hash)) {
+      throw const OwnerSyncConflict('observation_invalid');
+    }
+    return (sequence: seq, fingerprint: hash);
+  }
+
+  @override
+  Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation) async {
+    await _requireM2();
+    if (mutation.ownerId != _ownerId ||
+        mutation.ownerScope != _ownerScope ||
+        mutation.kind != OwnerSyncMutationKind.driveTombstone) {
+      throw const OwnerSyncConflict('deletion_owner_invalid');
+    }
+    final data = await _invokeJson('phase8-drive-delete', {
+      'mutation': mutation.toMap(),
+    });
+    if (data['ok'] != true ||
+        data['mutation'] is! Map ||
+        (_integer(data['sequence']) ?? 0) < 1) {
+      throw const OwnerSyncConflict('deletion_ack_invalid');
+    }
+    return OwnerSyncMutation.fromMap(data['mutation'] as Map);
+  }
+
+  @override
+  Future<OwnerDriveLeaseEvidence> updateLease({
+    required String sourceIdentity,
+    required String deviceId,
+    required String sessionId,
+    int? fencingToken,
+  }) async {
+    await _requireM2();
+    final data = await _invokeJson('phase8-drive-lease', {
+      'action': fencingToken == null ? 'acquire' : 'heartbeat',
+      'sourceIdentity': sourceIdentity,
+      'deviceId': deviceId,
+      'sessionId': sessionId,
+      'fencingToken': ?fencingToken,
+    });
+    final l = data['lease'];
+    if (data['ok'] != true ||
+        l is! Map ||
+        l['owner_id'] != _ownerId ||
+        l['device_id'] != deviceId ||
+        l['session_id'] != sessionId ||
+        l['source_identity'] != sourceIdentity) {
+      throw const OwnerSyncConflict('lease_response_invalid');
+    }
+    final evidence = OwnerDriveLeaseEvidence(
+      ownerId: _ownerId,
+      deviceId: deviceId,
+      sessionId: sessionId,
+      sourceIdentity: sourceIdentity,
+      fencingToken: l['fencing_token'] as int,
+      heartbeatAt: DateTime.parse(l['heartbeat_at'] as String).toUtc(),
+      expiresAt: DateTime.parse(l['expires_at'] as String).toUtc(),
+    );
+    if (fencingToken != null && evidence.fencingToken != fencingToken) {
+      throw const OwnerSyncConflict('lease_fenced');
+    }
+    _leases[sourceIdentity] = evidence;
+    return evidence;
   }
 
   @override
@@ -108,6 +220,7 @@ class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
       throw const OwnerSyncConflict('begin_response_invalid');
     }
     final intentId = data['intentId'] as String;
+    _intentSources[intentId] = descriptor.sourceIdentity;
     if (!_uuidV4.hasMatch(intentId)) {
       throw const OwnerSyncConflict('begin_intent_invalid');
     }
@@ -180,8 +293,14 @@ class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
     if (!_uuidV4.hasMatch(intentId)) {
       throw const OwnerSyncConflict('finalize_intent_invalid');
     }
+    final lease = _leases[_intentSources[intentId]];
     final data = await _invokeJson('phase8-drive-finalize', {
       'intentId': intentId,
+      if (lease != null) ...{
+        'deviceId': lease.deviceId,
+        'sessionId': lease.sessionId,
+        'fencingToken': lease.fencingToken,
+      },
     });
     _assertOwner();
     if (data['ok'] != true || data['receipt'] is! Map) {
@@ -337,6 +456,7 @@ class SupabaseOwnerDriveSyncAdapter implements OwnerSyncAccountRemoteAdapter {
       idempotencyKey: key,
       payloadFingerprint: fingerprint,
       remoteId: remoteId,
+      changeSequence: _integer(value['changeSequence']),
     );
   }
 

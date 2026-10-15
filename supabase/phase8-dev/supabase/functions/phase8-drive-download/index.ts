@@ -65,6 +65,11 @@ Deno.serve(async (request) => {
   let total = 0;
   try {
     for (const row of page.changes as Record<string, unknown>[]) {
+      if (row.operation === "drive_tombstone") {
+        if (!row.mutation || typeof row.mutation !== "object") throw new Error("tombstone_missing");
+        changes.push({ sequence: row.sequence, mutation: row.mutation });
+        continue;
+      }
       if (row.operation !== "drive_upsert" || typeof row.object_path !== "string" ||
           typeof row.source_identity !== "string" || typeof row.idempotency_key !== "string" ||
           typeof row.payload_fingerprint !== "string" || typeof row.object_sha256 !== "string") throw new Error("change_invalid");

@@ -35,6 +35,7 @@ import 'owner_revision_models.dart';
 import 'owned_drive_finalization.dart';
 import 'gps_session_transfer.dart';
 import 'owner_drive_sync_client.dart';
+import 'owner_sync_causality.dart';
 
 /// Auth boundary exposes only a stable UUID; never a Session/token/profile.
 abstract interface class LocalOwnerAuth {
@@ -55,6 +56,57 @@ class LocalOwnerLease implements PosterOperationBoundary {
   final LocalOwnerLifecycle _runtime;
   final OwnerScopedLocalStore _store;
   final int epoch;
+  OwnerSyncAccountRemoteAdapter? _cachedCloudRemote;
+  OwnerDriveLeaseHeartbeat? _cloudHeartbeat;
+  String? _cloudLeaseSource;
+  String? cloudLeaseError;
+
+  /// Called only by the already owner-bound GPS bridge, never by Auth restore.
+  /// Remote failure cannot fail the local GPS start or discard its journal.
+  Future<void> beginCloudDriveLease(String sessionId, String source) async {
+    if (!cloudDeletionEnabled) return;
+    try {
+      final device = _runtime.deviceGuestOwner?.guestIdentity;
+      if (device == null) {
+        throw StateError('Stable device identity unavailable');
+      }
+      await _store.put(owner, 'profile', 'cloud_lease:$source', {
+        'sessionId': sessionId,
+        'deviceId': device,
+      });
+      requireCurrent();
+      final remote = _manualRemote();
+      if (remote is! OwnerDriveLeaseTransport) {
+        throw StateError('Lease transport unavailable');
+      }
+      stopCloudDriveLease();
+      _cloudLeaseSource = source;
+      final heartbeat = OwnerDriveLeaseHeartbeat(
+        remote: remote as OwnerDriveLeaseTransport,
+        requireCurrent: requireCurrent,
+        onFailure: (_) {
+          cloudLeaseError = 'lease_renewal_failed_local_drive_retained';
+        },
+      );
+      _cloudHeartbeat = heartbeat;
+      await heartbeat.start(
+        sourceIdentity: source,
+        deviceId: device,
+        sessionId: sessionId,
+      );
+      requireCurrent();
+      cloudLeaseError = null;
+    } catch (_) {
+      if (isCurrent) cloudLeaseError = 'lease_unavailable_local_drive_retained';
+    }
+  }
+
+  void stopCloudDriveLease() {
+    _cloudHeartbeat?.stop();
+    _cloudHeartbeat = null;
+    _cloudLeaseSource = null;
+  }
+
   GpsOwner get owner => _store.owner;
   Listenable get changes => _runtime;
   int get worldRevision => _runtime._worldRevision;
@@ -101,6 +153,7 @@ class LocalOwnerLease implements PosterOperationBoundary {
   List<DriveSession> drives() => keys('drives')
       .where(
         (id) =>
+            !_hasRemoteTombstone(id.toString()) &&
             _store.writeDurable(OwnedDriveFinalization.group, id) &&
             (read<Map>(OwnedDriveFinalization.group, id)?['state'] == null ||
                 read<Map>(OwnedDriveFinalization.group, id)?['state'] ==
@@ -113,13 +166,21 @@ class LocalOwnerLease implements PosterOperationBoundary {
   DriveSession requireDrive(String id) {
     final drive = read<DriveSession>('drives', id);
     final finalization = read<Map>(OwnedDriveFinalization.group, id);
-    if (drive == null ||
+    if (_hasRemoteTombstone(id) ||
+        drive == null ||
         drive.id != id ||
         !_store.writeDurable(OwnedDriveFinalization.group, id) ||
         (finalization != null && finalization['state'] != 'completed')) {
       throw StateError('Owner drive unavailable');
     }
     return drive;
+  }
+
+  bool _hasRemoteTombstone(String id) {
+    final proof = read<Map>('drive_source_provenance_v1', id);
+    final source = proof?['sourceIdentity'];
+    return source is String &&
+        read(OwnerDriveSyncClient.deletionBox, 'source:$source') != null;
   }
 
   DriveTelemetryRecord? telemetry(String id) {
@@ -163,6 +224,162 @@ class LocalOwnerLease implements PosterOperationBoundary {
     store: _store,
     requireCurrent: requireCurrent,
   ).downloadOnce(remote);
+
+  bool get manualCloudSyncAvailable =>
+      isCurrent &&
+      owner.kind == GpsOwnerKind.account &&
+      _runtime.accountSyncAdapter != null;
+
+  bool get cloudDeletionEnabled =>
+      _runtime.cloudDeletionEnabled && manualCloudSyncAvailable;
+  OwnerDriveSyncClient get _deletionClient =>
+      OwnerDriveSyncClient(store: _store, requireCurrent: requireCurrent);
+  bool historyHasCloudEvidence(String id) => _deletionClient.hasCloudDrive(id);
+  String? cloudDeletionState(String id) =>
+      _deletionClient.deletionStatus(id)?['state'] as String?;
+
+  Future<bool> deleteCloudHistory(
+    String id, {
+    required bool userConfirmed,
+  }) => _manualSync(() async {
+    if (!cloudDeletionEnabled || !userConfirmed) {
+      throw StateError('Cloud deletion not activated/confirmed');
+    }
+    final remote = _manualRemote();
+    if (remote is! OwnerSyncDeletionAdapter) {
+      throw StateError('M2 adapter unavailable');
+    }
+    await run(() => _deletionClient.prepareCloudDeletion(id));
+    // No owner-operation barrier across network waits; stale results are denied.
+    final acknowledged = await _deletionClient.sendCloudDeletion(
+      id,
+      remote as OwnerSyncDeletionAdapter,
+    );
+    requireCurrent();
+    _runtime._personalChanged(this);
+    return acknowledged;
+  });
+
+  Future<void> retryConsentedCloudDeletions() async {
+    if (!cloudDeletionEnabled) return;
+    final ids = keys(OwnerDriveSyncClient.deletionBox)
+        .whereType<String>()
+        .where((key) => key.startsWith('drive:'))
+        .map((key) => key.substring(6))
+        .where(
+          (id) =>
+              cloudDeletionState(id) != 'acknowledged' &&
+              cloudDeletionState(id) != 'conflict',
+        )
+        .take(4)
+        .toList();
+    for (final id in ids) {
+      requireCurrent();
+      final ok = await deleteCloudHistory(
+        id,
+        userConfirmed: true,
+      ); // persisted consent, never invent a new operation
+      if (!ok) break; // one offline failure per lifecycle event, not polling
+    }
+  }
+
+  List<({DriveSession drive, String? key, String state})>
+  manualSyncCandidates() {
+    requireCurrent();
+    if (owner.kind != GpsOwnerKind.account) return [];
+    return OwnerDriveSyncClient(
+      store: _store,
+      requireCurrent: requireCurrent,
+    ).manualCandidates();
+  }
+
+  OwnerSyncAccountRemoteAdapter _manualRemote() {
+    requireCurrent();
+    if (!manualCloudSyncAvailable) {
+      throw StateError('Account cloud sync unavailable');
+    }
+    return _cachedCloudRemote ??= _runtime.accountSyncAdapter!(this);
+  }
+
+  Future<T> _manualSync<T>(Future<T> Function() action) async {
+    requireCurrent();
+    if (!_runtime._manualSyncEpochs.add(epoch)) {
+      throw StateError('Sync already running');
+    }
+    try {
+      return await action();
+    } finally {
+      _runtime._manualSyncEpochs.remove(epoch);
+    }
+  }
+
+  Future<void> checkManualCloudConnection() => _manualSync(() async {
+    await _manualRemote().verifyBackend();
+    requireCurrent();
+  });
+
+  /// User consent selects exactly one eligible drive; never drains the queue.
+  Future<bool> uploadSelectedDrive(String driveId) => _manualSync(() async {
+    final remote = _manualRemote();
+    final client = OwnerDriveSyncClient(
+      store: _store,
+      requireCurrent: requireCurrent,
+    );
+    final key = await run(() async {
+      if (!client.manualCandidates().any((c) => c.drive.id == driveId)) {
+        throw StateError('Selected proven account drive unavailable');
+      }
+      return client.enqueueDrive(driveId);
+    });
+    await remote.verifyBackend();
+    requireCurrent();
+    if (cloudDeletionEnabled) {
+      final mutation = OwnerSyncMutation.fromMap(
+        client.readRecord(key)!['mutation'] as Map,
+      );
+      final evidence = read<Map>(
+        'profile',
+        'cloud_lease:${mutation.sourceIdentity}',
+      );
+      if (evidence != null) {
+        if (remote is! OwnerDriveLeaseTransport) {
+          throw StateError('Lease transport unavailable');
+        }
+        await (remote as OwnerDriveLeaseTransport).updateLease(
+          sourceIdentity: mutation.sourceIdentity,
+          deviceId: evidence['deviceId'] as String,
+          sessionId: evidence['sessionId'] as String,
+        );
+        requireCurrent();
+      }
+    }
+    final acknowledged = await client.sendStaged(key, remote);
+    requireCurrent();
+    return acknowledged;
+  });
+
+  /// Explicit one-page download. Existing local data is never overwritten.
+  Future<OwnerSyncDownloadResult> downloadManualCloudPage() =>
+      _manualSync(() async {
+        final remote = _manualRemote();
+        final client = OwnerDriveSyncClient(
+          store: _store,
+          requireCurrent: requireCurrent,
+        );
+        await remote.verifyBackend();
+        requireCurrent();
+        final page = await client.fetchDownloadPage(remote, limit: 1);
+        final result = await run(
+          () => client.applyDownloadPage(
+            page,
+            limit: 1,
+            preserveExistingDrives: true,
+          ),
+        );
+        requireCurrent();
+        _runtime._personalChanged(this);
+        return result;
+      });
 
   Future<void> preparePublication(String id, Iterable<PlanetSegment> segments) {
     final frozen = List<PlanetSegment>.unmodifiable(segments);
@@ -504,13 +721,17 @@ class LocalOwnerLease implements PosterOperationBoundary {
         );
   });
 
-  Future<void> deleteHistory(String id) =>
-      _runtime.withOwnerOperation((current) async {
-        requireCurrent();
-        if (!identical(current, this)) throw StateError('Owner view revoked');
-        await _store.repositories(owner).deleteHistory(id);
-        await _purgeDeletedWorldSource(id);
-      });
+  Future<void> deleteHistory(String id) => _runtime.withOwnerOperation((
+    current,
+  ) async {
+    requireCurrent();
+    if (!identical(current, this)) throw StateError('Owner view revoked');
+    if (cloudDeletionEnabled && historyHasCloudEvidence(id)) {
+      throw StateError('Cloud History deletion requires explicit confirmation');
+    }
+    await _store.repositories(owner).deleteHistory(id);
+    await _purgeDeletedWorldSource(id);
+  });
 
   Future<T?> load<T extends Object>(
     Future<T> Function(LocalOwnerLease) read,
@@ -593,6 +814,9 @@ class LocalOwnerLease implements PosterOperationBoundary {
       }
       await finalization.complete();
     });
+    if (_cloudLeaseSource == binding.provenance.sourceIdentity) {
+      stopCloudDriveLease();
+    }
     // Queue work is scheduled only after owner Hive read-back, both GPS
     // receipts, and finalization completion. It cannot make the drive save
     // fail; an absent outbox row is recovered on the next owner bootstrap.
@@ -617,6 +841,10 @@ class LocalOwnerLease implements PosterOperationBoundary {
 /// Dormant, dependency-injected lifecycle. OFF does not touch Auth, open boxes,
 /// inspect GPS or migrate legacy data. Failure invalidates the old view first.
 class LocalOwnerLifecycle extends ChangeNotifier {
+  void _personalChanged(LocalOwnerLease captured) {
+    if (captured.isCurrent) notifyListeners();
+  }
+
   LocalOwnerLifecycle({
     required this.gate,
     required this.auth,
@@ -627,6 +855,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     this.worldRoadMatching,
     this.syncRemoteForTesting,
     this.accountSyncAdapter,
+    this.automaticAccountSync = true,
+    this.cloudDeletionEnabled = false,
   }) {
     if (accountSyncAdapter != null &&
         (!gate.enabled || syncRemoteForTesting != null)) {
@@ -645,6 +875,11 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final OwnerSyncRemoteAdapter? syncRemoteForTesting;
   final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
   accountSyncAdapter;
+  final bool automaticAccountSync;
+  final bool cloudDeletionEnabled;
+  final Set<int> _manualSyncEpochs = {};
+  final Set<int> _deletionRetryEpochs = {};
+  Future<void> _deletionWork = Future<void>.value();
   final Future<OwnerScopedLocalStore> Function(GpsOwner) openStore;
 
   /// Must return true for unfinished/recoverable sessions too; errors block.
@@ -671,6 +906,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     while (true) {
       final work = _syncWork;
       await work;
+      await _deletionWork;
       if (identical(work, _syncWork)) return;
     }
   }
@@ -705,7 +941,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
             }, fromAuthEvent: true)
             .then((_) async {
               captured.requireCurrent();
-              final accountRemote = accountSyncAdapter?.call(captured);
+              final accountRemote = automaticAccountSync
+                  ? accountSyncAdapter?.call(captured)
+                  : null;
               if (accountRemote != null) {
                 await accountRemote.verifyBackend();
                 captured.requireCurrent();
@@ -760,11 +998,26 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   /// attempt; retryable rows are not spun on while offline.
   void onOwnerResumed() {
     final current = _lease;
-    if ((syncRemoteForTesting != null || accountSyncAdapter != null) &&
+    if ((syncRemoteForTesting != null ||
+            (automaticAccountSync && accountSyncAdapter != null)) &&
         current != null &&
         current.isCurrent) {
       scheduleOwnerSync(current);
     }
+    if (current != null) _scheduleDeletionRetry(current);
+  }
+
+  void _scheduleDeletionRetry(LocalOwnerLease captured) {
+    if (!captured.cloudDeletionEnabled ||
+        !_deletionRetryEpochs.add(captured.epoch)) {
+      return;
+    }
+    _deletionWork = captured
+        .retryConsentedCloudDeletions()
+        .catchError((Object _) {
+          // Failure/revocation keeps durable pending evidence; never report ACK.
+        })
+        .whenComplete(() => _deletionRetryEpochs.remove(captured.epoch));
   }
 
   /// Save completion never awaits this worker. Jobs remain durable on error;
@@ -875,6 +1128,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   }
 
   void _invalidate(LocalOwnerState next, [String? code]) {
+    _lease?.stopCloudDriveLease();
     _epoch++;
     _lease = null;
     _state = next;
@@ -988,6 +1242,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       // Startup repairs a crash after Hive finalization but before outbox
       // persistence. Reconciliation is owner-scoped and excludes tombstones.
       scheduleOwnerSync(_lease!);
+      _scheduleDeletionRetry(_lease!);
     } catch (_) {
       if (!_closed && epoch == requestEpoch) {
         _invalidate(LocalOwnerState.failed, 'owner_context_unavailable');

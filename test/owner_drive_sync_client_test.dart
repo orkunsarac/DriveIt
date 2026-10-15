@@ -1,8 +1,11 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/material.dart';
+import 'package:driveit_project/screens/history_screen.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:driveit_project/models/canonical_telemetry_point.dart';
@@ -17,7 +20,10 @@ import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 import 'package:driveit_project/services/drive_score_storage_service.dart';
 import 'package:driveit_project/services/supabase_owner_drive_sync_adapter.dart';
+import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'local_owner_integration_test.dart' show TestAuth;
 
 const accountA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const accountB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -55,7 +61,68 @@ class _FakeRemote implements OwnerSyncRemoteAdapter {
   }
 }
 
-class _FakeStagedRemote implements OwnerSyncStagedUploadAdapter {
+class _DeletionRemote implements OwnerSyncDeletionAdapter {
+  bool offline = false;
+  bool loseAck = false;
+  OwnerSyncMutation? accepted;
+  String fingerprint = 'a' * 64;
+  Completer<void>? blockDelete;
+  final enteredDelete = Completer<void>();
+  @override
+  Future<({int sequence, String fingerprint})> observeDrive(
+    String source,
+  ) async {
+    if (offline) throw const OwnerSyncTransportFailure('offline');
+    return (sequence: 1, fingerprint: fingerprint);
+  }
+
+  @override
+  Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation) async {
+    if (offline) throw const OwnerSyncTransportFailure('offline');
+    accepted ??= mutation;
+    if (!enteredDelete.isCompleted) enteredDelete.complete();
+    if (blockDelete != null) await blockDelete!.future;
+    if (loseAck) {
+      loseAck = false;
+      throw const OwnerSyncTransportFailure('lost_ack');
+    }
+    return accepted!;
+  }
+}
+
+class _M2AccountRemote extends _FakeStagedRemote
+    implements OwnerSyncDeletionAdapter {
+  final deletion = _DeletionRemote();
+  @override
+  Future<({int sequence, String fingerprint})> observeDrive(String source) =>
+      deletion.observeDrive(source);
+  @override
+  Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation) =>
+      deletion.deleteDrive(mutation);
+}
+
+class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
+  int backendChecks = 0;
+  final backendEntered = Completer<void>();
+  Completer<void>? blockBackend;
+  @override
+  Future<void> verifyBackend() async {
+    backendChecks++;
+    if (!backendEntered.isCompleted) backendEntered.complete();
+    if (blockBackend != null) await blockBackend!.future;
+  }
+
+  @override
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  }) async => OwnerSyncDownloadPage(
+    ownerId: ownerId,
+    fromCursor: afterCursor,
+    nextCursor: afterCursor,
+    changes: const [],
+  );
   bool failUploadOnce = false;
   bool loseUploadResponseOnce = false;
   bool loseFinalizeResponseOnce = false;
@@ -176,6 +243,7 @@ class _FakeStagedRemote implements OwnerSyncStagedUploadAdapter {
 Future<void> _seedVerifiedDrive(
   OwnerScopedLocalStore store, {
   String identity = sourceId,
+  String driveId = 'local-drive-1',
   bool includeScore = false,
 }) async {
   final owner = store.owner;
@@ -185,7 +253,7 @@ Future<void> _seedVerifiedDrive(
     ownerScope: store.scope,
   );
   final drive = DriveSession(
-    id: 'local-drive-1',
+    id: driveId,
     date: now,
     distance: 6200,
     durationSeconds: 900,
@@ -290,6 +358,526 @@ void main() {
     await storeA.close();
     await storeB.close();
     await root.delete(recursive: true);
+  });
+
+  testWidgets(
+    'M2 History asks explicit cloud consent and cancellation sends nothing',
+    (tester) async {
+      final auth = TestAuth();
+      final remote = _M2AccountRemote();
+      final runtime = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: auth,
+        driveInProgress: () async => false,
+        automaticAccountSync: false,
+        cloudDeletionEnabled: true,
+        accountSyncAdapter: (_) => remote,
+        openStore: (owner) async {
+          final store = await OwnerScopedLocalStore.open(
+            root: '${root.path}/m2-ui',
+            owner: owner,
+          );
+          if (owner.userId == accountA) {
+            await _seedVerifiedDrive(store);
+            await store
+                .repositories(owner)
+                .contribute(store.repositories(owner).source('local-drive-1')!);
+            final client = OwnerDriveSyncClient(
+              store: store,
+              requireCurrent: () {},
+            );
+            final key = await client.enqueueDrive('local-drive-1');
+            await client.sendStaged(key, remote);
+            remote.deletion.fingerprint =
+                (client.readRecord(key)!['mutation']
+                        as Map)['payloadFingerprint']
+                    as String;
+          }
+          return store;
+        },
+      );
+      try {
+        await tester.runAsync(() => runtime.start());
+        await tester.pumpWidget(
+          MaterialApp(home: HistoryScreen(ownerLease: runtime.lease)),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byIcon(Icons.delete_outline_rounded));
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            'Bu sürüş hesabınızdan ve senkronize cihazlarınızdan silinecek.',
+          ),
+          findsOneWidget,
+        );
+        expect(remote.deletion.accepted, isNull);
+        await tester.tap(find.text('Vazgeç'));
+        await tester.pumpAndSettle();
+        expect(runtime.lease.drives(), hasLength(1));
+        expect(runtime.lease.cloudDeletionState('local-drive-1'), isNull);
+        await tester.runAsync(() async {
+          remote.deletion.offline = true;
+          expect(
+            await runtime.lease.deleteCloudHistory(
+              'local-drive-1',
+              userConfirmed: true,
+            ),
+            isFalse,
+          );
+        });
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pumpWidget(
+          MaterialApp(home: HistoryScreen(ownerLease: runtime.lease)),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Bulut silme bekliyor — sunucu henüz onaylamadı.'),
+          findsOneWidget,
+        );
+        await tester.runAsync(() async {
+          remote.deletion.offline = false;
+          runtime.onOwnerResumed();
+          await runtime.syncSettled;
+        });
+        await tester.pumpAndSettle();
+        expect(runtime.lease.drives(), isEmpty);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.runAsync(() async {
+          await runtime.close();
+          await auth.events.close();
+        });
+        runtime.dispose();
+      }
+    },
+  );
+
+  test(
+    'M2 old-owner delete result cannot remove a local drive after epoch change',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      var current = true;
+      final client = OwnerDriveSyncClient(
+        store: storeA,
+        requireCurrent: () {
+          if (!current) throw StateError('revoked');
+        },
+      );
+      final key = await client.enqueueDrive('local-drive-1');
+      final remote = _DeletionRemote()..blockDelete = Completer<void>();
+      await client.sendStaged(key, _FakeStagedRemote());
+      remote.fingerprint =
+          (client.readRecord(key)!['mutation'] as Map)['payloadFingerprint']
+              as String;
+      await client.prepareCloudDeletion('local-drive-1');
+      final pending = client.sendCloudDeletion('local-drive-1', remote);
+      final expectation = expectLater(pending, throwsStateError);
+      await remote.enteredDelete.future;
+      current = false;
+      remote.blockDelete!.complete();
+      await expectation;
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      expect(storeB.keys(ownerB, 'drives'), isEmpty);
+      expect(
+        storeA.read<Map>(
+          ownerA,
+          OwnerDriveSyncClient.deletionBox,
+          'drive:local-drive-1',
+        )!['state'],
+        isNot('acknowledged'),
+      );
+    },
+  );
+
+  test(
+    'M2 offline consent survives reopen; lost ACK retries same operation and preserves Career',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      final source = storeA.repositories(ownerA).source('local-drive-1')!;
+      await storeA.repositories(ownerA).contribute(source);
+      var client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final upsertKey = await client.enqueueDrive('local-drive-1');
+      await client.sendStaged(upsertKey, _FakeStagedRemote());
+      final remote = _DeletionRemote()..offline = true;
+      remote.fingerprint =
+          (client.readRecord(upsertKey)!['mutation']
+                  as Map)['payloadFingerprint']
+              as String;
+      await client.prepareCloudDeletion('local-drive-1');
+      final deletionId = client.deletionStatus('local-drive-1')!['deletionId'];
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isFalse);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      await storeA.close();
+      storeA = await OwnerScopedLocalStore.open(root: root.path, owner: ownerA);
+      client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      expect(client.deletionStatus('local-drive-1')!['deletionId'], deletionId);
+      remote
+        ..offline = false
+        ..loseAck = true;
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isFalse);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isTrue);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNull);
+      expect(client.deletionStatus('local-drive-1')!['state'], 'acknowledged');
+      expect(storeA.repositories(ownerA).careerStatistics(), isNotNull);
+      expect(storeA.repositories(ownerA).source('local-drive-1'), isNotNull);
+      // Reusing a local key must never replay a previous deletion on a new source.
+      await storeA.put(ownerA, 'drives', 'local-drive-1', source.drive);
+      await storeA.put(
+        ownerA,
+        'drive_source_provenance_v1',
+        'local-drive-1',
+        DriveSourceProvenance.proven(
+          sourceIdentity: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          ownerScope: storeA.scope,
+        ).toMap(),
+      );
+      await expectLater(
+        client.prepareCloudDeletion('local-drive-1'),
+        throwsA(isA<OwnerSyncConflict>()),
+      );
+      expect(await client.sendCloudDeletion('local-drive-1', remote), isTrue);
+      expect(storeA.read(ownerA, 'drives', 'local-drive-1'), isNotNull);
+      final b = OwnerDriveSyncClient(store: storeB, requireCurrent: () {});
+      expect(b.deletionStatus('local-drive-1'), isNull);
+    },
+  );
+
+  test(
+    'M2 local drive IDs cannot collide with permanent source barriers',
+    () async {
+      const driveId = 'source:$sourceId';
+      await _seedVerifiedDrive(storeA, driveId: driveId);
+      await storeA
+          .repositories(ownerA)
+          .contribute(storeA.repositories(ownerA).source(driveId)!);
+      final client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final key = await client.enqueueDrive(driveId);
+      await client.sendStaged(key, _FakeStagedRemote());
+      final remote = _DeletionRemote()
+        ..fingerprint =
+            (client.readRecord(key)!['mutation'] as Map)['payloadFingerprint']
+                as String;
+      await client.prepareCloudDeletion(driveId);
+      expect(
+        storeA.read(
+          ownerA,
+          OwnerDriveSyncClient.deletionBox,
+          'source:$sourceId',
+        ),
+        isNull,
+      );
+      expect(await client.sendCloudDeletion(driveId, remote), isTrue);
+      expect(client.deletionStatus(driveId)!['state'], 'acknowledged');
+      expect(
+        storeA.read<Map>(
+          ownerA,
+          OwnerDriveSyncClient.deletionBox,
+          'source:$sourceId',
+        )!['mutation'],
+        isA<Map>(),
+      );
+    },
+  );
+
+  test(
+    'M2 remote tombstone blocks older snapshot and stale upload without touching B',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      await storeA
+          .repositories(ownerA)
+          .contribute(storeA.repositories(ownerA).source('local-drive-1')!);
+      final a = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final key = await a.enqueueDrive('local-drive-1');
+      await a.sendStaged(key, _FakeStagedRemote());
+      final upsert = OwnerSyncMutation.fromMap(
+        a.readRecord(key)!['mutation'] as Map,
+      );
+      final remote = _DeletionRemote();
+      remote.fingerprint = upsert.payloadFingerprint;
+      await a.prepareCloudDeletion('local-drive-1');
+      expect(await a.sendCloudDeletion('local-drive-1', remote), isTrue);
+      final replica = await OwnerScopedLocalStore.open(
+        root: '${root.path}/replica',
+        owner: ownerA,
+      );
+      try {
+        final second = OwnerDriveSyncClient(
+          store: replica,
+          requireCurrent: () {},
+        );
+        // Actual second-device replica, including a local ID collision.
+        await _seedVerifiedDrive(
+          replica,
+          identity: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        );
+        await second.applyDownloadPage(
+          OwnerSyncDownloadPage(
+            ownerId: accountA,
+            fromCursor: '',
+            nextCursor: 'upsert',
+            changes: [
+              OwnerSyncRemoteChange(cursor: 'upsert', mutation: upsert),
+            ],
+          ),
+        );
+        expect(replica.keys(ownerA, 'drives'), hasLength(2));
+        await second.applyDownloadPage(
+          OwnerSyncDownloadPage(
+            ownerId: accountA,
+            fromCursor: 'upsert',
+            nextCursor: '1',
+            changes: [
+              OwnerSyncRemoteChange(cursor: '1', mutation: remote.accepted!),
+            ],
+          ),
+        );
+        await second.applyDownloadPage(
+          OwnerSyncDownloadPage(
+            ownerId: accountA,
+            fromCursor: '1',
+            nextCursor: '2',
+            changes: [OwnerSyncRemoteChange(cursor: '2', mutation: upsert)],
+          ),
+        );
+        expect(replica.keys(ownerA, 'drives'), ['local-drive-1']);
+        expect(
+          replica.read<Map>(
+            ownerA,
+            'drive_source_provenance_v1',
+            'local-drive-1',
+          )!['sourceIdentity'],
+          'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        );
+        await expectLater(
+          a.sendStaged(key, _FakeStagedRemote()),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        final b = OwnerDriveSyncClient(store: storeB, requireCurrent: () {});
+        await expectLater(
+          b.applyDownloadPage(
+            OwnerSyncDownloadPage(
+              ownerId: accountB,
+              fromCursor: '',
+              nextCursor: '1',
+              changes: [
+                OwnerSyncRemoteChange(cursor: '1', mutation: remote.accepted!),
+              ],
+            ),
+          ),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+      } finally {
+        await replica.close();
+      }
+    },
+  );
+
+  test(
+    'manual runtime never auto-sends; consent selects one drive, not the queue',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote();
+      final runtime = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: auth,
+        driveInProgress: () async => false,
+        automaticAccountSync: false,
+        accountSyncAdapter: (_) => remote,
+        openStore: (owner) async {
+          final store = await OwnerScopedLocalStore.open(
+            root: '${root.path}/manual',
+            owner: owner,
+          );
+          if (owner.userId == accountA && store.keys(owner, 'drives').isEmpty) {
+            await _seedVerifiedDrive(store);
+            await _seedVerifiedDrive(
+              store,
+              driveId: 'other',
+              identity: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            );
+          }
+          return store;
+        },
+      );
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 0);
+        expect(remote.manifests, isEmpty);
+        final lease = runtime.lease;
+        expect(lease.manualSyncCandidates().length, 2);
+        remote.failUploadOnce = true;
+        expect(await lease.uploadSelectedDrive('local-drive-1'), false);
+        expect(remote.manifests, isEmpty);
+        expect(lease.requireDrive('local-drive-1').distance, 6200);
+        expect(
+          lease
+              .manualSyncCandidates()
+              .where((c) => c.state == 'retryableFailure')
+              .length,
+          1,
+        );
+        expect(await lease.uploadSelectedDrive('local-drive-1'), true);
+        expect(remote.manifests.length, 1);
+        expect(
+          lease
+              .manualSyncCandidates()
+              .where((c) => c.state == 'acknowledged')
+              .length,
+          1,
+        );
+        expect(await lease.uploadSelectedDrive('local-drive-1'), true);
+        expect(remote.manifests.length, 1);
+        auth.emit(accountB);
+        await runtime.settled;
+        await runtime.syncSettled;
+        expect(runtime.lease.manualSyncCandidates(), isEmpty);
+        await expectLater(
+          lease.uploadSelectedDrive('local-drive-1'),
+          throwsStateError,
+        );
+        auth.emit(null);
+        await runtime.settled;
+        expect(runtime.lease.manualCloudSyncAvailable, false);
+        await expectLater(
+          runtime.lease.uploadSelectedDrive('local-drive-1'),
+          throwsStateError,
+        );
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'manual in-flight owner change discards result without blocking local save',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..blockBackend = Completer<void>();
+      final runtime = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: auth,
+        driveInProgress: () async => false,
+        automaticAccountSync: false,
+        accountSyncAdapter: (_) => remote,
+        openStore: (owner) async {
+          final store = await OwnerScopedLocalStore.open(
+            root: '${root.path}/late',
+            owner: owner,
+          );
+          if (owner.userId == accountA) await _seedVerifiedDrive(store);
+          return store;
+        },
+      );
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        final work = runtime.lease.uploadSelectedDrive('local-drive-1');
+        final rejected = expectLater(work, throwsStateError);
+        // Wait for the durable selected enqueue to enter the network boundary.
+        await remote.backendEntered.future.timeout(const Duration(seconds: 2));
+        await runtime.withOwnerOperation(
+          (lease) => lease.put('drive_names', 'saved', 'local'),
+        );
+        auth.emit(accountB);
+        await runtime.settled;
+        remote.blockBackend!.complete();
+        await rejected;
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        if (!remote.blockBackend!.isCompleted) remote.blockBackend!.complete();
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'manual download preserves a matching existing drive and does not re-put it',
+    () async {
+      var armed = false;
+      var protectedWrites = 0;
+      final preserved = await OwnerScopedLocalStore.open(
+        root: '${root.path}/preserve',
+        owner: ownerA,
+        beforeFlush: (group) async {
+          if (armed &&
+              {
+                'drives',
+                'drive_telemetry',
+                'drive_scores',
+                'drive_source_provenance_v1',
+                'owned_drive_finalization_v1',
+              }.contains(group)) {
+            protectedWrites++;
+          }
+        },
+      );
+      addTearDown(preserved.close);
+      await _seedVerifiedDrive(preserved);
+      final client = OwnerDriveSyncClient(
+        store: preserved,
+        requireCurrent: () {},
+      );
+      final key = await client.enqueueDrive('local-drive-1');
+      final mutation = OwnerSyncMutation.fromMap(
+        Map.from(client.readRecord(key)!['mutation'] as Map),
+      );
+      armed = true;
+      final result = await client.applyDownloadPage(
+        OwnerSyncDownloadPage(
+          ownerId: accountA,
+          fromCursor: '',
+          nextCursor: '1',
+          changes: [OwnerSyncRemoteChange(cursor: '1', mutation: mutation)],
+        ),
+        limit: 1,
+        preserveExistingDrives: true,
+      );
+      expect(result.applied, 0);
+      expect(result.duplicates, 1);
+      expect(protectedWrites, 0);
+    },
+  );
+
+  test('manual candidates exclude an unflushed completion marker', () async {
+    final fault = await OwnerScopedLocalStore.open(
+      root: '${root.path}/manual-fault',
+      owner: ownerA,
+      beforeFlush: (group) async {
+        if (group == 'owned_drive_finalization_v1') {
+          throw StateError('synthetic flush failure');
+        }
+      },
+    );
+    addTearDown(fault.close);
+    await expectLater(_seedVerifiedDrive(fault), throwsStateError);
+    expect(
+      fault.read<Map>(
+        ownerA,
+        'owned_drive_finalization_v1',
+        'local-drive-1',
+      )?['state'],
+      'completed',
+    );
+    expect(
+      fault.writeDurable('owned_drive_finalization_v1', 'local-drive-1'),
+      false,
+    );
+    expect(
+      OwnerDriveSyncClient(
+        store: fault,
+        requireCurrent: () {},
+      ).manualCandidates(),
+      isEmpty,
+    );
   });
 
   test(

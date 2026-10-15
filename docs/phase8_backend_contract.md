@@ -1,5 +1,29 @@
 # DriveIt Phase 8 backend contract and implementation boundary
 
+2026-10-15 fencing repair acceptance: `202610160002` is deployed to the approved
+Planet DEV target. Both RPCs use non-retrying `PT409` for business fencing
+errors. Real synthetic M1/M2 acceptance passed; see
+`phase8_m2_fencing_repair_acceptance.md`. Normal-app cloud deletion remains OFF.
+The earlier partial status below is historical and has been resolved.
+
+2026-10-15 remote M2 update: the approved M2 migration and five Edge functions
+are deployed to Planet DEV, but server acceptance is **PARTIAL**. Hosted
+PostgREST 14.5 retries business fencing errors raised as SQLSTATE `40001`.
+Normal-app deletion remains OFF; a separately approved forward repair is
+required. See `phase8_m2_planet_dev_deployment.md` for actual versions, restored
+backup verification, synthetic cleanup, preserved real data and the failed test.
+The local-only deployment status below is historical, not the current state.
+
+2026-10-15 M2 update: current M1 is deployed to Planet DEV
+`viqngnjfgknpxtoapzcg` and user-confirmed in the normal app. Historical separate
+project/gate/tooling notes below are superseded by the M1 delivery reports and
+`phase8_m2_local_delivery.md`. M2 has a new forward-only local migration,
+authenticated delete/lease transports, durable deletion evidence and negotiated
+capabilities. M2 remote deployment and normal-app activation still require
+separate approval. Historical local History deletions never acquire invented
+server evidence. See the M2 delivery for retention, snapshot redaction, client
+upgrade requirements and exact proposed remote changes.
+
 2026-10-15 update: the normal app now has real Planet DEV Auth. The newer
 `phase8_m1_normal_runtime_delivery.md` records local M1 server acceptance,
 the forward correction migration, the guarded normal factory connection and

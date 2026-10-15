@@ -80,6 +80,78 @@ Map<String, Object?> _receipt({String? ownerScope, String? key}) => {
 };
 
 void main() {
+  test(
+    'M2 real adapter remains fail-closed without explicit activation',
+    () async {
+      var requests = 0;
+      final client = _client((_) async {
+        requests++;
+        return _json({});
+      });
+      try {
+        final adapter = _adapter(client).adapter;
+        await expectLater(
+          adapter.observeDrive(_source),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        await expectLater(
+          adapter.updateLease(
+            sourceIdentity: _source,
+            deviceId: _intent,
+            sessionId: 'session',
+          ),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        expect(requests, 0);
+      } finally {
+        await client.dispose();
+      }
+    },
+  );
+
+  test(
+    'M2 observation negotiates capability and never trusts a foreign UID',
+    () async {
+      var calls = 0;
+      final client = _client((request) async {
+        calls++;
+        final body = jsonDecode(request.body) as Map;
+        if (request.url.path.endsWith('phase8-drive-begin')) {
+          expect(body['milestone'], 2);
+          return _json({
+            'ok': true,
+            'schemaRevision': '202610160001',
+            'ownerScope': _scope(_ownerA),
+            'deleteSync': true,
+            'leaseFencing': true,
+          });
+        }
+        return _json({
+          'ok': true,
+          'ownerId': _ownerB,
+          'source_identity': _source,
+          'payload_fingerprint': _fingerprint,
+          'change_sequence': 1,
+        });
+      });
+      try {
+        final adapter = SupabaseOwnerDriveSyncAdapter(
+          client: client,
+          ownerId: _ownerA,
+          requireCurrent: () {},
+          authenticatedUserId: () => _ownerA,
+          deletionEnabled: true,
+        );
+        await expectLater(
+          adapter.observeDrive(_source),
+          throwsA(isA<OwnerSyncConflict>()),
+        );
+        expect(calls, 2);
+      } finally {
+        await client.dispose();
+      }
+    },
+  );
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(

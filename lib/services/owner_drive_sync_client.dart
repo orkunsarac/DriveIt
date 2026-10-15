@@ -87,12 +87,14 @@ class OwnerSyncReceipt {
     required this.idempotencyKey,
     required this.payloadFingerprint,
     required this.remoteId,
+    this.changeSequence,
   });
 
   final String ownerScope;
   final String idempotencyKey;
   final String payloadFingerprint;
   final String remoteId;
+  final int? changeSequence;
 }
 
 enum OwnerSyncStagingState { staging, finalized }
@@ -228,6 +230,12 @@ abstract interface class OwnerSyncAccountRemoteAdapter
   Future<void> verifyBackend();
 }
 
+/// M2 is a separate capability: an M1 transport is never treated as a deleter.
+abstract interface class OwnerSyncDeletionAdapter {
+  Future<({int sequence, String fingerprint})> observeDrive(String source);
+  Future<OwnerSyncMutation> deleteDrive(OwnerSyncMutation mutation);
+}
+
 class OwnerSyncDownloadResult {
   const OwnerSyncDownloadResult({
     required this.applied,
@@ -248,12 +256,350 @@ class OwnerDriveSyncClient {
   static const downloadStateBox = 'owner_sync_download_v1';
   static const receivedBox = 'owner_sync_received_v1';
   static const driveIdMapBox = 'owner_sync_drive_id_map_v1';
+  static const deletionBox = 'owner_sync_deletions_v2';
   static const contractVersion = 2;
   static const maxStagedEnvelopeBytes = 10 * 1024 * 1024;
 
   final OwnerScopedLocalStore store;
   final void Function() requireCurrent;
   GpsOwner get owner => store.owner;
+
+  /// Local evidence that this particular source was acknowledged/downloaded.
+  /// Queued or ambiguous uploads are deliberately not proof of cloud absence.
+  bool hasCloudDrive(String driveId) {
+    requireCurrent();
+    if (owner.kind != GpsOwnerKind.account) return false;
+    return store.keys(owner, boxName).any((key) {
+          final row = store.read<Map>(owner, boxName, key);
+          if (row?['mutation'] is! Map) return false;
+          final m = OwnerSyncMutation.fromMap(row!['mutation'] as Map);
+          return m.kind == OwnerSyncMutationKind.driveUpsert &&
+              (row['state'] == OwnerSyncMutationState.acknowledged.name ||
+                  (row['attemptCount'] as int? ?? 0) > 0) &&
+              (m.payload['drive'] as Map?)?['id'] == driveId;
+        }) ||
+        store
+            .keys(owner, driveIdMapBox)
+            .any(
+              (key) =>
+                  store.read<Map>(owner, driveIdMapBox, key)?['localDriveId'] ==
+                  driveId,
+            );
+  }
+
+  Map? deletionStatus(String driveId) {
+    requireCurrent();
+    return store.read<Map>(owner, deletionBox, 'drive:$driveId');
+  }
+
+  /// Persist user consent BEFORE any network operation or local removal.
+  /// Old M1 ACKs lack sequence evidence: refresh it, never invent it.
+  Future<void> prepareCloudDeletion(String driveId) async {
+    requireCurrent();
+    _requireAccount();
+    final existing = deletionStatus(driveId);
+    if (existing != null) {
+      final proof = store.read<Map>(
+        owner,
+        'drive_source_provenance_v1',
+        driveId,
+      );
+      if (store.read(owner, 'drives', driveId) != null &&
+          (proof?['status'] != 'proven' ||
+              proof?['ownerScope'] != store.scope ||
+              proof?['sourceIdentity'] != existing['sourceIdentity'])) {
+        throw const OwnerSyncConflict('deletion_local_drive_id_reused');
+      }
+      await store.put(owner, deletionBox, 'drive:$driveId', existing);
+      return;
+    }
+    final bundle = _tryVerifiedLocalBundle(driveId);
+    if (!hasCloudDrive(driveId) || bundle?.sourceProvenance?.isProven != true) {
+      throw const OwnerSyncConflict('deletion_source_unproven');
+    }
+    final identity = bundle!.sourceProvenance!.sourceIdentity!;
+    String? expectedHash;
+    for (final key in store.keys(owner, boxName)) {
+      final m = store.read<Map>(owner, boxName, key)?['mutation'];
+      if (m is Map &&
+          m['kind'] == 'driveUpsert' &&
+          m['sourceIdentity'] == identity) {
+        expectedHash = m['payloadFingerprint'] as String?;
+      }
+    }
+    expectedHash ??=
+        store.read<Map>(owner, driveIdMapBox, identity)?['payloadFingerprint']
+            as String?;
+    if (expectedHash == null) {
+      throw const OwnerSyncConflict('deletion_revision_unavailable');
+    }
+    await store.put(owner, deletionBox, 'drive:$driveId', {
+      'ownerId': owner.userId,
+      'ownerScope': store.scope,
+      'sourceIdentity': identity,
+      'expectedPayloadFingerprint': expectedHash,
+      'deletionId': DriveSourceProvenance.newUuidV4(),
+      'deletedAt': DateTime.now().toUtc().toIso8601String(),
+      'state': 'queued',
+      'attemptCount': 0,
+    });
+    requireCurrent();
+  }
+
+  /// One bounded attempt. A response loss retains exactly the same operation.
+  /// Data stays locally available/pending until a validated server ACK arrives.
+  Future<bool> sendCloudDeletion(
+    String driveId,
+    OwnerSyncDeletionAdapter remote,
+  ) async {
+    requireCurrent();
+    _requireAccount();
+    var row = deletionStatus(driveId);
+    if (row == null ||
+        row['ownerId'] != owner.userId ||
+        row['ownerScope'] != store.scope ||
+        !store.writeDurable(deletionBox, 'drive:$driveId')) {
+      throw const OwnerSyncConflict('deletion_not_durable');
+    }
+    if (row['state'] == 'acknowledged') {
+      return true;
+    }
+    await store.put(owner, deletionBox, 'drive:$driveId', {
+      ...row,
+      'attemptCount': (row['attemptCount'] as int) + 1,
+    });
+    try {
+      OwnerSyncMutation mutation;
+      if (row['mutation'] is Map) {
+        mutation = OwnerSyncMutation.fromMap(row['mutation'] as Map);
+      } else {
+        final observed = await remote.observeDrive(
+          row['sourceIdentity'] as String,
+        );
+        requireCurrent();
+        if (observed.sequence < 1 ||
+            observed.fingerprint != row['expectedPayloadFingerprint'] ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(observed.fingerprint)) {
+          throw const OwnerSyncConflict('deletion_observation_invalid');
+        }
+        mutation = _mutation(
+          kind: OwnerSyncMutationKind.driveTombstone,
+          accountId: owner.userId!,
+          sourceIdentity: row['sourceIdentity'] as String,
+          payload: {
+            'deletionId': row['deletionId'],
+            'deletedAt': row['deletedAt'],
+            'observedRemoteSequence': observed.sequence,
+            'observedPayloadFingerprint': observed.fingerprint,
+            'causalVersion': 1,
+          },
+        );
+        // Tombstone identity is the deletion UUID, NOT source UUID.
+        mutation = OwnerSyncMutation(
+          version: mutation.version,
+          kind: mutation.kind,
+          ownerScope: mutation.ownerScope,
+          ownerId: mutation.ownerId,
+          idempotencyKey: _idempotencyKey(
+            owner.userId!,
+            mutation.kind,
+            row['deletionId'] as String,
+          ),
+          payloadFingerprint: mutation.payloadFingerprint,
+          sourceIdentity: mutation.sourceIdentity,
+          payload: mutation.payload,
+        );
+        await store.put(owner, deletionBox, 'drive:$driveId', {
+          ...deletionStatus(driveId)!,
+          'mutation': mutation.toMap(),
+        });
+      }
+      _validateMutationOwner(mutation);
+      final ack = await remote.deleteDrive(mutation);
+      requireCurrent();
+      if (canonicalOwnerSyncSha256(ack.toMap()) !=
+          canonicalOwnerSyncSha256(mutation.toMap())) {
+        throw const OwnerSyncConflict('deletion_ack_mismatch');
+      }
+      await _applyRemoteDeletion(ack);
+      requireCurrent();
+      await store.put(owner, deletionBox, 'drive:$driveId', {
+        ...deletionStatus(driveId)!,
+        'state': 'acknowledged',
+      });
+      return true;
+    } on OwnerSyncTransportFailure catch (e) {
+      requireCurrent();
+      await store.put(owner, deletionBox, 'drive:$driveId', {
+        ...deletionStatus(driveId)!,
+        'state': 'retryableFailure',
+        'error': e.code,
+      });
+      return false;
+    } on OwnerSyncConflict catch (e) {
+      requireCurrent();
+      await store.put(owner, deletionBox, 'drive:$driveId', {
+        ...deletionStatus(driveId)!,
+        'state': 'conflict',
+        'error': e.code,
+      });
+      rethrow;
+    }
+  }
+
+  Future<bool> _applyRemoteDeletion(OwnerSyncMutation mutation) async {
+    _validateMutationOwner(mutation);
+    final source = mutation.sourceIdentity;
+    final previous = store.read<Map>(owner, deletionBox, 'source:$source');
+    if (previous != null &&
+        previous['mutation'] is Map &&
+        canonicalOwnerSyncSha256(previous['mutation']) !=
+            canonicalOwnerSyncSha256(mutation.toMap())) {
+      throw const OwnerSyncConflict('remote_deletion_conflict');
+    }
+    // Durable source barrier first: a crash cannot permit an old page/upload.
+    await store.put(owner, deletionBox, 'source:$source', {
+      'mutation': mutation.toMap(),
+    });
+    requireCurrent();
+    final ids = <String>{};
+    final map = store.read<Map>(owner, driveIdMapBox, source);
+    if (map?['localDriveId'] is String) ids.add(map!['localDriveId'] as String);
+    for (final id in store.keys(owner, 'drives').whereType<String>()) {
+      final proof = store.read<Map>(owner, 'drive_source_provenance_v1', id);
+      if (proof?['sourceIdentity'] == source ||
+          store
+                  .repositories(owner)
+                  .source(id)
+                  ?.sourceProvenance
+                  ?.sourceIdentity ==
+              source) {
+        ids.add(id);
+      }
+    }
+    for (final id in ids) {
+      requireCurrent();
+      final importing = store.read<Map>(
+        owner,
+        'owned_drive_finalization_v1',
+        id,
+      );
+      final proof = store.read<Map>(owner, 'drive_source_provenance_v1', id);
+      final matchingImport =
+          importing?['state'] == 'sync_importing' &&
+          importing?['syncImport'] == true &&
+          importing?['sourceIdentity'] == source;
+      if (store.read(owner, 'drives', id) != null &&
+          !matchingImport &&
+          (proof?['status'] != 'proven' ||
+              proof?['ownerScope'] != store.scope ||
+              proof?['sourceIdentity'] != source)) {
+        throw const OwnerSyncConflict('deletion_local_identity_conflict');
+      }
+      // M1 replica imports intentionally have no M3 World/Career projection.
+      // An authenticated remote tombstone may remove that History copy without
+      // manufacturing a Career contribution. Never bypass active World proof.
+      final unprojectedImport =
+          importing?['syncImport'] == true &&
+          importing?['sourceIdentity'] == source &&
+          (await store.worldIndex(owner).getActiveTracesForDrive(id)).isEmpty;
+      requireCurrent();
+      if (matchingImport || unprojectedImport) {
+        await store.put(owner, 'local_lifecycle_v1', 'history:$id', {
+          'version': 1,
+          'state': 'prepared',
+          'remoteTombstone': mutation.idempotencyKey,
+        });
+      }
+      await store.repositories(owner).deleteHistory(id);
+    }
+    return previous == null;
+  }
+
+  void _assertNotDeleted(OwnerSyncMutation mutation) {
+    final mapping = store.read<Map>(
+      owner,
+      driveIdMapBox,
+      mutation.sourceIdentity,
+    );
+    final driveId =
+        mapping?['localDriveId'] ?? (mutation.payload['drive'] as Map?)?['id'];
+    if ((driveId is String &&
+            store.read(owner, 'local_lifecycle_v1', 'history:$driveId') !=
+                null) ||
+        store.read(owner, deletionBox, 'source:${mutation.sourceIdentity}') !=
+            null ||
+        store
+            .keys(owner, deletionBox)
+            .any(
+              (key) =>
+                  !key.toString().startsWith('source:') &&
+                  store.read<Map>(owner, deletionBox, key)?['sourceIdentity'] ==
+                      mutation.sourceIdentity,
+            )) {
+      throw const OwnerSyncConflict('source_deleted_or_pending');
+    }
+  }
+
+  /// Read-only candidates: never scans legacy/Guest or enqueues a batch.
+  List<({DriveSession drive, String? key, String state})> manualCandidates() {
+    requireCurrent();
+    _requireAccount();
+    final result = <({DriveSession drive, String? key, String state})>[];
+    for (final id
+        in store
+            .keys(owner, 'owned_drive_finalization_v1')
+            .whereType<String>()) {
+      final completed = store.read<Map>(
+        owner,
+        'owned_drive_finalization_v1',
+        id,
+      );
+      if (completed?['state'] != 'completed' ||
+          completed?['derivedReady'] != true ||
+          completed?['syncImport'] == true ||
+          !store.writeDurable('owned_drive_finalization_v1', id) ||
+          !store.writeDurable('drives', id) ||
+          !store.writeDurable('drive_telemetry', id) ||
+          !store.writeDurable('drive_source_provenance_v1', id) ||
+          store.read<Map>(owner, 'local_lifecycle_v1', 'history:$id') != null) {
+        continue;
+      }
+      final source = _tryVerifiedLocalBundle(id);
+      if (source?.sourceProvenance?.isProven != true ||
+          source!.sourceProvenance!.ownerScope != store.scope) {
+        continue;
+      }
+      final score = source.score;
+      if (score != null &&
+          !store.writeDurable(
+            'drive_scores',
+            DriveScoreStorageService.keyFor(id, score.algorithmVersion),
+          )) {
+        continue;
+      }
+      String? key;
+      var state = 'pending';
+      for (final candidate in store.keys(owner, boxName).whereType<String>()) {
+        final row = readRecord(candidate);
+        if (row?['mutation'] is! Map) continue;
+        final mutation = OwnerSyncMutation.fromMap(
+          Map.from(row!['mutation'] as Map),
+        );
+        _validateMutationOwner(mutation);
+        if (mutation.sourceIdentity ==
+            source.sourceProvenance!.sourceIdentity) {
+          key = candidate;
+          state = row['state'] as String;
+          break;
+        }
+      }
+      if (deletionStatus(id) != null) state = 'deletionPending';
+      result.add((drive: source.drive, key: key, state: state));
+    }
+    result.sort((a, b) => b.drive.date.compareTo(a.drive.date));
+    return result;
+  }
 
   Future<String> enqueueDrive(String driveId) async {
     requireCurrent();
@@ -595,8 +941,6 @@ class OwnerDriveSyncClient {
     final accountId = _requireAccount();
     final row = store.read<Map>(owner, boxName, key);
     if (row == null) throw StateError('Owner sync mutation not found');
-    if (row['state'] == OwnerSyncMutationState.acknowledged.name) return true;
-    if (row['state'] == OwnerSyncMutationState.conflict.name) return false;
     final mutation = OwnerSyncMutation.fromMap(
       Map.from(row['mutation'] as Map),
     );
@@ -604,6 +948,9 @@ class OwnerDriveSyncClient {
     if (mutation.kind != OwnerSyncMutationKind.driveUpsert) {
       throw const OwnerSyncConflict('staged_tombstone_not_supported');
     }
+    _assertNotDeleted(mutation);
+    if (row['state'] == OwnerSyncMutationState.acknowledged.name) return true;
+    if (row['state'] == OwnerSyncMutationState.conflict.name) return false;
     final envelope = _envelopeBytes(mutation);
     if (envelope.isEmpty || envelope.length > maxStagedEnvelopeBytes) {
       throw const OwnerSyncConflict('staged_payload_size_invalid');
@@ -636,6 +983,7 @@ class OwnerDriveSyncClient {
     try {
       final intent = await remote.beginUpload(descriptor);
       requireCurrent();
+      _assertNotDeleted(mutation);
       if (intent.id.isEmpty) {
         throw const OwnerSyncConflict('staging_intent_invalid');
       }
@@ -668,6 +1016,7 @@ class OwnerDriveSyncClient {
         // durable SHA-256/size claims before it can publish anything.
       }
       requireCurrent();
+      _assertNotDeleted(mutation);
       await store.put(owner, boxName, key, {
         ...store.read<Map>(owner, boxName, key)!,
         'stagedUpload': {
@@ -722,6 +1071,7 @@ class OwnerDriveSyncClient {
     OwnerSyncReceipt receipt,
   ) async {
     requireCurrent();
+    _assertNotDeleted(mutation);
     if (receipt.ownerScope != mutation.ownerScope ||
         receipt.idempotencyKey != mutation.idempotencyKey ||
         receipt.payloadFingerprint != mutation.payloadFingerprint ||
@@ -737,6 +1087,8 @@ class OwnerDriveSyncClient {
         'idempotencyKey': receipt.idempotencyKey,
         'payloadFingerprint': receipt.payloadFingerprint,
         'remoteId': receipt.remoteId,
+        if (receipt.changeSequence != null)
+          'changeSequence': receipt.changeSequence,
       },
     });
     requireCurrent();
@@ -797,6 +1149,7 @@ class OwnerDriveSyncClient {
   Future<OwnerSyncDownloadResult> applyDownloadPage(
     OwnerSyncDownloadPage page, {
     int limit = 32,
+    bool preserveExistingDrives = false,
   }) async {
     requireCurrent();
     final accountId = _requireAccount();
@@ -820,8 +1173,7 @@ class OwnerDriveSyncClient {
     // Validate the entire page before any local write. A cross-owner or
     // unsupported mutation therefore cannot partially affect this account.
     for (final change in page.changes) {
-      if (change.cursor.isEmpty ||
-          change.mutation.kind != OwnerSyncMutationKind.driveUpsert) {
+      if (change.cursor.isEmpty) {
         throw const OwnerSyncConflict('download_change_unsupported');
       }
       _validateMutationOwner(change.mutation);
@@ -830,7 +1182,13 @@ class OwnerDriveSyncClient {
     var duplicates = 0;
     for (final change in page.changes) {
       requireCurrent();
-      final wasApplied = await _applyDownloadedDrive(change.mutation);
+      final wasApplied =
+          change.mutation.kind == OwnerSyncMutationKind.driveTombstone
+          ? await _applyRemoteDeletion(change.mutation)
+          : await _applyDownloadedDrive(
+              change.mutation,
+              preserveExistingDrives: preserveExistingDrives,
+            );
       if (wasApplied) {
         applied++;
       } else {
@@ -858,9 +1216,16 @@ class OwnerDriveSyncClient {
     );
   }
 
-  Future<bool> _applyDownloadedDrive(OwnerSyncMutation mutation) async {
+  Future<bool> _applyDownloadedDrive(
+    OwnerSyncMutation mutation, {
+    bool preserveExistingDrives = false,
+  }) async {
     if (mutation.kind != OwnerSyncMutationKind.driveUpsert) {
       throw const OwnerSyncConflict('download_tombstone_not_supported');
+    }
+    if (store.read(owner, deletionBox, 'source:${mutation.sourceIdentity}') !=
+        null) {
+      return false;
     }
     final wireBundle = LocalSourceBundle.fromMap(mutation.payload);
     wireBundle.validate();
@@ -934,6 +1299,25 @@ class OwnerDriveSyncClient {
     }
     if (receipt?['state'] == 'completed') {
       _verifyDownloadedDrive(bundle, mutation);
+      return false;
+    }
+
+    if (preserveExistingDrives &&
+        store.read<DriveSession>(owner, 'drives', driveId) != null &&
+        store.read<Map>(
+              owner,
+              'owned_drive_finalization_v1',
+              driveId,
+            )?['state'] !=
+            'sync_importing') {
+      // First manual acceptance must not re-put an existing drive, score or
+      // telemetry. Only an exact canonical match may advance the cursor.
+      final local = _verifiedLocalBundle(driveId).toMap()
+        ..['roads'] = <dynamic>[];
+      _remapBundleIds(local, wireBundle.drive.id);
+      if (canonicalOwnerSyncSha256(local) != mutation.payloadFingerprint) {
+        throw const OwnerSyncConflict('download_existing_drive_preserved');
+      }
       return false;
     }
 
@@ -1353,6 +1737,16 @@ class OwnerDriveSyncClient {
       );
       if (deletedAt == null || !deletedAt.isUtc) {
         throw const OwnerSyncConflict('tombstone_timestamp_invalid');
+      }
+      if (!_isUuid(mutation.payload['deletionId'] as String) ||
+          mutation.payload['observedRemoteSequence'] is! int ||
+          (mutation.payload['observedRemoteSequence'] as int) < 1 ||
+          mutation.payload['causalVersion'] != 1 ||
+          mutation.payload['observedPayloadFingerprint'] is! String ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(
+            mutation.payload['observedPayloadFingerprint'] as String,
+          )) {
+        throw const OwnerSyncConflict('tombstone_causal_evidence_missing');
       }
     }
   }

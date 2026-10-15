@@ -1,4 +1,6 @@
-/// Local value contracts for the planned Phase 8 deletion/lease milestone.
+import 'dart:async';
+
+/// Local value contracts for the Phase 8 deletion/lease milestone.
 ///
 /// These types are validation scaffolding only. They are not connected to the
 /// production sync worker, GPS start, delete UI, or any remote RPC. In
@@ -107,4 +109,87 @@ class OwnerDriveLeaseEvidence {
       sessionId == other.sessionId &&
       sourceIdentity == other.sourceIdentity &&
       fencingToken == other.fencingToken;
+}
+
+abstract interface class OwnerDriveLeaseTransport {
+  Future<OwnerDriveLeaseEvidence> updateLease({
+    required String sourceIdentity,
+    required String deviceId,
+    required String sessionId,
+    int? fencingToken,
+  });
+}
+
+/// Explicit lifecycle-owned heartbeat. Never starts GPS, changes its owner,
+/// or discards offline recording. A failed/stale renewal stops this heartbeat
+/// and surfaces a conflict; the caller must retain its local session.
+class OwnerDriveLeaseHeartbeat {
+  OwnerDriveLeaseHeartbeat({
+    required this.remote,
+    required this.requireCurrent,
+    required this.onFailure,
+  });
+  final OwnerDriveLeaseTransport remote;
+  final void Function() requireCurrent;
+  final void Function(Object) onFailure;
+  Timer? _timer;
+  OwnerDriveLeaseEvidence? evidence;
+  int _generation = 0;
+  bool _busy = false;
+
+  Future<void> start({
+    required String sourceIdentity,
+    required String deviceId,
+    required String sessionId,
+  }) async {
+    stop();
+    final generation = _generation;
+    requireCurrent();
+    final result = await remote.updateLease(
+      sourceIdentity: sourceIdentity,
+      deviceId: deviceId,
+      sessionId: sessionId,
+    );
+    requireCurrent();
+    if (generation != _generation) throw StateError('Lease start revoked');
+    evidence = result;
+    _timer = Timer.periodic(
+      OwnerDriveLeaseEvidence.heartbeatInterval,
+      (_) => unawaited(renew()),
+    );
+  }
+
+  Future<void> renew() async {
+    final previous = evidence;
+    if (_busy || previous == null) return;
+    final generation = _generation;
+    _busy = true;
+    try {
+      requireCurrent();
+      final next = await remote.updateLease(
+        sourceIdentity: previous.sourceIdentity,
+        deviceId: previous.deviceId,
+        sessionId: previous.sessionId,
+        fencingToken: previous.fencingToken,
+      );
+      requireCurrent();
+      if (generation != _generation) return;
+      if (!previous.sameLeaseAs(next)) throw StateError('Lease fenced');
+      evidence = next;
+    } catch (e) {
+      if (generation == _generation) {
+        stop();
+        onFailure(e);
+      }
+    } finally {
+      _busy = false;
+    }
+  }
+
+  void stop() {
+    _generation++;
+    _timer?.cancel();
+    _timer = null;
+    evidence = null;
+  }
 }

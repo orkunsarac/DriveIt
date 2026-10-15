@@ -123,8 +123,13 @@ abstract final class ProductionOwnerRuntimeFactory {
                 client: Supabase.instance.client,
                 ownerId: lease.owner.userId!,
                 requireCurrent: lease.requireCurrent,
+                deletionEnabled: false, // M2 server accepted; client rollout pending.
               );
             },
+      // First real cloud acceptance is explicit, one selected drive at a time.
+      // Startup/resume/Save may reconcile locally, but must never send a batch.
+      automaticAccountSync: false,
+      cloudDeletionEnabled: false,
     );
 
     return ProductionOwnerRuntimeDependencies(

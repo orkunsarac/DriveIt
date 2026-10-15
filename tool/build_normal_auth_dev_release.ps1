@@ -52,8 +52,17 @@ try {
 
     Write-Host "Building normal release for the approved Auth project ref $expectedProjectRef."
     Write-Host 'The local public key is supplied via an ignored file and will not be printed.'
+    Write-Host 'M1 is manual-only: no startup/resume/Save batch upload.'
+    flutter build apk --release --config-only `
+        --dart-define=DRIVEIT_LOCAL_OWNER_ACTIVATION=true `
+        --dart-define=DRIVEIT_ACCOUNT_SYNC_ENABLED=true `
+        --dart-define-from-file=$configRelativePath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Flutter release configuration failed; no APK build attempted.'
+    }
     flutter build apk --release `
         --dart-define=DRIVEIT_LOCAL_OWNER_ACTIVATION=true `
+        --dart-define=DRIVEIT_ACCOUNT_SYNC_ENABLED=true `
         --dart-define-from-file=$configRelativePath
     if ($LASTEXITCODE -ne 0) {
         throw 'Flutter release build failed.'

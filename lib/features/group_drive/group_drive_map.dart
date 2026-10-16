@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
@@ -9,23 +11,39 @@ import '../../widgets/local_owner_view.dart';
 import 'group_drive_models.dart';
 
 /// Existing Google Maps SDK, with its device-location layer always disabled.
-/// Only the fake group's latest consented test points can become markers.
+/// Only the current, consented group locations can become markers.
 class GroupDriveMap extends StatelessWidget {
-  const GroupDriveMap({super.key, required this.lease, required this.group});
+  const GroupDriveMap({
+    super.key,
+    required this.lease,
+    required this.group,
+    required this.isSimulation,
+  });
   final LocalOwnerLease lease;
   final GroupDriveSnapshot group;
+  final bool isSimulation;
   @override
   Widget build(BuildContext context) => LocalOwnerView(
     lease: lease,
-    builder: (_) =>
-        _GroupMap(key: ValueKey(group.id), lease: lease, group: group),
+    builder: (_) => _GroupMap(
+      key: ValueKey(group.id),
+      lease: lease,
+      group: group,
+      isSimulation: isSimulation,
+    ),
   );
 }
 
 class _GroupMap extends StatefulWidget {
-  const _GroupMap({super.key, required this.lease, required this.group});
+  const _GroupMap({
+    super.key,
+    required this.lease,
+    required this.group,
+    required this.isSimulation,
+  });
   final LocalOwnerLease lease;
   final GroupDriveSnapshot group;
+  final bool isSimulation;
   @override
   State<_GroupMap> createState() => _GroupMapState();
 }
@@ -34,8 +52,11 @@ class _GroupMapState extends State<_GroupMap> {
   GoogleMapController? _controller;
   Timer? _freshness;
   late DateTime _now;
-  late DateTime _receivedAt;
+  final Stopwatch _elapsedSinceSnapshot = Stopwatch();
   String? _selected;
+  bool _userMovedCamera = false;
+  bool _programmaticCameraMove = false;
+  bool _autoFocused = false;
   bool get _current => mounted && widget.lease.isCurrent;
   @override
   void initState() {
@@ -50,11 +71,18 @@ class _GroupMapState extends State<_GroupMap> {
     if (!_visible.any((member) => member.membershipId == _selected)) {
       _selected = null;
     }
+    if (_visible.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_current) unawaited(_autoFocus());
+      });
+    }
   }
 
   void _resetClock() {
     _now = widget.group.observedAt;
-    _receivedAt = DateTime.now().toUtc();
+    _elapsedSinceSnapshot
+      ..reset()
+      ..start();
     _scheduleFreshness();
   }
 
@@ -64,9 +92,7 @@ class _GroupMapState extends State<_GroupMap> {
               (member) =>
                   member.sharingStatus == GroupSharingStatus.sharing &&
                   member.location != null &&
-                  !_now.difference(member.location!.recordedAt).isNegative &&
-                  _now.difference(member.location!.recordedAt) <=
-                      const Duration(minutes: 5),
+                  isGroupGpsTimestampFresh(member.location!.recordedAt, _now),
             )
             .toList()
       : [];
@@ -75,7 +101,7 @@ class _GroupMapState extends State<_GroupMap> {
     DateTime? next;
     for (final member in widget.group.members) {
       if (member.location == null) continue;
-      for (final seconds in [15, 30, 300]) {
+      for (final seconds in [15]) {
         final boundary = member.location!.recordedAt.add(
           Duration(seconds: seconds, milliseconds: 1),
         );
@@ -90,9 +116,9 @@ class _GroupMapState extends State<_GroupMap> {
       _freshness = Timer(deadline.difference(_now), () {
         if (!_current) return;
         setState(() {
-          final elapsed = DateTime.now().toUtc().difference(_receivedAt);
-          final wallEstimate = widget.group.observedAt.add(
-            elapsed.isNegative ? Duration.zero : elapsed,
+          final wallEstimate = estimateGroupServerTime(
+            widget.group.observedAt,
+            _elapsedSinceSnapshot.elapsed,
           );
           _now = wallEstimate.isAfter(deadline) ? wallEstimate : deadline;
           if (!_visible.any((member) => member.membershipId == _selected)) {
@@ -116,9 +142,61 @@ class _GroupMapState extends State<_GroupMap> {
     // No delayed camera callback: validate this exact controller immediately
     // before issuing the command. Dispose clears it and cancels freshness work.
     if (!_current || !identical(controller, _controller)) return;
-    await controller.animateCamera(
+    await _animateCamera(
+      controller,
       CameraUpdate.newLatLngZoom(LatLng(point.latitude, point.longitude), 15),
     );
+  }
+
+  Future<void> _autoFocus() async {
+    if (!_current || _autoFocused || _userMovedCamera || _visible.isEmpty) {
+      return;
+    }
+    final controller = _controller;
+    if (controller == null) return;
+    final points = _visible
+        .map((member) => member.location!)
+        .toList(growable: false);
+    _autoFocused = true;
+    if (points.length == 1 ||
+        points.every(
+          (point) =>
+              point.latitude == points.first.latitude &&
+              point.longitude == points.first.longitude,
+        )) {
+      await _animateCamera(
+        controller,
+        CameraUpdate.newLatLngZoom(
+          LatLng(points.first.latitude, points.first.longitude),
+          15,
+        ),
+      );
+      return;
+    }
+    final bounds = LatLngBounds(
+      southwest: LatLng(
+        points.map((point) => point.latitude).reduce((a, b) => a < b ? a : b),
+        points.map((point) => point.longitude).reduce((a, b) => a < b ? a : b),
+      ),
+      northeast: LatLng(
+        points.map((point) => point.latitude).reduce((a, b) => a > b ? a : b),
+        points.map((point) => point.longitude).reduce((a, b) => a > b ? a : b),
+      ),
+    );
+    await _animateCamera(controller, CameraUpdate.newLatLngBounds(bounds, 48));
+  }
+
+  Future<void> _animateCamera(
+    GoogleMapController controller,
+    CameraUpdate update,
+  ) async {
+    if (!_current || !identical(controller, _controller)) return;
+    _programmaticCameraMove = true;
+    try {
+      await controller.animateCamera(update);
+    } finally {
+      _programmaticCameraMove = false;
+    }
   }
 
   @override
@@ -152,11 +230,7 @@ class _GroupMapState extends State<_GroupMap> {
         icon: BitmapDescriptor.defaultMarkerWithHue(
           mine ? BitmapDescriptor.hueAzure : hues[member.colorIndex],
         ),
-        alpha: elapsed <= const Duration(seconds: 15)
-            ? 1
-            : elapsed <= const Duration(seconds: 30)
-            ? .55
-            : .3,
+        alpha: 1,
         infoWindow: InfoWindow(
           title: '${member.displayName}${mine ? ' (Sen)' : ''}',
           snippet:
@@ -178,6 +252,9 @@ class _GroupMapState extends State<_GroupMap> {
             zoom: center == null ? 2 : 13,
           ),
           markers: markers,
+          gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+            Factory<EagerGestureRecognizer>(EagerGestureRecognizer.new),
+          },
           myLocationEnabled: false,
           myLocationButtonEnabled: false,
           zoomControlsEnabled: false,
@@ -190,6 +267,10 @@ class _GroupMapState extends State<_GroupMap> {
             final old = _controller;
             _controller = controller;
             if (!identical(old, controller)) old?.dispose();
+            if (_visible.isNotEmpty) unawaited(_autoFocus());
+          },
+          onCameraMoveStarted: () {
+            if (!_programmaticCameraMove) _userMovedCamera = true;
           },
         ),
         Positioned(
@@ -201,7 +282,7 @@ class _GroupMapState extends State<_GroupMap> {
               color: const Color(0xcc020a18),
               padding: const EdgeInsets.all(8),
               child: Text(
-                '${visible.any((member) => member.location!.origin == GroupLocationOrigin.deviceGps) ? 'Cihaz GPS konumları' : 'Sentetik test konumları'} • ${markers.length} görünür üye',
+                _statusLabel(visible),
                 key: const Key('group_marker_count'),
                 style: const TextStyle(color: Colors.white),
               ),
@@ -227,5 +308,19 @@ class _GroupMapState extends State<_GroupMap> {
           ),
       ],
     );
+  }
+
+  String _statusLabel(List<GroupDriveMember> visible) {
+    if (widget.isSimulation) {
+      return 'Sentetik test konumları • ${visible.length} görünür üye';
+    }
+    final gpsCount = visible
+        .where(
+          (member) => member.location!.origin == GroupLocationOrigin.deviceGps,
+        )
+        .length;
+    return gpsCount == 0
+        ? 'Henüz canlı konum alınmadı'
+        : 'Canlı GPS • $gpsCount görünür üye';
   }
 }

@@ -22,6 +22,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   final LocalOwnerLease lease;
   final GroupDriveClient client;
   final GroupGpsSource source;
+
   /// Optional, non-sensitive diagnostics supplied only by a controlled test composition.
   final void Function(String event)? diagnostics;
   final DateTime Function() clock;
@@ -33,6 +34,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   int _generation = 0, _sequence = 0;
   bool _closed = false, _sending = false, _checking = false;
   String? errorCode;
+  String? sampleState;
   Future<void> _work = Future.value();
   Future<void> get settled => _work;
   bool get active => _grant != null && lease.isCurrent && !_closed;
@@ -115,6 +117,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
         onDone: () => unawaited(_fail('gps_stream_ended', generation)),
       );
       diagnostics?.call('position_subscription_created');
+      _setSampleState('waiting_for_gps');
       _permissionCheck = Timer.periodic(const Duration(seconds: 2), (_) {
         if (!_checking && _valid(generation)) unawaited(_check(generation));
       });
@@ -156,8 +159,8 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
         final age = clock().toUtc().difference(at);
         if (position.isMocked ||
             at.isBefore(_grant!.startedAt) ||
-            age.isNegative ||
-            age > const Duration(seconds: 15) ||
+            age < -groupGpsFutureSkewTolerance ||
+            age > groupGpsMaximumAge ||
             !position.accuracy.isFinite ||
             position.accuracy < 0 ||
             position.accuracy > 75 ||
@@ -166,15 +169,16 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
             position.latitude.abs() > 90 ||
             position.longitude.abs() > 180 ||
             (_lastTimestamp != null && !at.isAfter(_lastTimestamp!))) {
-          diagnostics?.call(
-            'position_rejected:${_rejectReason(position, at, age)}',
-          );
+          final reason = _rejectReason(position, at, age);
+          diagnostics?.call('position_rejected:$reason');
+          _setSampleState('rejected_$reason');
           continue;
         }
         diagnostics?.call(
           'position_accepted:age_seconds:${age.inSeconds},accuracy:${position.accuracy.round()},owner_current:${lease.isCurrent},group_grant:true',
         );
-        diagnostics?.call('fake_publish_started');
+        _setSampleState('publishing');
+        diagnostics?.call('gps_publish_started');
         await client.publishGps(
           _grant!,
           GroupGpsLocation(
@@ -185,7 +189,8 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
             sequence: ++_sequence,
           ),
         );
-        diagnostics?.call('fake_publish_completed');
+        _setSampleState('published');
+        diagnostics?.call('gps_publish_completed');
         if (diagnostics != null) {
           final snapshot = await client.current();
           final member = snapshot?.members
@@ -204,6 +209,12 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       _sending = false;
       if (active && _latest != null) unawaited(_pump(_generation));
     }
+  }
+
+  void _setSampleState(String? value) {
+    if (sampleState == value) return;
+    sampleState = value;
+    if (!_closed) notifyListeners();
   }
 
   void _halt() {
@@ -269,8 +280,8 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   String _rejectReason(Position position, DateTime at, Duration age) {
     if (position.isMocked) return 'mocked';
     if (at.isBefore(_grant!.startedAt)) return 'before_grant';
-    if (age.isNegative) return 'future_timestamp';
-    if (age > const Duration(seconds: 15)) return 'stale';
+    if (age < -groupGpsFutureSkewTolerance) return 'future_timestamp';
+    if (age > groupGpsMaximumAge) return 'stale';
     if (!position.accuracy.isFinite || position.accuracy < 0) {
       return 'invalid_accuracy';
     }

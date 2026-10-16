@@ -4,6 +4,20 @@ enum GroupDriveRole { administrator, member }
 
 enum GroupSharingStatus { off, sharing, paused }
 
+/// Matches the M4 server's maximum accepted GPS timestamp clock skew.
+const groupGpsFutureSkewTolerance = Duration(seconds: 3);
+const groupGpsMaximumAge = Duration(seconds: 15);
+
+bool isGroupGpsTimestampFresh(DateTime recordedAt, DateTime referenceTime) {
+  final age = referenceTime.toUtc().difference(recordedAt.toUtc());
+  return age >= -groupGpsFutureSkewTolerance && age <= groupGpsMaximumAge;
+}
+
+/// Advances an authoritative server timestamp using a monotonic elapsed
+/// duration. The receiver's wall-clock offset must not affect GPS freshness.
+DateTime estimateGroupServerTime(DateTime serverObservedAt, Duration elapsed) =>
+    serverObservedAt.toUtc().add(elapsed.isNegative ? Duration.zero : elapsed);
+
 /// Explicit test input only. There is no GPS provider in this delivery.
 enum GroupLocationOrigin { synthetic, deviceGps }
 
@@ -71,12 +85,16 @@ class GroupLocationGrant {
     required this.publicationId,
     required this.ownerEpoch,
     required this.startedAt,
+    this.serverGeneration = 0,
   });
   final String groupId;
   final String membershipId;
   final String publicationId;
   final int ownerEpoch;
   final DateTime startedAt;
+
+  /// Server topic fence. Zero is reserved for the in-memory simulator.
+  final int serverGeneration;
 }
 
 class GroupDriveException implements Exception {
@@ -173,3 +191,41 @@ class GroupDriveSnapshot {
   final List<GroupDriveMember> members;
   bool get isActive => status == GroupDriveStatus.active;
 }
+
+/// Applies only transient, fresh points to a server snapshot. A normal
+/// snapshot intentionally contains no location history, so the short-lived
+/// Realtime cache is merged by membership identity until it expires or the
+/// server revokes that member's sharing state.
+GroupDriveSnapshot withFreshGroupLocations({
+  required GroupDriveSnapshot snapshot,
+  required Map<String, GroupLocationPoint> locations,
+  required DateTime referenceTime,
+}) => GroupDriveSnapshot(
+  id: snapshot.id,
+  createdAt: snapshot.createdAt,
+  observedAt: snapshot.observedAt,
+  expiresAt: snapshot.expiresAt,
+  status: snapshot.status,
+  extensionCount: snapshot.extensionCount,
+  revision: snapshot.revision,
+  invite: snapshot.invite,
+  members: snapshot.members.map((member) {
+    final point = locations[member.membershipId];
+    return GroupDriveMember(
+      membershipId: member.membershipId,
+      accountId: member.accountId,
+      displayName: member.displayName,
+      joinedAt: member.joinedAt,
+      joinOrder: member.joinOrder,
+      role: member.role,
+      sharingStatus: member.sharingStatus,
+      location:
+          member.sharingStatus == GroupSharingStatus.sharing &&
+              point != null &&
+              isGroupGpsTimestampFresh(point.recordedAt, referenceTime)
+          ? point
+          : null,
+      colorIndex: member.colorIndex,
+    );
+  }),
+);

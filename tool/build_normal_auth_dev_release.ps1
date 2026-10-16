@@ -52,12 +52,14 @@ try {
 
     Write-Host "Building normal release for the approved Auth project ref $expectedProjectRef."
     Write-Host 'The local public key is supplied via an ignored file and will not be printed.'
-    Write-Host 'M1 is manual-only: no startup/resume/Save batch upload.'
+    Write-Host 'Automatic upload is limited to newly saved, proven account drives; historical/Guest/archive data is not auto-enqueued.'
     Write-Host 'M2 deletion requires per-drive consent; only consented pending deletions may retry.'
+    Write-Host 'Group Drive uses the accepted Planet DEV backend; GPS requires consent and a visible app.'
     flutter build apk --release --config-only `
         --dart-define=DRIVEIT_LOCAL_OWNER_ACTIVATION=true `
         --dart-define=DRIVEIT_ACCOUNT_SYNC_ENABLED=true `
         --dart-define=DRIVEIT_ACCOUNT_DELETE_ENABLED=true `
+        --dart-define=DRIVEIT_GROUP_DRIVE_ENABLED=true `
         --dart-define-from-file=$configRelativePath
     if ($LASTEXITCODE -ne 0) {
         throw 'Flutter release configuration failed; no APK build attempted.'
@@ -66,6 +68,7 @@ try {
         --dart-define=DRIVEIT_LOCAL_OWNER_ACTIVATION=true `
         --dart-define=DRIVEIT_ACCOUNT_SYNC_ENABLED=true `
         --dart-define=DRIVEIT_ACCOUNT_DELETE_ENABLED=true `
+        --dart-define=DRIVEIT_GROUP_DRIVE_ENABLED=true `
         --dart-define-from-file=$configRelativePath
     if ($LASTEXITCODE -ne 0) {
         throw 'Flutter release build failed.'

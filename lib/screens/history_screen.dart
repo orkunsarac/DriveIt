@@ -295,7 +295,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final drive = _drives[index];
-                        final tile = _DriveListTile(
+                        Widget tile = _DriveListTile(
                           drive: drive,
                           name: _displayName(drive),
                           dateLabel: _date(drive.date),
@@ -307,6 +307,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           onTap: () => _openDetail(drive),
                           onDelete: () => _deleteDrive(drive),
                         );
+                        if (widget.ownerLease?.read<Map>(
+                              'drive_details_v1',
+                              drive.id,
+                            )?['localOnly'] ==
+                            true) {
+                          tile = Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              tile,
+                              const Text(
+                                'Buluta uygun değil · doğrulanmış telemetri yok; yerel hesap kaydı korunuyor.',
+                              ),
+                            ],
+                          );
+                        }
                         final pendingDeletion = widget.ownerLease
                             ?.cloudDeletionState(drive.id);
                         if (pendingDeletion == null ||
@@ -327,6 +342,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                   : 'Bulut silme bekliyor — sunucu henüz onaylamadı.',
                             ),
                             tile,
+                            TextButton(
+                              onPressed: () => _deleteDrive(drive),
+                              child: const Text('Silme isteğini yeniden dene'),
+                            ),
                           ],
                         );
                       },

@@ -18,6 +18,7 @@ import '../screens/owner_cloud_sync_screen.dart';
 import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
 import '../features/group_drive/group_gps_source.dart';
+import '../screens/account_drive_transfer_screen.dart';
 
 /// Owner navigation shared by the normal application and controlled tests.
 /// Unfinished routes remain unregistered instead of using shared personal data.
@@ -32,6 +33,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
     this.initialRoute = '/',
     this.navigatorKey,
     this.groupDriveServiceForTesting,
+    this.groupDriveService,
     this.groupGpsSourceFactory,
   }) : assert(deviceArchive == null || deviceArchiveSnapshot == null);
   final LocalOwnerLifecycle runtime;
@@ -41,6 +43,9 @@ class OwnerPersonalNavigator extends StatelessWidget {
 
   /// Explicit simulator injection only; production does not construct it.
   final FakeGroupDriveService? groupDriveServiceForTesting;
+  final GroupDriveService? groupDriveService;
+  GroupDriveService? get _groupDriveService =>
+      groupDriveService ?? groupDriveServiceForTesting;
   final GroupGpsSource Function()? groupGpsSourceFactory;
   final DeviceDriveArchiveAccess? deviceArchive;
 
@@ -55,14 +60,17 @@ class OwnerPersonalNavigator extends StatelessWidget {
     navigatorKey: navigatorKey,
     legacyChild: legacyChild,
     routes: {
-      '/': (_, lease, _) => HomeScreen(
-        ownerLease: lease,
-        groupDriveAvailable: groupDriveServiceForTesting != null,
+      '/': (_, lease, _) => GuestTransferPrompt(
+        lease: lease,
+        child: HomeScreen(
+          ownerLease: lease,
+          groupDriveAvailable: _groupDriveService != null,
+        ),
       ),
-      if (groupDriveServiceForTesting != null)
+      if (_groupDriveService != null)
         '/group': (_, lease, _) => GroupDriveScreen(
           lease: lease,
-          service: groupDriveServiceForTesting!,
+          service: _groupDriveService!,
           gpsSource: groupGpsSourceFactory?.call(),
         ),
       '/history': (_, lease, _) => HistoryScreen(
@@ -90,6 +98,8 @@ class OwnerPersonalNavigator extends StatelessWidget {
         deviceArchiveLoader: deviceArchiveLoader,
       ),
       '/cloud-sync': (_, lease, _) => OwnerCloudSyncScreen(lease: lease),
+      '/account-transfer': (_, lease, _) =>
+          AccountDriveTransferScreen(lease: lease),
       '/world': (_, lease, _) => WorldModeSelectionScreen(
         loadData: lease.worldMap,
         myWorldBuilder: (_) => MyWorldMapScreen(ownerLease: lease),

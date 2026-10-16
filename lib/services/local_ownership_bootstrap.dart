@@ -10,6 +10,7 @@ import 'local_source_writer_fence.dart';
 import 'owner_drive_sync_client.dart';
 import '../features/my_world/services/road_matching_service.dart';
 import '../features/group_drive/group_drive_service.dart';
+import 'account_drive_transfer.dart';
 
 /// Dependencies must be supplied explicitly by the synthetic harness. There is
 /// no release define, shared-box fallback, legacy migration or import here.
@@ -26,10 +27,13 @@ class ControlledOwnershipDependencies {
     this.worldRoadMatching,
     this.fakeSyncRemote,
     this.groupDriveServiceForTesting,
+    this.groupDriveService,
     this.deviceGuestOwner,
     this.accountSyncAdapter,
     this.automaticAccountSync = true,
+    this.automaticCloudDeletionRetry = true,
     this.cloudDeletionEnabled = false,
+    this.transferSources,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -48,11 +52,15 @@ class ControlledOwnershipDependencies {
   /// Opt-in test composition only. Android activation is independently
   /// guarded by the isolated package and native manifest in startDriveIt.
   final FakeGroupDriveService? groupDriveServiceForTesting;
+  /// Real backend adapter is supplied only by an explicit post-acceptance build.
+  final GroupDriveService? groupDriveService;
   final GpsOwner? deviceGuestOwner;
   final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
   accountSyncAdapter;
   final bool automaticAccountSync;
+  final bool automaticCloudDeletionRetry;
   final bool cloudDeletionEnabled;
+  final AccountDriveTransferSources? transferSources;
 }
 
 class ControlledOwnershipRuntime {
@@ -133,7 +141,9 @@ abstract final class LocalOwnershipBootstrap {
         deviceGuestOwner: controlled.deviceGuestOwner,
         accountSyncAdapter: controlled.accountSyncAdapter,
         automaticAccountSync: controlled.automaticAccountSync,
+        automaticCloudDeletionRetry: controlled.automaticCloudDeletionRetry,
         cloudDeletionEnabled: controlled.cloudDeletionEnabled,
+        transferSources: controlled.transferSources,
         openStore: controlled.openStore,
         driveInProgress: busy,
         worldRoadMatching: controlled.worldRoadMatching,

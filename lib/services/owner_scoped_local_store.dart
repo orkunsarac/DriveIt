@@ -34,7 +34,6 @@ import 'local_lifecycle_journal.dart';
 import 'career_statistics_service.dart';
 import '../features/drive_poster/poster_store.dart';
 import 'owner_revision_models.dart';
-import 'gps_hive_transfer_sink.dart';
 
 /// Explicit opt-in only. No global Hive, Auth, bootstrap or task subscriptions.
 /// A separate Hive instance prevents asynchronous work from following a mutable
@@ -75,6 +74,7 @@ class OwnerScopedLocalStore {
     'my_world_index_snapshots',
     'my_world_index_metadata',
     'my_world_source_snapshots_v1',
+    'legacy_world_backfill_v1',
     'local_lifecycle_v1',
     'my_world_settings',
     'planet_segment_outbox_v1',
@@ -199,12 +199,13 @@ class OwnerScopedLocalStore {
     if (group == 'drives' && detached is DriveSession) {
       final date = _box('drive_details_v1').get('gpsTransferDate:$key');
       if (date is Map) {
-        return driveFromTransferManifest({
-              ...driveTransferManifest(detached),
-              'dateMicros': date['dateMicros'],
-              'dateIsUtc': date['dateIsUtc'],
-            })
-            as T;
+        // Patch only the detached date. Rebuilding via the cloud manifest
+        // would discard opaque fields preserved by legacy RoutePoint adapters.
+        detached.date = DateTime.fromMicrosecondsSinceEpoch(
+          date['dateMicros'] as int,
+          isUtc: date['dateIsUtc'] as bool,
+        );
+        return detached as T;
       }
     }
     return detached as T;
@@ -535,16 +536,24 @@ class ScopedLocalRepositories {
     final key = 'history:$id';
     final prior = store.read<Map>(owner, 'local_lifecycle_v1', key);
     if (prior == null) {
+      final localOnly =
+          store.read<Map>(
+            owner,
+            'owned_drive_finalization_v1',
+            id,
+          )?['localOnlyImport'] ==
+          true;
       if (source(id) == null ||
-          careerStatistics() == null ||
-          store.read(
-                owner,
-                CareerContributionRepository.boxName,
-                source(id)!.sourceProvenance?.isProven == true
-                    ? 'source:${source(id)!.sourceProvenance!.sourceIdentity}'
-                    : 'drive:$id',
-              ) ==
-              null) {
+          (!localOnly &&
+              (careerStatistics() == null ||
+                  store.read(
+                        owner,
+                        CareerContributionRepository.boxName,
+                        source(id)!.sourceProvenance?.isProven == true
+                            ? 'source:${source(id)!.sourceProvenance!.sourceIdentity}'
+                            : 'drive:$id',
+                      ) ==
+                      null))) {
         throw StateError(
           'Independent source/Career not prepared; History retained',
         );

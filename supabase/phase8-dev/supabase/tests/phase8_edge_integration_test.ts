@@ -677,3 +677,240 @@ Deno.test("Phase 8 Edge staging/finalization/download is owner isolated and repl
   const finalObject = await admin.storage.from(bucket).download(objectPath);
   assert(!finalObject.error, "cleanup leaves finalized staging content available to server download");
 });
+
+Deno.test("Phase 8 M4 private Realtime publication is fenced across pause, ban, leave, and end", async () => {
+  assert(Deno.env.get("PHASE8_REMOTE_PROJECT_REF") === undefined,
+    "M4 Realtime acceptance is local-only");
+  const url = Deno.env.get("PHASE8_LOCAL_URL");
+  const anonKey = Deno.env.get("PHASE8_LOCAL_ANON_KEY");
+  const serviceKey = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_KEY");
+  const anonBearer = Deno.env.get("PHASE8_LOCAL_ANON_BEARER");
+  const serviceBearer = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_BEARER");
+  assert(url === "http://127.0.0.1:54321" && anonKey && serviceKey && anonBearer && serviceBearer,
+    "local Supabase credentials and URL are required");
+
+  const missingJwt = await fetch(`${url}/functions/v1/phase8-group-publish`, {
+    method: "POST",
+    headers: { apikey: anonKey, "content-type": "application/json" },
+    body: "{}",
+  });
+  const missingJwtStatus = missingJwt.status;
+  await missingJwt.arrayBuffer();
+  assert(missingJwtStatus === 401, "Edge gateway rejects a request with no JWT");
+
+  const admin = localClient(url, serviceKey, serviceBearer);
+  const runId = crypto.randomUUID();
+  const password = `M4-${crypto.randomUUID()}-OnlyLocal!`;
+  const create = async (suffix: string) => {
+    const result = await admin.auth.admin.createUser({
+      email: `phase8-m4-${suffix}-${runId}@example.invalid`, password,
+      email_confirm: true, user_metadata: { display_name: `Synthetic ${suffix}` },
+    });
+    assert(!result.error && result.data.user, `create synthetic ${suffix}`);
+    const client = localClient(url, anonKey, anonBearer);
+    const session = await client.auth.signInWithPassword({ email: result.data.user!.email!, password });
+    assert(!session.error && session.data.session, `sign in synthetic ${suffix}`);
+    return { user: result.data.user!, client };
+  };
+  const a = await create("a");
+  const b = await create("b");
+  const c = await create("nonmember");
+  const channels: Array<ReturnType<typeof a.client.channel>> = [];
+  const concurrentClients: Array<typeof a.client> = [];
+
+  const rpc = async (client: typeof a.client, action: string, params: Record<string, unknown> = {}) => {
+    const result = await client.rpc("phase8_group_command", {
+      p_action: action, p_group_id: null, p_invite_code: null,
+      p_member_id: null, p_consent: false, ...params,
+    });
+    assert(!result.error, `group command ${action} succeeds`);
+    return result.data as Record<string, unknown>;
+  };
+  const groupFixture = async () => {
+    const created = await rpc(a.client, "create");
+    const joined = await rpc(b.client, "join", { p_invite_code: created.inviteCode });
+    return { groupId: String(created.id), joined };
+  };
+  const subscribe = async (client: typeof a.client, topic: string) => {
+    const channel = client.channel(topic, {
+      config: { private: true, broadcast: { ack: true } },
+    });
+    let count = 0;
+    let lastPayload: Record<string, unknown> | null = null;
+    const queued: Array<Record<string, unknown>> = [];
+    const waiters: Array<(payload: Record<string, unknown>) => void> = [];
+    channel.on("broadcast", { event: "location" }, (message) => {
+      count++;
+      lastPayload = message.payload as Record<string, unknown>;
+      const waiter = waiters.shift();
+      if (waiter) waiter(lastPayload);
+      else queued.push(lastPayload);
+    });
+    const status = await new Promise<string>((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; resolve("TIMEOUT"); } }, 7000);
+      channel.subscribe((value) => {
+        if (!settled && (value === "SUBSCRIBED" || value === "CHANNEL_ERROR" || value === "TIMED_OUT" || value === "CLOSED")) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(String(value));
+        }
+      });
+    });
+    if (status === "SUBSCRIBED") channels.push(channel);
+    return {
+      channel, status, get count() { return count; }, get lastPayload() { return lastPayload; },
+      next: () => queued.length
+        ? Promise.resolve(queued.shift()!)
+        : new Promise<Record<string, unknown>>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("realtime_message_timeout")), 7000);
+            waiters.push((payload) => { clearTimeout(timer); resolve(payload); });
+          }),
+    };
+  };
+  const publish = async (
+    client: typeof a.client,
+    grant: Record<string, unknown>,
+    generation: number,
+    sequence: number,
+    recordedAt = new Date().toISOString(),
+  ) => {
+    const result = await client.functions.invoke("phase8-group-publish", {
+      body: {
+        groupId: grant.groupId, membershipId: grant.membershipId,
+        publicationId: grant.publicationId, generation, sequence,
+        latitude: 0.001 + sequence / 100000,
+        longitude: 0.002 + sequence / 100000,
+        accuracyMeters: 3, recordedAt,
+      },
+    });
+    const errorContext = (result.error as { context?: unknown } | null)?.context;
+    if (errorContext instanceof Response && !errorContext.bodyUsed) {
+      // Supabase FunctionsHttpError retains the rejected response; consume it
+      // without exposing response content so Deno can verify clean teardown.
+      await errorContext.arrayBuffer();
+    }
+    return result;
+  };
+
+  try {
+    const first = await groupFixture();
+    const startedA = await rpc(a.client, "share_start", { p_group_id: first.groupId, p_consent: true });
+    const grantA = startedA.grant as Record<string, unknown>;
+    const generationA = Number(startedA.generation);
+    const topicA = `driveit:group:${first.groupId}:${generationA}`;
+    const aChannel = await subscribe(a.client, topicA);
+    const bChannel = await subscribe(b.client, topicA);
+    assert(aChannel.status === "SUBSCRIBED" && bChannel.status === "SUBSCRIBED",
+      "A and B join the current private topic");
+    const stranger = await subscribe(c.client, topicA);
+    assert(stranger.status !== "SUBSCRIBED", "nonmember cannot subscribe to a private group topic");
+    if (stranger.status === "SUBSCRIBED") channels.push(stranger.channel);
+
+    const direct = await bChannel.channel.send({
+      type: "broadcast", event: "location", payload: { generation: generationA, sequence: 999 },
+    });
+    assert(direct !== "ok", "authorized client cannot bypass server publish through direct broadcast");
+
+    const firstPublish = await publish(a.client, { ...grantA, groupId: first.groupId }, generationA, 1);
+    assert(!firstPublish.error, "authenticated consented publisher reaches local Edge function");
+    const firstMessage = await bChannel.next();
+    assert(firstMessage.generation === generationA && firstMessage.sequence === 1,
+      "B receives the transient synthetic location through actual Realtime");
+    const staleSample = await publish(
+      a.client, { ...grantA, groupId: first.groupId }, generationA, 2,
+      new Date(Date.now() - 20_000).toISOString(),
+    );
+    assert(Boolean(staleSample.error), "server rejects a sample older than fifteen seconds");
+    const currentSnapshot = await rpc(b.client, "current");
+    const memberRows = currentSnapshot.members as Array<Record<string, unknown>>;
+    assert(memberRows.every((member) => member.location === null),
+      "location samples are not retained in group snapshots");
+
+    await rpc(a.client, "share_pause", { p_group_id: first.groupId });
+    const resumed = await rpc(a.client, "share_start", { p_group_id: first.groupId, p_consent: true });
+    const resumedGrant = resumed.grant as Record<string, unknown>;
+    const resumedGeneration = Number(resumed.generation);
+    const resumedPublish = await publish(a.client, { ...resumedGrant, groupId: first.groupId }, resumedGeneration, 1);
+    assert(!resumedPublish.error, "explicit resume publishes on a new server generation");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert(bChannel.count === 1, "still-connected pre-pause channel receives no post-resume location");
+
+    const staleAfterPause = await publish(a.client, { ...grantA, groupId: first.groupId }, generationA, 2);
+    assert(Boolean(staleAfterPause.error), "old publication generation is rejected after pause");
+    const bForgedPublish = await publish(b.client, { ...resumedGrant, groupId: first.groupId }, resumedGeneration, 2);
+    assert(Boolean(bForgedPublish.error), "B cannot publish using A's owner-bound grant");
+
+    const bMembership = (first.joined.members as Array<Record<string, unknown>>)
+      .find((member) => member.accountId === b.user.id);
+    assert(bMembership, "B can identify its own membership from its authenticated snapshot");
+    const banned = await rpc(a.client, "ban", { p_group_id: first.groupId, p_member_id: bMembership.membershipId });
+    const banGeneration = Number(banned.generation);
+    const afterBan = await publish(a.client, { ...resumedGrant, groupId: first.groupId }, banGeneration, 2);
+    assert(!afterBan.error, "remaining authorized publisher can publish on the new generation after ban");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert(bChannel.count === 1, "banned but still-connected old channel receives no later location");
+    const bannedDirect = await bChannel.channel.send({
+      type: "broadcast", event: "location", payload: { generation: generationA, sequence: 1000 },
+    });
+    assert(bannedDirect !== "ok", "banned still-connected member cannot publish through its old channel");
+    const oldGrant = await publish(b.client, { ...resumedGrant, groupId: first.groupId }, banGeneration, 3);
+    assert(Boolean(oldGrant.error), "banned account cannot publish on the new generation");
+
+    await rpc(a.client, "end", { p_group_id: first.groupId });
+    const endedPublish = await publish(a.client, { ...resumedGrant, groupId: first.groupId }, banGeneration + 1, 3);
+    assert(Boolean(endedPublish.error), "ended group rejects further location publication");
+
+    const second = await groupFixture();
+    const startedB = await rpc(b.client, "share_start", { p_group_id: second.groupId, p_consent: true });
+    const grantB = startedB.grant as Record<string, unknown>;
+    const generationB = Number(startedB.generation);
+    const topicB = `driveit:group:${second.groupId}:${generationB}`;
+    const bChannel2 = await subscribe(b.client, topicB);
+    const aChannel2 = await subscribe(a.client, topicB);
+    assert(bChannel2.status === "SUBSCRIBED" && aChannel2.status === "SUBSCRIBED",
+      "both members join a second current private topic");
+    const beforeLeave = await publish(b.client, { ...grantB, groupId: second.groupId }, generationB, 1);
+    assert(!beforeLeave.error, "member shares before leaving");
+    await aChannel2.next();
+    await rpc(b.client, "leave", { p_group_id: second.groupId });
+    const startedAfterLeave = await rpc(a.client, "share_start", { p_group_id: second.groupId, p_consent: true });
+    const grantAfterLeave = startedAfterLeave.grant as Record<string, unknown>;
+    const generationAfterLeave = Number(startedAfterLeave.generation);
+    const afterLeave = await publish(a.client, { ...grantAfterLeave, groupId: second.groupId }, generationAfterLeave, 1);
+    assert(!afterLeave.error, "remaining member can share on the rotated topic after leave");
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert(bChannel2.count === 1, "still-connected former member channel receives no post-leave location");
+    const leftDirect = await bChannel2.channel.send({
+      type: "broadcast", event: "location", payload: { generation: generationB, sequence: 1000 },
+    });
+    assert(leftDirect !== "ok", "former member cannot publish through its old channel after leaving");
+    await rpc(a.client, "end", { p_group_id: second.groupId });
+
+    const raceGroup = await rpc(a.client, "create");
+    const raceUsers = await Promise.all(Array.from({ length: 10 }, (_, index) => create(`race-${index}`)));
+    concurrentClients.push(...raceUsers.map((entry) => entry.client));
+    const simultaneousJoins = await Promise.all([b.client, c.client, ...concurrentClients].map((client) =>
+      client.rpc("phase8_group_command", {
+        p_action: "join", p_group_id: null, p_invite_code: raceGroup.inviteCode,
+        p_member_id: null, p_consent: false,
+      })
+    ));
+    const admitted = simultaneousJoins.filter((result) => !result.error);
+    const rejected = simultaneousJoins.filter((result) => Boolean(result.error));
+    assert(admitted.length === 9 && rejected.length === 3 && rejected.every((result) =>
+      result.error?.code === "PT409" && result.error.message === "group_full"
+    ), "concurrent joins never exceed ten active members");
+    await rpc(a.client, "end", { p_group_id: raceGroup.id });
+  } finally {
+    await Promise.all(channels.map((channel) => channel.unsubscribe().catch(() => "error")));
+    for (const client of [admin, a.client, b.client, c.client, ...concurrentClients]) {
+      await client.removeAllChannels();
+      client.auth.stopAutoRefresh();
+    }
+    // realtime-js 2.x leaves its disconnect timeout scheduled even after the
+    // socket close callback resolves; let that bounded SDK timer expire so Deno
+    // leak detection verifies the test itself is clean.
+    await new Promise((resolve) => setTimeout(resolve, 10100));
+  }
+});

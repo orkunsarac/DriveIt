@@ -222,12 +222,49 @@ class _RuntimeMatcher extends DeliveryMatcher {
 }
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final releaseAcceptance = const bool.fromEnvironment(
+    'DRIVEIT_RELEASE_ACCEPTANCE',
+  );
+  if (releaseAcceptance) {
+    // Flutter 3.44.8's integration_test reporter serializes
+    // FlutterErrorDetails.toString(), which loses the actual exception.
+    // Preserve its normal recording behavior, but replace the native result
+    // with the concrete exception and stack and emit privacy-safe test stages.
+    final originalReporter = reportTestException;
+    reportTestException = (details, testDescription) {
+      originalReporter(details, testDescription);
+      final diagnostic = <String>[
+        details.exceptionAsString(),
+        if (details.stack != null) details.stack.toString(),
+      ].join('\n');
+      for (var offset = 0; offset < diagnostic.length; offset += 700) {
+        final end = offset + 700 < diagnostic.length
+            ? offset + 700
+            : diagnostic.length;
+        debugPrint(
+          'DRIVEIT_RELEASE_ERROR:$testDescription:'
+          '${diagnostic.substring(offset, end)}',
+        );
+      }
+      binding.results[testDescription] = diagnostic;
+    };
+    debugPrint('DRIVEIT_RELEASE_STAGE:dart_test_main_entered');
+  }
   testWidgets('A owner /drive UI starts, records, saves and isolates drive', (
     tester,
   ) async {
+    if (releaseAcceptance) {
+      expect(const bool.fromEnvironment('dart.vm.product'), isTrue);
+    }
+    if (releaseAcceptance) {
+      debugPrint('DRIVEIT_RELEASE_STAGE:test_body_entered');
+    }
     expect(SupabaseBootstrap.isIsolatedAndroidTest, true);
     expect(await SupabaseBootstrap.initializeIfConfigured(), false);
+    if (releaseAcceptance) {
+      debugPrint('DRIVEIT_RELEASE_STAGE:backend_guard_passed');
+    }
     final originalMaps = maps.GoogleMapsFlutterPlatform.instance;
     final originalLocation = GeolocatorPlatform.instance;
     maps.GoogleMapsFlutterPlatform.instance = DeliveryMaps();
@@ -298,15 +335,28 @@ void main() {
       );
     }
 
+    if (releaseAcceptance) {
+      debugPrint('DRIVEIT_RELEASE_STAGE:before_startDriveIt');
+    }
     await boot();
+    if (releaseAcceptance) {
+      debugPrint('DRIVEIT_RELEASE_STAGE:startDriveIt_completed');
+    }
     try {
       await tester.pump();
+      if (releaseAcceptance) {
+        debugPrint('DRIVEIT_RELEASE_STAGE:first_test_frame_pumped');
+      }
       expect(guestChoices, 1);
       expect(runtime.owner.lease.owner.userId, null);
       expect(
         find.textContaining('Misafir sürüşleri bu cihazda'),
         findsOneWidget,
       );
+      if (const bool.fromEnvironment('DRIVEIT_RELEASE_BOOTSTRAP_ONLY')) {
+        debugPrint('DRIVEIT_RELEASE_STAGE:bootstrap_acceptance_passed');
+        return;
+      }
       await tester.pump(const Duration(seconds: 1));
       final guestId = await _recordGuestThroughUi(tester, runtime);
       await FlutterForegroundTask.saveData(
@@ -383,6 +433,15 @@ void main() {
       expect(rows, hasLength(301));
       expect(activeBinding.owner.userId, a);
       expect(activeBinding.provenance.isProven, true);
+      if (releaseAcceptance) {
+        debugPrint(
+          'DRIVEIT_RELEASE_STATE stage=journal_readback_verified '
+          'ownerEpoch=${runtime.owner.lease.epoch} '
+          'sessionId=${activeBinding.sessionId} '
+          'sourceIdentity=${activeBinding.provenance.sourceIdentity} '
+          'journalPointCount=${rows?.length ?? 0} sidecarState=${activeBinding.state}',
+        );
+      }
       expect(find.text('SÜRÜŞÜ BİTİR'), findsOneWidget);
 
       await tester.tap(find.text('SÜRÜŞÜ BİTİR'));
@@ -415,6 +474,30 @@ void main() {
         'owned_drive_finalization_v1',
         activeSession.id,
       );
+      if (releaseAcceptance) {
+        final journalReceipt = await runtime.gps.journal.transferFor(
+          activeSession.id,
+        );
+        final sidecarVerified = await runtime.gps.ownership.verified(
+          runtime.gps.journalId,
+          activeSession.id,
+        );
+        final telemetry = ownerA.telemetry(activeSession.id);
+        final worldJobs = await ownerA.worldPendingJobs() ?? const [];
+        debugPrint(
+          'DRIVEIT_RELEASE_STATE stage=save_wait_completed '
+          'ownerEpoch=${ownerA.epoch} sessionId=${activeSession.id} '
+          'sourceIdentity=${activeBinding.provenance.sourceIdentity} '
+          'journalReceiptVerified=${journalReceipt?['verified_us'] != null} '
+          'sidecarVerified=$sidecarVerified hiveDrive=${ownerA.read("drives", activeSession.id) != null} '
+          'telemetryPoints=${telemetry?.points.length ?? 0} '
+          'scorePersisted=${ownerA.score(activeSession.id) != null} '
+          'careerDistance=${ownerA.career().totalDistanceMeters} '
+          'finalizationState=${finalization?['state']} '
+          'derivedReady=${finalization?['derivedReady']} '
+          'worldJobs=${worldJobs.length} worldWorkerError=${runtime.owner.worldErrorCode}',
+        );
+      }
       expect(
         ownerA.pendingDriveFinalizations(),
         isEmpty,

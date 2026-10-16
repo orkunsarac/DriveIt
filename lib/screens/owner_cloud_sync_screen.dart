@@ -6,7 +6,7 @@ import '../services/local_owner_lifecycle.dart';
 import '../services/owner_drive_sync_client.dart';
 import '../widgets/local_owner_view.dart';
 
-/// Normal-app M1 entry. Opening this screen never starts network work.
+/// Status view for automatic new-drive sync, with explicit recovery controls.
 class OwnerCloudSyncScreen extends StatefulWidget {
   const OwnerCloudSyncScreen({super.key, required this.lease});
   final LocalOwnerLease lease;
@@ -106,7 +106,7 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Otomatik toplu yükleme kapalı. Misafir ve Cihaz Arşivi sürüşleri gönderilmez.',
+              'Yeni hesap sürüşleri önce bu cihaza kaydedilir, ardından otomatik ve sınırlı biçimde eşitlenir. Eski kayıtlar, Misafir ve Cihaz Arşivi sürüşleri onaysız gönderilmez.',
             ),
             const SizedBox(height: 8),
             Text(
@@ -120,10 +120,15 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
                 'Gerçek hesabınla giriş yapmalısın. Hesap bağlantısı bu sürümde kullanılamıyorsa yeniden dene.',
               ),
             Text(
-              'Bekleyen yerel sürüş: $pending',
+              'Bekleyen hesap sürüşü: $pending',
               key: const Key('cloud_pending_count'),
             ),
             Text(_message, key: const Key('cloud_sync_status')),
+            if (widget.lease.cloudSyncErrorCode != null)
+              const Text(
+                'Senkronizasyon bekliyor. Yerel sürüş korunuyor; bağlantı veya oturum uygun olduğunda sınırlı yeniden deneme yapılacak.',
+                key: Key('cloud_sync_retry_status'),
+              ),
             if (_busy) const LinearProgressIndicator(),
             OutlinedButton(
               key: const Key('cloud_check_connection'),
@@ -175,7 +180,11 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
                         ? 'Telemetri örneği yok; yalnız bu cihazda saklanır'
                         : candidate.state == 'conflict'
                         ? 'Çakışma; veri değiştirilmedi'
-                        : 'Yerelde bekliyor'}',
+                        : candidate.state == 'sending'
+                        ? 'Buluta yükleniyor'
+                        : candidate.state == 'retryableFailure'
+                        ? 'Senkronizasyon hatası; yeniden denenebilir'
+                        : 'Senkronizasyon bekliyor'}',
                   ),
                   trailing: TextButton(
                     key: ValueKey('cloud_upload_${candidate.drive.id}'),
@@ -199,8 +208,10 @@ class _OwnerCloudSyncScreenState extends State<OwnerCloudSyncScreen> {
                           },
                     child: Text(
                       candidate.state == 'acknowledged'
-                          ? 'Tekrar Dene'
-                          : 'Yükle',
+                          ? 'Durum'
+                          : candidate.state == 'retryableFailure'
+                          ? 'Yeniden Dene'
+                          : 'Şimdi Eşitle',
                     ),
                   ),
                 ),

@@ -314,7 +314,7 @@ void main() {
           GroupSyntheticLocation(
             latitude: 10,
             longitude: 20,
-            recordedAt: now.add(const Duration(seconds: 1)),
+            recordedAt: now.add(const Duration(seconds: 4)),
             sequence: 2,
           ),
         ),

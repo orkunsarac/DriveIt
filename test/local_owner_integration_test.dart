@@ -77,14 +77,13 @@ void main() {
   late GpsOwnershipStore sidecar;
   late LocalOwnerGpsBridge gps;
   test(
-    'slow account backend does not block local writes or leak after owner change',
+    'empty automatic outbox skips backend and owner changes fence local writes',
     () async {
       final sandbox = await Directory.systemTemp.createTemp(
         'driveit_account_sync_',
       );
       final networkAuth = TestAuth();
       final remotes = <String, _BlockedAccountRemote>{};
-      final firstRequest = Completer<void>();
       final owner = LocalOwnerLifecycle(
         gate: LocalOwnershipGate.synthetic(),
         auth: networkAuth,
@@ -94,19 +93,16 @@ void main() {
         accountSyncAdapter: (lease) {
           final remote = _BlockedAccountRemote(lease.owner.userId!);
           remotes[lease.owner.userId!] = remote;
-          if (lease.owner.userId == a && !firstRequest.isCompleted) {
-            firstRequest.complete();
-          }
-          if (lease.owner.userId != a) remote.ready.complete();
           return remote;
         },
       );
       try {
         await owner.start();
-        // Startup's local reconciliation precedes the network request.
-        await firstRequest.future.timeout(const Duration(seconds: 2));
-        final aRemote = remotes[a]!;
-        await aRemote.entered.future.timeout(const Duration(seconds: 2));
+        await owner.syncSettled;
+        // Composition may create its lightweight adapter, but no network
+        // verification/download is allowed without eligible automatic work.
+        expect(remotes.keys, {a});
+        expect(remotes[a]!.entered.isCompleted, isFalse);
         final oldWork = owner.syncSettled;
         await owner
             .withOwnerOperation(
@@ -116,19 +112,22 @@ void main() {
             .timeout(const Duration(seconds: 2));
         networkAuth.emit(b);
         await owner.settled.timeout(const Duration(seconds: 2));
-        expect(owner.lease.read('drive_names', 'local-write'), null);
-        aRemote.ready.complete();
-        await oldWork;
         await owner.syncSettled;
-        expect(aRemote.downloads, 0);
-        expect(remotes[b]!.downloads, 1);
+        expect(owner.lease.read('drive_names', 'local-write'), null);
+        await oldWork;
+        expect(remotes.keys, {a, b});
+        expect(
+          remotes.values.every((remote) => !remote.entered.isCompleted),
+          isTrue,
+        );
         networkAuth.emit(null);
         await owner.settled;
         await owner.syncSettled;
-        expect(remotes.keys.toSet(), {
-          a,
-          b,
-        }); // Guest never creates a transport.
+        expect(remotes.keys, {a, b}); // Guest never creates a transport.
+        expect(
+          remotes.values.every((remote) => !remote.entered.isCompleted),
+          isTrue,
+        );
       } finally {
         for (final remote in remotes.values) {
           if (!remote.ready.isCompleted) remote.ready.complete();

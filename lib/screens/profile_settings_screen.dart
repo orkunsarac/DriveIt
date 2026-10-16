@@ -66,6 +66,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   bool _settingBusy = false;
   late bool _showIntro;
   String? _loadError;
+  bool _transferAvailable = false;
 
   @override
   void initState() {
@@ -84,6 +85,22 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
     _loadProfile();
     _loadCloudProfile();
     _loadVersion();
+    _loadTransferAvailability();
+  }
+
+  Future<void> _loadTransferAvailability() async {
+    final lease = widget.ownerLease;
+    if (lease?.accountTransferAvailable != true) return;
+    try {
+      final available = await lease!.accountTransferAvailability();
+      if (_current) {
+        setState(
+          () => _transferAvailable = available.guest > 0 || available.legacy,
+        );
+      }
+    } catch (_) {
+      /* Active recording or revoked owner: retry after returning. */
+    }
   }
 
   @override
@@ -528,6 +545,28 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 ),
                 _section('DRIVEIT HESABI'),
                 DriveItAccountSection(accountGateway: _accountGateway),
+                if (_transferAvailable &&
+                    widget.ownerLease?.accountTransferAvailable == true)
+                  _card(
+                    ListTile(
+                      key: const Key('profile_account_transfer'),
+                      leading: const Icon(
+                        Icons.move_to_inbox_outlined,
+                        color: _blue,
+                      ),
+                      title: const Text('Sürüşleri Hesabıma Aktar'),
+                      subtitle: const Text(
+                        'Bu cihazdaki Misafir ve eski sürüşleri incele',
+                      ),
+                      trailing: const Icon(Icons.chevron_right, size: 20),
+                      onTap: () async {
+                        await Navigator.of(
+                          context,
+                        ).pushNamed('/account-transfer');
+                        await _loadTransferAvailability();
+                      },
+                    ),
+                  ),
                 if (widget.ownerLease != null) ...[
                   _section('BULUT SENKRONİZASYONU'),
                   _card(
@@ -539,7 +578,7 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                       ),
                       title: const Text('Bulut Senkronizasyonu'),
                       subtitle: const Text(
-                        'Kontrollü DEV • Yalnız seçtiğin hesap sürüşü',
+                        'Hesap sürüşleri • Senkronizasyon durumu',
                       ),
                       trailing: const Icon(Icons.chevron_right, size: 20),
                       onTap: () =>

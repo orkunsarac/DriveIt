@@ -130,6 +130,26 @@ void main() {
     await hive.close();
     await root.delete(recursive: true);
   });
+  test(
+    'read-only archive grant cannot mutate sources; transfer grant stays owner bound',
+    () async {
+      final readOnly = await access().open(runtime.lease);
+      expect(() => readOnly.requireFor(runtime.lease), throwsStateError);
+      final transfer = await DeviceDriveArchiveAccess(
+        gate: LocalOwnershipGate.synthetic(),
+        snapshot: snapshot,
+        authorizer: authorization,
+        purpose: DeviceArchiveAccessPurpose.accountTransfer,
+      ).open(runtime.lease);
+      transfer.requireFor(runtime.lease);
+      auth.emit(b);
+      await runtime.settled;
+      expect(() => transfer.requireFor(runtime.lease), throwsStateError);
+      readOnly.dispose();
+      transfer.dispose();
+    },
+  );
+
   testWidgets(
     'background revokes granted context permanently, resume cannot revive it',
     (tester) async {

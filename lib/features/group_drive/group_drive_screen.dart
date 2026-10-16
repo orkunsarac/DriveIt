@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../services/gps_session_ownership.dart';
 import '../../services/local_owner_lifecycle.dart';
@@ -32,9 +33,11 @@ class GroupDriveScreen extends StatelessWidget {
           body: Center(child: Text('Grup Sürüşü için hesap gerekli.')),
         );
       }
-      // This delivery has no real online transport. Do not accidentally mount
-      // one behind the simulator UI or start it from production navigation.
-      if (!service.isSimulation) return const OwnerAccessUnavailable();
+      // A remote adapter is mounted only by an explicit post-acceptance build;
+      // it still needs the visible-app GPS source before the route is usable.
+      if (!service.isSimulation && gpsSource == null) {
+        return const OwnerAccessUnavailable();
+      }
       return _GroupDrivePage(
         key: ObjectKey(service),
         lease: lease,
@@ -89,9 +92,20 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       );
       _gps!.addListener(_onGpsChanged);
     }
-    _subscription = _client.changes.listen((value) {
-      if (_current) _showSnapshot(value);
-    });
+    _subscription = _client.changes.listen(
+      (value) {
+        if (_current) _showSnapshot(value);
+      },
+      onError: (Object error) {
+        if (_current) {
+          setState(
+            () => _error = _description(
+              error is GroupDriveException ? error.code : 'remote_unavailable',
+            ),
+          );
+        }
+      },
+    );
     unawaited(_run(_client.current));
   }
 
@@ -142,7 +156,9 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         content: Text(
           _gps == null
               ? 'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.'
-              : 'Konum izni gereklidir. Bu cihazın GPS noktaları yalnız yerel fake grupta gösterilir; uzak sunucuya gönderilmez. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.',
+              : (widget.service.isSimulation
+                    ? 'Konum izni gereklidir. Bu cihazın GPS noktaları yalnız yerel fake grupta gösterilir; uzak sunucuya gönderilmez. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.'
+                    : 'Konum izni gereklidir. GPS noktaları yalnız bu grubun yetkili üyelerine geçici olarak iletilir; geçmiş rota olarak saklanmaz. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.'),
         ),
         actions: [
           TextButton(
@@ -200,6 +216,15 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     });
   }
 
+  Future<void> _copyInviteCode(String code) async {
+    if (code.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: code));
+    if (!mounted || !_current) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Davet kodu kopyalandı')));
+  }
+
   Future<void> _withdrawSharing(bool pause) async {
     final group = _group;
     if (!_current || group?.isActive != true) return;
@@ -252,7 +277,7 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         title: Text(end ? 'Grubu sonlandır?' : 'Gruptan ayrıl?'),
         content: Text(
           end
-              ? 'Bu test grubu bütün katılımcılar için sona erecek.'
+              ? 'Bu grup bütün katılımcılar için sona erecek.'
               : 'Normal sürüş kaydın devam eder. Yönetici ayrılırsa yetki ilk katılan üyeye geçer.',
         ),
         actions: [
@@ -324,8 +349,10 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
-            const Text(
-              'Yerel test • Fake grup servisi',
+            Text(
+              widget.service.isSimulation
+                  ? 'Yerel test • Fake grup servisi'
+                  : 'DriveIt Grup Sürüşü • Canlı DEV servisi',
               style: TextStyle(
                 color: Color(0xffbd82ff),
                 fontWeight: FontWeight.bold,
@@ -335,13 +362,13 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
             Text(
               _gps == null
                   ? 'Gerçek çevrimiçi grup değildir. Canlı konum paylaşımı kapalı.'
-                  : 'Yerel fake grup • Cihaz GPS’i • Yalnız uygulama görünürken',
+                  : 'Yetkili grup üyeleri • Cihaz GPS’i • Yalnız uygulama görünürken',
               style: TextStyle(color: Colors.white70),
             ),
             Text(
               _gps == null
                   ? 'Haritadaki bütün noktalar sentetik test verisidir; gerçek GPS okunmaz.'
-                  : 'GPS paylaşımı ayrı onay ve konum izni ister. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.',
+                  : 'GPS paylaşımı ayrı onay ve konum izni ister. Konum geçmiş rota olarak saklanmaz. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.',
               style: TextStyle(color: Colors.white70),
             ),
             if (_busy) const LinearProgressIndicator(),
@@ -354,12 +381,22 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
                   style: const TextStyle(color: Colors.orangeAccent),
                 ),
               ),
+            if (_error != null)
+              TextButton(
+                key: const Key('group_retry'),
+                onPressed: _busy ? null : () => _run(_client.current),
+                child: const Text('Yeniden Dene'),
+              ),
             if (group != null) ...[
               const SizedBox(height: 16),
               SizedBox(
                 key: const Key('group_map_workspace'),
                 height: 280,
-                child: GroupDriveMap(lease: widget.lease, group: group),
+                child: GroupDriveMap(
+                  lease: widget.lease,
+                  group: group,
+                  isSimulation: widget.service.isSimulation,
+                ),
               ),
               const SizedBox(height: 12),
               Text(
@@ -394,13 +431,13 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
                     style: const TextStyle(color: Colors.white),
                   ),
                   subtitle: Text(
-                    '${member.role == GroupDriveRole.administrator ? 'Yönetici' : 'Üye'} • ${_sharingLabel(member.sharingStatus)}${member.location == null ? '' : ' • ${member.location!.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS'}, ${group.observedAt.difference(member.location!.recordedAt).inSeconds} sn önce'}',
+                    '${member.role == GroupDriveRole.administrator ? 'Yönetici' : 'Üye'} • ${_memberSharingLabel(member)}${member.location == null ? '' : ' • ${member.location!.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS'}, ${group.observedAt.difference(member.location!.recordedAt).inSeconds} sn önce'}',
                     style: const TextStyle(color: Colors.white70),
                   ),
                 ),
               if (active) ...[
                 Text(
-                  '${_gps == null ? 'Sentetik' : 'GPS'} paylaşım: ${_sharingLabel(own!.sharingStatus)}',
+                  '${_gps == null ? 'Sentetik' : 'GPS'} paylaşım: ${_memberSharingLabel(own!, isOwn: true)}',
                   key: const Key('group_sharing_status'),
                   style: const TextStyle(color: Colors.white),
                 ),
@@ -442,10 +479,24 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
                   'Davet kodu',
                   style: TextStyle(color: Colors.white70),
                 ),
-                SelectableText(
-                  group.invite.code,
-                  key: const Key('group_invite_code'),
-                  style: const TextStyle(color: Colors.white),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SelectableText(
+                        group.invite.code,
+                        key: const Key('group_invite_code'),
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    ),
+                    IconButton(
+                      key: const Key('group_invite_copy'),
+                      tooltip: 'Davet kodunu kopyala',
+                      onPressed: group.invite.code.isEmpty
+                          ? null
+                          : () => _copyInviteCode(group.invite.code),
+                      icon: const Icon(Icons.copy),
+                    ),
+                  ],
                 ),
                 SelectableText(
                   group.invite.link.toString(),
@@ -515,12 +566,54 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     GroupSharingStatus.paused => 'DURAKLATILDI',
   };
 
+  String _memberSharingLabel(GroupDriveMember member, {bool isOwn = false}) {
+    if (member.sharingStatus != GroupSharingStatus.sharing) {
+      return _sharingLabel(member.sharingStatus);
+    }
+    final point = member.location;
+    final observedAt = _group?.observedAt;
+    if (point != null &&
+        observedAt != null &&
+        isGroupGpsTimestampFresh(point.recordedAt, observedAt)) {
+      return point.origin == GroupLocationOrigin.deviceGps
+          ? 'CANLI GPS YAYINDA'
+          : 'SENTETİK TEST KONUMU YAYINDA';
+    }
+    if (point != null) return 'GPS ÖRNEĞİ ESKİ • YENİ KONUM BEKLENİYOR';
+    if (!isOwn || _gps?.sampleState == null) return 'KONUM BEKLENİYOR';
+    return switch (_gps!.sampleState!) {
+      'waiting_for_gps' => 'GPS ÖRNEĞİ BEKLENİYOR',
+      'publishing' => 'GPS ÖRNEĞİ GÖNDERİLİYOR',
+      'published' => 'SUNUCU YAYINI KABUL ETTİ • HARİTA BEKLENİYOR',
+      final state when state.startsWith('rejected_') =>
+        'GPS ÖRNEĞİ REDDEDİLDİ: ${_sampleRejectLabel(state.substring(9))}',
+      _ => 'KONUM BEKLENİYOR',
+    };
+  }
+
+  static String _sampleRejectLabel(String reason) => switch (reason) {
+    'mocked' => 'MOCK KONUM',
+    'before_grant' => 'PAYLAŞIM BAŞLANGICINDAN ESKİ',
+    'future_timestamp' => 'GELECEK ZAMAN DAMGASI',
+    'stale' => '15 SANİYEDEN ESKİ',
+    'invalid_accuracy' => 'GEÇERSİZ DOĞRULUK',
+    'accuracy_over_75m' => 'DOĞRULUK 75 M ÜZERİNDE',
+    'invalid_coordinates' || 'coordinates_out_of_range' => 'GEÇERSİZ KOORDİNAT',
+    'non_monotonic_timestamp' => 'SIRASIZ ZAMAN DAMGASI',
+    _ => 'GEÇERSİZ GPS ÖRNEĞİ',
+  };
+
   static String _description(String code) => switch (code) {
-    'offline' => 'Test servisine ulaşılamadı. Normal sürüş kaydı etkilenmez.',
+    'device_clock_out_of_sync' =>
+      'Cihaz saati sunucuyla uyumlu değil. Telefonun otomatik tarih ve saat ayarını açıp yeniden dene. GPS paylaşımı başlamadı.',
+    'realtime_unavailable' || 'remote_unavailable' =>
+      'Canlı grup bağlantısı kurulamadı. İnternet bağlantını kontrol edip yeniden dene.',
+    'offline' => 'Grup servisine ulaşılamadı. Normal sürüş kaydı etkilenmez.',
     'invalid_invite' => 'Davet kodu veya bağlantısı geçersiz.',
     'group_full' => 'Grup dolu; en fazla 10 kişi katılabilir.',
     'group_inactive' => 'Grup sona erdi; katılım ve uzatma kapalı.',
-    'admin_required' => 'Bu işlem yalnız yöneticiye açık.',
+    'admin_required' ||
+    'administrator_required' => 'Bu işlem yalnız yöneticiye açık.',
     'membership_required' => 'Bu gruba erişim yetkin yok.',
     'already_in_group' => 'Önce mevcut gruptan ayrılmalısın.',
     'extension_limit' => 'İki uzatma hakkı kullanıldı.',
@@ -530,6 +623,11 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       'Paylaşım oturumu kapandı; yeni konum gönderilmedi.',
     'stale_location' => 'Eski veya sırasız sentetik konum reddedildi.',
     'invalid_location' => 'Sentetik konum geçersiz.',
+    'group_generation_revoked' =>
+      'Grup yetkisi değişti; konum paylaşımı durduruldu.',
+    'location_invalid_or_stale' =>
+      'Eski veya geçersiz GPS örneği sunucu tarafından reddedildi.',
+    'response_invalid' => 'Sunucudan beklenmeyen grup yanıtı alındı.',
     _ => 'Grup işlemi tamamlanamadı ($code).',
   };
   static String _gpsDescription(String code) => switch (code) {

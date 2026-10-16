@@ -179,6 +179,45 @@ void main() {
     },
   );
   test(
+    'GPS clock skew matches server: up to 3s future, max age stays 15s',
+    () async {
+      expect(
+        isGroupGpsTimestampFresh(now.add(const Duration(seconds: 3)), now),
+        isTrue,
+      );
+      expect(
+        isGroupGpsTimestampFresh(
+          now.add(const Duration(seconds: 3, milliseconds: 1)),
+          now,
+        ),
+        isFalse,
+      );
+      expect(
+        isGroupGpsTimestampFresh(
+          now.subtract(const Duration(seconds: 15)),
+          now,
+        ),
+        isTrue,
+      );
+      expect(
+        isGroupGpsTimestampFresh(
+          now.subtract(const Duration(seconds: 15, milliseconds: 1)),
+          now,
+        ),
+        isFalse,
+      );
+
+      await gps.start(group.id, consent: true);
+      await emit(groupPosition(now.add(const Duration(seconds: 2))));
+      expect(mine((await client.current())!).location?.sequence, 1);
+      expect(gps.sampleState, 'published');
+
+      await emit(groupPosition(now.add(const Duration(seconds: 4))));
+      expect(gps.sampleState, 'rejected_future_timestamp');
+      expect(mine((await client.current())!).location?.sequence, 1);
+    },
+  );
+  test(
     'pause cancels only owned listener; resume and restart require new consent',
     () async {
       await gps.start(group.id, consent: true);
@@ -218,7 +257,7 @@ void main() {
         groupPosition(now.subtract(const Duration(seconds: 20))),
         groupPosition(now, accuracy: 80),
         groupPosition(now, mocked: true),
-        groupPosition(now.add(const Duration(seconds: 1))),
+        groupPosition(now.add(const Duration(seconds: 4))),
         groupPosition(now, latitude: 100),
       ]) {
         await emit(p);

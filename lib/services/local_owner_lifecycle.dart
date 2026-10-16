@@ -18,6 +18,7 @@ import '../features/my_world/models/world_index_snapshot.dart';
 import '../features/my_world/models/world_rebuild_result.dart';
 import '../features/my_world/models/world_pending_job.dart';
 import '../features/my_world/models/validated_road.dart';
+import '../features/my_world/models/world_processing.dart';
 import '../features/my_world/services/my_world_rebuild_service.dart';
 import '../features/my_world/services/world_record_processing_service.dart';
 import '../features/drive_score/models/drive_score_algorithm_version.dart';
@@ -27,6 +28,7 @@ import '../features/my_world/services/world_trace_detail_service.dart';
 import '../features/my_world/models/world_map_read_model.dart';
 import '../features/my_world/services/my_world_validation_service.dart';
 import '../features/my_world/services/road_matching_service.dart';
+import '../features/my_world/services/legacy_world_backfill.dart';
 import '../features/my_world/services/world_pending_job_processor.dart';
 import '../features/my_world/services/world_index_mutation_planner.dart';
 import '../features/my_world/config/my_world_rules.dart';
@@ -36,6 +38,8 @@ import 'owned_drive_finalization.dart';
 import 'gps_session_transfer.dart';
 import 'owner_drive_sync_client.dart';
 import 'owner_sync_causality.dart';
+import 'account_drive_transfer.dart';
+import 'device_drive_archive.dart';
 
 /// Auth boundary exposes only a stable UUID; never a Session/token/profile.
 abstract interface class LocalOwnerAuth {
@@ -239,6 +243,135 @@ class LocalOwnerLease implements PosterOperationBoundary {
       _deletionClient.deletionStatus(id)?['state'] as String?;
   String? cloudDeletionErrorCode(String id) =>
       _deletionClient.deletionStatus(id)?['error'] as String?;
+  String? get cloudSyncErrorCode => _runtime.syncErrorCode;
+
+  bool get accountTransferAvailable =>
+      isCurrent &&
+      owner.kind == GpsOwnerKind.account &&
+      _runtime.transferSources != null;
+
+  Future<T> _withTransfer<T>(
+    Future<T> Function(AccountDriveTransfer, AccountDriveTransferSources)
+    action,
+  ) => _runtime.withOwnerOperation((current) async {
+    requireCurrent();
+    if (!identical(current, this) || !accountTransferAvailable) {
+      throw StateError('transfer_account_required');
+    }
+    if (await _runtime.driveInProgress()) {
+      throw StateError('transfer_recording_active');
+    }
+    requireCurrent();
+    final sources = _runtime.transferSources!;
+    final guest = await sources.openGuest();
+    try {
+      requireCurrent();
+      return await action(
+        AccountDriveTransfer(
+          target: _store,
+          guest: guest,
+          requireCurrent: requireCurrent,
+        ),
+        sources,
+      );
+    } finally {
+      await guest.close();
+    }
+  });
+
+  Future<({int guest, bool legacy})> accountTransferAvailability() =>
+      _withTransfer((transfer, sources) async {
+        final count = transfer.guestIds().length;
+        final legacy = await sources.hasLegacy();
+        requireCurrent();
+        return (guest: count, legacy: legacy);
+      });
+
+  Future<bool> shouldPromptGuestTransfer() => _withTransfer((
+    transfer,
+    _,
+  ) async {
+    if (transfer.guestIds().isEmpty) return false;
+    final key = 'guest_transfer_prompt:${transfer.guestPromptFingerprint()}';
+    if (read('profile', key) != null) return false;
+    await put('profile', key, true);
+    requireCurrent();
+    return true;
+  });
+
+  Future<AccountTransferResult> transferGuestToAccount() async {
+    final result = await _withTransfer(
+      (transfer, _) => transfer.transferGuest(),
+    );
+    requireCurrent();
+    _runtime.scheduleOwnerSync(this);
+    _runtime.scheduleWorldJobs(this);
+    _runtime._personalChanged(this);
+    return result;
+  }
+
+  Future<DeviceDriveArchiveContext> authorizeArchiveTransfer() async {
+    requireCurrent();
+    if (!accountTransferAvailable) {
+      throw StateError('transfer_account_required');
+    }
+    return DeviceDriveArchiveAccess(
+      gate: _runtime.gate,
+      snapshot: DeviceDriveArchiveSnapshot.empty(),
+      authorizer: _runtime.transferSources!.authorizer,
+      purpose: DeviceArchiveAccessPurpose.accountTransfer,
+    ).open(this);
+  }
+
+  Future<T> _withLegacyTransfer<T>(
+    DeviceDriveArchiveContext context,
+    Future<T> Function(AccountDriveTransfer, LegacyTransferSource) action,
+  ) => _withTransfer((transfer, sources) async {
+    context.requireFor(this);
+    final legacy = await sources.openLegacy(context);
+    try {
+      context.requireFor(this);
+      return await action(
+        AccountDriveTransfer(
+          target: transfer.target,
+          guest: transfer.guest,
+          requireCurrent: () {
+            requireCurrent();
+            context.requireFor(this);
+          },
+        ),
+        legacy,
+      );
+    } finally {
+      await legacy.close();
+    }
+  });
+
+  Future<List<LegacyTransferRow>> legacyTransferRows(
+    DeviceDriveArchiveContext context,
+  ) => _withLegacyTransfer(context, (_, source) => source.read());
+
+  Future<AccountTransferResult> transferArchiveToAccount(
+    DeviceDriveArchiveContext context,
+  ) async {
+    final result = await _withLegacyTransfer(
+      context,
+      (transfer, source) => transfer.transferLegacy(source),
+    );
+    requireCurrent();
+    _runtime._personalChanged(this);
+    return result;
+  }
+
+  Future<int> cleanIncompatibleArchive(
+    DeviceDriveArchiveContext context,
+    List<LegacyTransferRow> rows, {
+    required bool confirmed,
+  }) => _withLegacyTransfer(
+    context,
+    (transfer, source) =>
+        transfer.cleanIncompatible(source, rows, confirmed: confirmed),
+  );
 
   Future<bool> deleteCloudHistory(
     String id, {
@@ -320,6 +453,9 @@ class LocalOwnerLease implements PosterOperationBoundary {
     await _manualRemote().verifyBackend();
     requireCurrent();
   });
+
+  bool get automaticAccountSyncForNewDrives =>
+      owner.kind == GpsOwnerKind.account && _runtime.automaticAccountSync;
 
   /// User consent selects exactly one eligible drive; never drains the queue.
   Future<bool> uploadSelectedDrive(String driveId) => _manualSync(() async {
@@ -476,6 +612,163 @@ class LocalOwnerLease implements PosterOperationBoundary {
         .toList();
   }
 
+  Future<LegacyWorldBackfillPreview> previewLegacyWorldBackfill() async {
+    requireCurrent();
+    if (owner.kind != GpsOwnerKind.account) {
+      return const LegacyWorldBackfillPreview(
+        inspected: 0,
+        candidates: [],
+        alreadyProcessed: 0,
+        ineligible: 0,
+      );
+    }
+    final snapshot = await _store.worldIndex(owner).getActiveSnapshot();
+    requireCurrent();
+    return LegacyWorldBackfill.inspect(
+      store: _store,
+      owner: owner,
+      drives: drives(),
+      snapshot: snapshot,
+    );
+  }
+
+  /// Explicit, consent-gated local World recovery. The caller must explain
+  /// that route coordinates are sent to the configured road-matching provider.
+  /// No History, score, Career, sync outbox, or legacy archive row is written.
+  Future<LegacyWorldBackfillResult> backfillLegacyWorld(
+    LegacyWorldBackfillPreview preview, {
+    required bool mapMatchingConsent,
+  }) => run(() async {
+    if (owner.kind != GpsOwnerKind.account) {
+      throw StateError('legacy_world_account_required');
+    }
+    if (!mapMatchingConsent) {
+      throw StateError('legacy_world_map_matching_consent_required');
+    }
+    final matching = _runtime.worldRoadMatching;
+    if (matching == null) throw StateError('Owner World matching unavailable');
+    var processed = 0, already = 0, ineligible = 0, failed = 0;
+    final repositories = _store.repositories(owner);
+    final world = _store.worldSources(owner);
+    final index = _store.worldIndex(owner);
+    final lifecycle = ScopedLifecycle(_store);
+    Future<List<CanonicalTelemetryPoint>> noLegacyTelemetry(String _) async =>
+        const [];
+    final validation = MyWorldValidationService(
+      repository: world,
+      roadMatching: matching,
+      telemetryLoader: noLegacyTelemetry,
+      hasDeletion: lifecycle.worldHasDeletion,
+    );
+    final processor = WorldRecordProcessingService(
+      repository: world,
+      indexRepository: index,
+      telemetryLoader: noLegacyTelemetry,
+      worldDeleted: lifecycle.worldDeleted,
+      traceFilter: lifecycle.filterTraces,
+    );
+    for (final candidate in preview.candidates) {
+      requireCurrent();
+      final source = repositories.source(candidate.driveId);
+      final drive = source?.drive;
+      if (drive == null ||
+          !LegacyWorldBackfill.hasVerifiedLegacyTransfer(
+            _store,
+            owner,
+            candidate.driveId,
+          ) ||
+          LegacyWorldBackfill.routeFingerprint(drive) !=
+              candidate.routeFingerprint ||
+          LegacyWorldBackfill.routeDistanceMeters(drive) <
+              MyWorldRules.minimumValidDistanceMeters ||
+          lifecycle.worldHasDeletion(drive.id)) {
+        ineligible++;
+        continue;
+      }
+      final currentSnapshot = await index.getActiveSnapshot();
+      requireCurrent();
+      if (currentSnapshot.hasProcessedDrive(drive.id)) {
+        already++;
+        continue;
+      }
+      await _store.put(owner, LegacyWorldBackfill.markerBox, drive.id, {
+        'version': 1,
+        'status': 'matching',
+        'ownerScope': owner.targetStore,
+        'ownerEpoch': epoch,
+        'routeFingerprint': candidate.routeFingerprint,
+        'provenance': 'legacy_device_archive_route_v1',
+        'score': null,
+        'updatedAt': DateTime.now().toUtc().toIso8601String(),
+      });
+      requireCurrent();
+      try {
+        final validated = await validation.validateDrive(drive);
+        requireCurrent();
+        final road = validated.road;
+        if (validated.state != WorldProcessingState.readyForWorldProcessing ||
+            road == null ||
+            road.processingVersion !=
+                MyWorldRules.validatedRoadProcessingVersion ||
+            road.validDistanceMeters <
+                MyWorldRules.minimumValidDistanceMeters ||
+            road.geometry.length < 2) {
+          if (validated.state ==
+                  WorldProcessingState.rejectedInsufficientValidDistance ||
+              validated.state == WorldProcessingState.failedPermanent) {
+            ineligible++;
+          } else {
+            failed++;
+          }
+          continue;
+        }
+        await _store.put(owner, LegacyWorldBackfill.markerBox, drive.id, {
+          'version': 1,
+          'status': 'validated',
+          'ownerScope': owner.targetStore,
+          'ownerEpoch': epoch,
+          'routeFingerprint': candidate.routeFingerprint,
+          'provenance': 'legacy_device_archive_route_v1',
+          'validatedRoadId': road.id,
+          'score': null,
+          'updatedAt': DateTime.now().toUtc().toIso8601String(),
+        });
+        requireCurrent();
+        final result = await processor.processReadyDrive(drive.id);
+        requireCurrent();
+        if (result.outcome == WorldRecordProcessingOutcome.processed ||
+            result.outcome == WorldRecordProcessingOutcome.alreadyProcessed) {
+          await _store.put(owner, LegacyWorldBackfill.markerBox, drive.id, {
+            'version': 1,
+            'status': 'processed',
+            'ownerScope': owner.targetStore,
+            'ownerEpoch': epoch,
+            'routeFingerprint': candidate.routeFingerprint,
+            'provenance': 'legacy_device_archive_route_v1',
+            'validatedRoadId': road.id,
+            'traceCount': result.traceCount,
+            'score': null,
+            'updatedAt': DateTime.now().toUtc().toIso8601String(),
+          });
+          processed++;
+        } else {
+          failed++;
+        }
+      } catch (_) {
+        requireCurrent();
+        failed++;
+      }
+    }
+    requireCurrent();
+    if (processed > 0) _worldChanged();
+    return LegacyWorldBackfillResult(
+      processed: processed,
+      alreadyProcessed: already,
+      ineligible: ineligible,
+      failed: failed,
+    );
+  });
+
   Future<MyWorldMapData> worldMap() async {
     requireCurrent();
     final value = await MyWorldReadService(
@@ -546,7 +839,14 @@ class LocalOwnerLease implements PosterOperationBoundary {
       driveLoader: () async => sources.map((s) => s.drive).toList(),
       telemetryLoader: telemetry,
       processingService: processor,
-      driveEligibility: (id) => byId[id]?.score != null,
+      driveEligibility: (id) =>
+          byId[id]?.score != null ||
+          (byId[id] != null &&
+              LegacyWorldBackfill.markerMatches(
+                _store,
+                owner,
+                byId[id]!.drive,
+              )),
       worldDeleted: lifecycle.worldDeleted,
       traceFilter: lifecycle.filterTraces,
     ).rebuild(targetVersion: DriveScoreAlgorithmVersion.v1, reason: reason);
@@ -700,9 +1000,13 @@ class LocalOwnerLease implements PosterOperationBoundary {
         traceFilter: lifecycle.filterTraces,
       ),
       driveLoader: (id) => repositories.source(id)?.drive,
-      driveEligibility: (id) =>
-          !lifecycle.worldHasDeletion(id) &&
-          repositories.source(id)?.score != null,
+      driveEligibility: (id) {
+        if (lifecycle.worldHasDeletion(id)) return false;
+        final source = repositories.source(id);
+        return source?.score != null ||
+            (source != null &&
+                LegacyWorldBackfill.markerMatches(_store, owner, source.drive));
+      },
       drainScope: _store.path,
     ).drain();
     _worldChanged();
@@ -780,7 +1084,9 @@ class LocalOwnerLease implements PosterOperationBoundary {
         binding: binding,
         ownerEpoch: epoch,
       );
-      await finalization.prepare();
+      await finalization.prepare(
+        automaticSyncEligible: automaticAccountSyncForNewDrives,
+      );
       final sink = ScopedGpsTransferSink(_store, binding);
       await OwnedGpsSessionCoordinator(
         journal: journal,
@@ -859,7 +1165,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     this.syncRemoteForTesting,
     this.accountSyncAdapter,
     this.automaticAccountSync = true,
+    this.automaticCloudDeletionRetry = true,
     this.cloudDeletionEnabled = false,
+    this.transferSources,
   }) {
     if (accountSyncAdapter != null &&
         (!gate.enabled || syncRemoteForTesting != null)) {
@@ -879,7 +1187,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
   accountSyncAdapter;
   final bool automaticAccountSync;
+  final bool automaticCloudDeletionRetry;
   final bool cloudDeletionEnabled;
+  final AccountDriveTransferSources? transferSources;
   final Set<int> _manualSyncEpochs = {};
   final Set<int> _deletionRetryEpochs = {};
   Future<void> _deletionWork = Future<void>.value();
@@ -948,20 +1258,20 @@ class LocalOwnerLifecycle extends ChangeNotifier {
                   ? accountSyncAdapter?.call(captured)
                   : null;
               if (accountRemote != null) {
+                final worker = OwnerDriveSyncWorker(client: client);
+                final pending = client.automaticPendingKeys().take(4).toList();
+                if (pending.isEmpty) {
+                  if (captured.isCurrent) _syncErrorCode = null;
+                  return;
+                }
                 await accountRemote.verifyBackend();
                 captured.requireCurrent();
-                final result = await OwnerDriveSyncWorker(
-                  client: client,
-                ).runStagedOnce(accountRemote, limit: 4);
-                captured.requireCurrent();
-                final page = await client.fetchDownloadPage(
+                final result = await worker.runStagedOnce(
                   accountRemote,
-                  limit: 1,
+                  limit: 4,
+                  automaticOnly: true,
                 );
-                await _exclusive(() async {
-                  captured.requireCurrent();
-                  await client.applyDownloadPage(page, limit: 1);
-                }, fromAuthEvent: true);
+                captured.requireCurrent();
                 if (captured.isCurrent) {
                   _syncErrorCode = result.notAcknowledged == 0
                       ? null
@@ -1011,7 +1321,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   }
 
   void _scheduleDeletionRetry(LocalOwnerLease captured) {
-    if (!captured.cloudDeletionEnabled ||
+    if (!automaticCloudDeletionRetry ||
+        !captured.cloudDeletionEnabled ||
         !_deletionRetryEpochs.add(captured.epoch)) {
       return;
     }
@@ -1153,6 +1464,10 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     if (_requested?.targetStore == next.targetStore &&
         (state == LocalOwnerState.ready ||
             state == LocalOwnerState.preparing)) {
+      final current = _lease;
+      if (state == LocalOwnerState.ready && current != null) {
+        scheduleOwnerSync(current);
+      }
       return;
     }
     _requested = next;
@@ -1242,8 +1557,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       _state = LocalOwnerState.ready;
       _errorCode = null;
       notifyListeners();
-      // Startup repairs a crash after Hive finalization but before outbox
-      // persistence. Reconciliation is owner-scoped and excludes tombstones.
+      // Startup repairs only records explicitly marked automatic at their
+      // original account-owned finalization. Older rows remain untouched.
       scheduleOwnerSync(_lease!);
       _scheduleDeletionRetry(_lease!);
     } catch (_) {

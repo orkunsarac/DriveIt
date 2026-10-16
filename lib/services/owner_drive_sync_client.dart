@@ -665,7 +665,10 @@ class OwnerDriveSyncClient {
     return result;
   }
 
-  Future<String> enqueueDrive(String driveId) async {
+  Future<String> enqueueDrive(
+    String driveId, {
+    bool automaticSyncEligible = false,
+  }) async {
     requireCurrent();
     final accountId = _requireAccount();
     if (driveId.isEmpty) throw ArgumentError.value(driveId, 'driveId');
@@ -748,9 +751,21 @@ class OwnerDriveSyncClient {
               canonicalOwnerSyncJson(mutation.payload)) {
         throw const OwnerSyncConflict('local_source_identity_conflict');
       }
+      if (automaticSyncEligible &&
+          existingRow['automaticSyncEligible'] != true) {
+        await store.put(owner, boxName, existingKey, {
+          ...existingRow,
+          'automaticSyncEligible': true,
+        });
+        requireCurrent();
+      }
       return existingKey;
     }
-    return _stage(key: key, mutation: mutation);
+    return _stage(
+      key: key,
+      mutation: mutation,
+      automaticSyncEligible: automaticSyncEligible,
+    );
   }
 
   /// Reconciles only this account's completed, non-deleted finalizations.
@@ -774,6 +789,7 @@ class OwnerDriveSyncClient {
       );
       if (finalized?['state'] != 'completed' ||
           finalized?['derivedReady'] != true ||
+          finalized?['automaticSyncEligible'] != true ||
           store.read<Map>(owner, 'local_lifecycle_v1', 'history:$id') != null) {
         skipped++;
         continue;
@@ -790,7 +806,7 @@ class OwnerDriveSyncClient {
         skipped++;
         continue;
       }
-      await enqueueDrive(id);
+      await enqueueDrive(id, automaticSyncEligible: true);
       queued++;
     }
     return OwnerSyncReconciliationResult(queued: queued, skipped: skipped);
@@ -883,6 +899,7 @@ class OwnerDriveSyncClient {
   Future<String> _stage({
     required String key,
     required OwnerSyncMutation mutation,
+    bool automaticSyncEligible = false,
   }) async {
     final previous = store.read<Map>(owner, boxName, key);
     if (previous != null) {
@@ -899,6 +916,7 @@ class OwnerDriveSyncClient {
     }
     await store.put(owner, boxName, key, {
       'mutation': mutation.toMap(),
+      if (automaticSyncEligible) 'automaticSyncEligible': true,
       'state': OwnerSyncMutationState.queued.name,
       'attemptCount': 0,
       'lastErrorCode': null,
@@ -1732,6 +1750,17 @@ class OwnerDriveSyncClient {
         .toList(growable: false);
   }
 
+  /// Automatic worker is deliberately limited to newly finalized account
+  /// drives explicitly marked at save time. Historical/manual queue rows do
+  /// not become upload consent merely because the app resumed.
+  List<String> automaticPendingKeys() => pendingKeys()
+      .where(
+        (key) =>
+            store.read<Map>(owner, boxName, key)?['automaticSyncEligible'] ==
+            true,
+      )
+      .toList(growable: false);
+
   Map? readRecord(String key) {
     requireCurrent();
     _requireAccount();
@@ -1884,9 +1913,13 @@ class OwnerDriveSyncWorker {
   Future<OwnerSyncWorkerResult> runStagedOnce(
     OwnerSyncStagedUploadAdapter remote, {
     int limit = 16,
+    bool automaticOnly = false,
   }) async {
     if (limit <= 0) throw ArgumentError.value(limit, 'limit');
-    final keys = client.pendingKeys().take(limit).toList(growable: false);
+    final keys =
+        (automaticOnly ? client.automaticPendingKeys() : client.pendingKeys())
+            .take(limit)
+            .toList(growable: false);
     var acknowledged = 0;
     var notAcknowledged = 0;
     for (final key in keys) {

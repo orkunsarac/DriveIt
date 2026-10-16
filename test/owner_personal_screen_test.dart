@@ -25,6 +25,9 @@ import 'package:driveit_project/features/world_publish/segments/planet_segment.d
 import 'package:driveit_project/features/drive_poster/poster_screens.dart';
 import 'local_owner_integration_test.dart' show TestAuth, a, b;
 import 'planet_segment_test.dart' show fixture;
+import 'account_drive_transfer_test.dart' show seedTransferGuest;
+import 'package:driveit_project/services/account_drive_transfer.dart';
+import 'package:driveit_project/screens/account_drive_transfer_screen.dart';
 
 class _AvailableGuestAccountGateway implements DriveItAccountGateway {
   @override
@@ -82,6 +85,129 @@ void main() {
     auth.emit(id);
     await runtime.settled;
   }
+
+  testWidgets(
+    'normal owner login prompt decline preserves Guest; Profile transfer verifies and hides completed option',
+    (tester) async {
+      tester.view.physicalSize = const Size(1000, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      Future<void> advanceUntil(bool Function() done) async {
+        for (var i = 0; i < 160; i++) {
+          await tester.runAsync(() async {
+            await tester.pump(const Duration(milliseconds: 50));
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+          });
+          if (done()) return;
+        }
+        fail('Transfer UI did not reach its expected state.');
+      }
+
+      await tester.runAsync(() async {
+        await runtime.close();
+        runtime.dispose();
+        final guest = await OwnerScopedLocalStore.open(
+          root: root.path,
+          owner: const GpsOwner.guest(),
+        );
+        await seedTransferGuest(guest);
+        await guest.close();
+        runtime = LocalOwnerLifecycle(
+          gate: LocalOwnershipGate.synthetic(),
+          auth: auth,
+          openStore: (owner) =>
+              OwnerScopedLocalStore.open(root: root.path, owner: owner),
+          driveInProgress: () async => false,
+          transferSources: AccountDriveTransferSources(
+            openGuest: () => OwnerScopedLocalStore.open(
+              root: root.path,
+              owner: const GpsOwner.guest(),
+            ),
+            hasLegacy: () async => false,
+            openLegacy: (_) async => throw StateError('legacy not used'),
+            authorizer: _AcceptDeviceArchiveAuth(),
+          ),
+        );
+        await runtime.start();
+      });
+      await tester.runAsync(
+        () => tester.pumpWidget(
+          MaterialApp(
+            home: OwnerPersonalNavigator(
+              runtime: runtime,
+              legacyChild: const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+      await advanceUntil(
+        () => find
+            .byKey(const Key('guest_transfer_decline'))
+            .evaluate()
+            .isNotEmpty,
+      );
+      expect(
+        find.text(
+          'Bu cihazdaki misafir sürüşlerini hesabınıza aktarmak ister misiniz?',
+        ),
+        findsOneWidget,
+      );
+      await tester.runAsync(
+        () => tester.tap(find.byKey(const Key('guest_transfer_decline'))),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        (await tester.runAsync(
+          () => runtime.lease.accountTransferAvailability(),
+        ))!.guest,
+        1,
+      );
+      expect(runtime.lease.drives(), isEmpty);
+      await tester.runAsync(
+        () => tester.tap(find.byKey(const Key('home_profile_settings'))),
+      );
+      final card = find.byKey(const Key('profile_account_transfer'));
+      await advanceUntil(() => card.evaluate().isNotEmpty);
+      expect(card, findsOneWidget);
+      await tester.ensureVisible(card);
+      await tester.runAsync(() => tester.tap(card));
+      await advanceUntil(
+        () => find.text('Aktarılabilecek kayıt: 1').evaluate().isNotEmpty,
+      );
+      expect(find.byType(AccountDriveTransferScreen), findsOneWidget);
+      await tester.runAsync(
+        () => tester.tap(find.byKey(const Key('transfer_guest'))),
+      );
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.runAsync(
+        () => tester.tap(find.byKey(const Key('transfer_confirm'))),
+      );
+      await advanceUntil(
+        () =>
+            find.textContaining('1 sürüş aktarıldı').evaluate().isNotEmpty &&
+            find.text('Aktarılabilecek kayıt: 0').evaluate().isNotEmpty,
+      );
+      expect(runtime.lease.drives(), hasLength(1));
+      expect(
+        (await tester.runAsync(
+          () => runtime.lease.accountTransferAvailability(),
+        ))!.guest,
+        0,
+      );
+      Navigator.of(
+        tester.element(find.byType(AccountDriveTransferScreen)),
+      ).pop();
+      await advanceUntil(
+        () => find
+            .byKey(const Key('profile_account_transfer'))
+            .evaluate()
+            .isEmpty,
+      );
+      expect(find.byKey(const Key('profile_account_transfer')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   test(
     'guest, legacy, A and B stay distinct; same ID resolves authoritative owner',
@@ -337,7 +463,7 @@ void main() {
       await tester.tap(cloud);
       await tester.pumpAndSettle();
       expect(find.byType(OwnerCloudSyncScreen), findsOneWidget);
-      expect(find.text('Bekleyen yerel sürüş: 0'), findsOneWidget);
+      expect(find.text('Bekleyen hesap sürüşü: 0'), findsOneWidget);
       expect(
         tester
             .widget<OutlinedButton>(
@@ -347,7 +473,9 @@ void main() {
         isNull,
       );
       expect(
-        find.textContaining('Otomatik toplu yükleme kapalı'),
+        find.textContaining(
+          'Yüklenebilecek yeni ve doğrulanmış hesap sürüşü yok.',
+        ),
         findsOneWidget,
       );
       await tester.runAsync(() => switchTo(a));

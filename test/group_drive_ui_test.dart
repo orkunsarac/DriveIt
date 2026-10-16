@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:driveit_project/features/group_drive/group_drive_models.dart';
@@ -128,12 +130,41 @@ void main() {
         within('deviceA', find.byKey(const Key('group_map_workspace'))),
         findsOneWidget,
       );
+      expect(
+        within('deviceA', find.text('Sentetik test konumları • 0 görünür üye')),
+        findsOneWidget,
+      );
       expect(within('deviceA', find.text('Yönetici • KAPALI')), findsOneWidget);
       final code = tester
           .widget<SelectableText>(
             within('deviceA', find.byKey(const Key('group_invite_code'))),
           )
           .data!;
+      String? copiedText;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            copiedText =
+                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+          }
+          return null;
+        },
+      );
+      await click(
+        tester,
+        within('deviceA', find.byKey(const Key('group_invite_copy'))),
+      );
+      expect(copiedText, code);
+      expect(
+        within('deviceA', find.text('Davet kodu kopyalandı')),
+        findsOneWidget,
+      );
+      expect(within('deviceA', find.text('Yönetici • KAPALI')), findsOneWidget);
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      );
       await click(
         tester,
         within('deviceB', find.byKey(const Key('home_group_card'))),
@@ -197,6 +228,41 @@ void main() {
         findsOneWidget,
       );
       expect(tester.takeException(), null);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'map reserves gestures and the surrounding page scrolls outside it',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(home: app(ra)));
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await click(tester, find.byKey(const Key('group_create')));
+      final scrollable = tester.state<ScrollableState>(
+        find.byType(Scrollable).first,
+      );
+      final position = scrollable.position;
+      final map = tester.widget<GoogleMap>(
+        find.byKey(const Key('group_google_map')),
+      );
+      expect(
+        map.gestureRecognizers.any(
+          (recognizer) => recognizer.type == EagerGestureRecognizer,
+        ),
+        isTrue,
+      );
+      await tester.ensureVisible(find.byKey(const Key('group_member_count')));
+      final beforeOutsideDrag = position.pixels;
+      await tester.drag(
+        find.byKey(const Key('group_member_count')),
+        const Offset(0, 100),
+      );
+      await tester.pump();
+      expect(position.pixels, lessThan(beforeOutsideDrag));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -337,7 +403,7 @@ void main() {
             )
             .first,
       );
-      expect(find.textContaining('Test servisine ulaşılamadı'), findsOneWidget);
+      expect(find.textContaining('Grup servisine ulaşılamadı'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -546,7 +612,7 @@ void main() {
   );
 
   testWidgets(
-    'marker freshness fades at 15/30 seconds and removes after five minutes',
+    'marker is removed when GPS sample exceeds the 15 second freshness bound',
     (tester) async {
       final ca = service.forOwner(ra.lease);
       final group = await ca.create();
@@ -565,17 +631,34 @@ void main() {
         MaterialApp(
           home: SizedBox(
             height: 400,
-            child: GroupDriveMap(lease: ra.lease, group: snapshot),
+            child: GroupDriveMap(
+              lease: ra.lease,
+              group: snapshot,
+              isSimulation: true,
+            ),
           ),
         ),
       );
       await frames(tester);
       GoogleMap map() => tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(map().markers.single.alpha, 1);
+      expect(
+        map().gestureRecognizers.any(
+          (recognizer) => recognizer.type == EagerGestureRecognizer,
+        ),
+        isTrue,
+      );
+      expect(
+        mapFake.calls.any((call) => call.method == 'camera#animate'),
+        isTrue,
+        reason: 'The first valid location should focus the map once.',
+      );
       await tester.pump(const Duration(seconds: 16));
-      expect(map().markers.single.alpha, .55);
-      await tester.pump(const Duration(seconds: 15));
-      expect(map().markers.single.alpha, .3);
+      expect(map().markers, isEmpty);
+      expect(
+        find.text('Sentetik test konumları • 0 görünür üye'),
+        findsOneWidget,
+      );
       await tester.pump(const Duration(seconds: 270));
       expect(map().markers, isEmpty);
       expect(snapshot.members, hasLength(1));
@@ -648,6 +731,10 @@ void main() {
       await click(tester, find.byKey(const Key('home_group_card')));
       await click(tester, find.byKey(const Key('group_create')));
       expect(source.requests, 0);
+      expect(
+        find.text('Sentetik test konumları • 0 görünür üye'),
+        findsOneWidget,
+      );
       await click(tester, find.byKey(const Key('group_share_start')));
       await tester.tap(find.text('Vazgeç'));
       await frames(tester);
@@ -656,15 +743,24 @@ void main() {
       await tester.tap(find.byKey(const Key('group_consent_confirm')));
       await frames(tester);
       expect(source.opens, 1);
+      expect(find.text('GPS paylaşım: GPS ÖRNEĞİ BEKLENİYOR'), findsOneWidget);
       expect(find.byKey(const Key('group_send_synthetic')), findsNothing);
-      now = DateTime.now().toUtc().add(const Duration(milliseconds: 1));
       source.stream.add(groupPosition(now));
       await frames(tester);
       GoogleMap map() => tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(map().markers, hasLength(1));
       expect(map().markers.single.infoWindow.snippet, contains('Cihaz GPS'));
+      expect(
+        find.text('Sentetik test konumları • 1 görünür üye'),
+        findsOneWidget,
+      );
+      expect(find.text('GPS paylaşım: CANLI GPS YAYINDA'), findsOneWidget);
       await click(tester, find.byKey(const Key('group_share_pause')));
       expect(map().markers, isEmpty);
+      expect(
+        find.text('Sentetik test konumları • 0 görünür üye'),
+        findsOneWidget,
+      );
       expect(source.cancels, 1);
       await click(tester, find.byKey(const Key('group_share_start')));
       expect(source.opens, 1); // Resume still needs explicit consent.
@@ -699,7 +795,7 @@ void main() {
       GroupSyntheticLocation(
         latitude: 10,
         longitude: 20,
-        recordedAt: now,
+        recordedAt: now.add(const Duration(seconds: 2)),
         sequence: 1,
       ),
     );
@@ -723,5 +819,72 @@ void main() {
     );
     await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), null);
+  });
+
+  testWidgets('empty production map never claims to show synthetic locations', (
+    tester,
+  ) async {
+    final client = service.forOwner(ra.lease);
+    final group = await client.create();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          height: 400,
+          child: GroupDriveMap(
+            lease: ra.lease,
+            group: group,
+            isSimulation: false,
+          ),
+        ),
+      ),
+    );
+    await frames(tester);
+    expect(find.text('Henüz canlı konum alınmadı'), findsOneWidget);
+    expect(find.textContaining('Sentetik test konumları'), findsNothing);
+    expect(tester.widget<GoogleMap>(find.byType(GoogleMap)).markers, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('production map labels a GPS marker and focuses its first fix', (
+    tester,
+  ) async {
+    final client = service.forOwner(ra.lease);
+    final group = await client.create();
+    final grant = await client.startSharing(group.id, consent: true);
+    now = DateTime.now().toUtc();
+    await client.publishGps(
+      grant,
+      GroupGpsLocation(
+        latitude: 10,
+        longitude: 20,
+        recordedAt: now,
+        accuracyMeters: 5,
+        sequence: 1,
+      ),
+    );
+    final snapshot = (await client.current())!;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          height: 400,
+          child: GroupDriveMap(
+            lease: ra.lease,
+            group: snapshot,
+            isSimulation: false,
+          ),
+        ),
+      ),
+    );
+    await frames(tester);
+    expect(find.text('Canlı GPS • 1 görünür üye'), findsOneWidget);
+    expect(
+      tester.widget<GoogleMap>(find.byType(GoogleMap)).markers,
+      hasLength(1),
+    );
+    expect(
+      mapFake.calls.any((call) => call.method == 'camera#animate'),
+      isTrue,
+    );
+    await tester.pumpWidget(const SizedBox());
   });
 }

@@ -423,6 +423,42 @@ void main() {
   });
 
   test(
+    'automatic worker sends only explicitly eligible finalized account drives',
+    () async {
+      await _seedVerifiedDrive(storeA);
+      await _seedVerifiedDrive(
+        storeA,
+        driveId: 'other',
+        identity: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      );
+      final client = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+
+      // Upgrade/reopen does not turn historical or manually queued records
+      // into background upload consent.
+      await client.enqueueDrive('local-drive-1');
+      expect((await client.reconcileFinalizedDrives()).queued, 0);
+      expect(client.automaticPendingKeys(), isEmpty);
+
+      await client.enqueueDrive('other', automaticSyncEligible: true);
+      final remote = _FakeStagedRemote();
+      final result = await OwnerDriveSyncWorker(
+        client: client,
+      ).runStagedOnce(remote, automaticOnly: true);
+      expect(result.attempted, 1);
+      expect(result.acknowledged, 1);
+      expect(remote.manifests, hasLength(1));
+      expect(
+        (remote.manifests.values.single.payload['drive'] as Map)['id'],
+        'other',
+      );
+      expect(
+        client.readRecord(client.pendingKeys().first)?['automaticSyncEligible'],
+        isNull,
+      );
+    },
+  );
+
+  test(
     'empty telemetry stays local and never creates an upload attempt',
     () async {
       await _seedVerifiedDrive(storeA, emptyTelemetry: true);
@@ -644,7 +680,7 @@ void main() {
             root: '${root.path}/m2-ui',
             owner: owner,
           );
-          if (owner.userId == accountA) {
+          if (owner.userId == accountA && store.keys(owner, 'drives').isEmpty) {
             await _seedVerifiedDrive(store);
             await store
                 .repositories(owner)
@@ -701,6 +737,7 @@ void main() {
           find.text('Bulut silme bekliyor — sunucu henüz onaylamadı.'),
           findsOneWidget,
         );
+        expect(find.text('Silme isteğini yeniden dene'), findsOneWidget);
         await tester.runAsync(() async {
           remote.deletion.offline = false;
           runtime.onOwnerResumed();
@@ -714,6 +751,101 @@ void main() {
           await runtime.close();
           await auth.events.close();
         });
+        runtime.dispose();
+      }
+    },
+  );
+
+  test(
+    'manual deletion mode preserves existing consent on resume and reopen',
+    () async {
+      final auth = TestAuth();
+      final remote = _M2AccountRemote();
+      final runtime = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: auth,
+        driveInProgress: () async => false,
+        automaticAccountSync: false,
+        automaticCloudDeletionRetry: false,
+        cloudDeletionEnabled: true,
+        accountSyncAdapter: (_) => remote,
+        openStore: (owner) async {
+          final store = await OwnerScopedLocalStore.open(
+            root: '${root.path}/manual-delete',
+            owner: owner,
+          );
+          if (owner.userId == accountA && store.keys(owner, 'drives').isEmpty) {
+            await _seedVerifiedDrive(store);
+            await store
+                .repositories(owner)
+                .contribute(store.repositories(owner).source('local-drive-1')!);
+            final client = OwnerDriveSyncClient(
+              store: store,
+              requireCurrent: () {},
+            );
+            final key = await client.enqueueDrive('local-drive-1');
+            await client.sendStaged(key, remote);
+            remote.deletion.fingerprint =
+                (client.readRecord(key)!['mutation']
+                        as Map)['payloadFingerprint']
+                    as String;
+          }
+          return store;
+        },
+      );
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        remote.deletion.offline = true;
+        expect(
+          await runtime.lease.deleteCloudHistory(
+            'local-drive-1',
+            userConfirmed: true,
+          ),
+          isFalse,
+        );
+        final consent = Map.from(
+          runtime.lease.read<Map>(
+            OwnerDriveSyncClient.deletionBox,
+            'drive:local-drive-1',
+          )!,
+        );
+        remote.deletion.offline = false;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), hasLength(1));
+        expect(remote.deletion.accepted, isNull);
+        auth.emit(accountB);
+        await runtime.settled;
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), isEmpty);
+        auth.emit(accountA);
+        await runtime.settled;
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), hasLength(1));
+        expect(
+          runtime.lease.read<Map>(
+            OwnerDriveSyncClient.deletionBox,
+            'drive:local-drive-1',
+          ),
+          consent,
+        );
+        expect(remote.deletion.accepted, isNull);
+        expect(
+          await runtime.lease.deleteCloudHistory(
+            'local-drive-1',
+            userConfirmed: true,
+          ),
+          isTrue,
+        );
+        expect(runtime.lease.drives(), isEmpty);
+        expect(
+          remote.deletion.accepted!.payload['deletionId'],
+          consent['deletionId'],
+        );
+      } finally {
+        await runtime.close();
+        await auth.events.close();
         runtime.dispose();
       }
     },

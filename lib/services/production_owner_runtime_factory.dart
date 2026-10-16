@@ -20,6 +20,10 @@ import 'owned_foreground_bootstrap.dart';
 import 'owner_scoped_local_store.dart';
 import 'supabase_local_owner_auth.dart';
 import 'supabase_owner_drive_sync_adapter.dart';
+import 'account_drive_transfer.dart';
+import 'legacy_drive_transfer_source.dart';
+import 'android_device_archive_authorizer.dart';
+import '../features/group_drive/supabase_group_drive_service.dart';
 
 /// No Auth UID is fabricated when cloud Auth isn't configured. The caller must
 /// obtain the user's explicit Guest choice before mounting the owner runtime.
@@ -62,6 +66,9 @@ abstract final class ProductionOwnerRuntimeFactory {
   static const accountDeletionEnabled =
       accountSyncEnabled &&
       bool.fromEnvironment('DRIVEIT_ACCOUNT_DELETE_ENABLED');
+  /// Keep disabled until M4 migration/Realtime security is deployed and accepted.
+  static const accountGroupDriveEnabled =
+      bool.fromEnvironment('DRIVEIT_GROUP_DRIVE_ENABLED');
   static Future<ProductionOwnerRuntimeDependencies> create() async {
     if (!LocalOwnershipGate.production.enabled ||
         !LocalOwnershipGate.localProductionActivation) {
@@ -131,10 +138,29 @@ abstract final class ProductionOwnerRuntimeFactory {
                 deletionEnabled: accountDeletionEnabled,
               );
             },
-      // First real cloud acceptance is explicit, one selected drive at a time.
-      // Startup/resume/Save may reconcile locally, but must never send a batch.
-      automaticAccountSync: false,
+      // Upload only new account drives explicitly marked at local finalization.
+      // Existing/manual rows, Guest, and legacy archive data are not consent.
+      automaticAccountSync: accountSyncEnabled,
+      // Opening/resuming the normal app must not retry a real deletion.
+      // History exposes the existing consent-preserving manual retry instead.
+      automaticCloudDeletionRetry: false,
       cloudDeletionEnabled: accountDeletionEnabled,
+      groupDriveService: accountGroupDriveEnabled && hasCloudAuth &&
+              SupabaseConfig.url ==
+                  'https://viqngnjfgknpxtoapzcg.supabase.co'
+          ? SupabaseGroupDriveService(Supabase.instance.client)
+          : null,
+      transferSources: AccountDriveTransferSources(
+        openGuest: () =>
+            OwnerScopedLocalStore.open(root: support.path, owner: guestOwner),
+        hasLegacy: () => LegacyHiveDriveTransferSource.hasRecords(),
+        openLegacy: (context) => LegacyHiveDriveTransferSource.open(
+          requireAccess: () {
+            if (!context.isCurrent) throw StateError('archive_access_revoked');
+          },
+        ),
+        authorizer: AndroidDeviceArchiveAuthorizer(),
+      ),
     );
 
     return ProductionOwnerRuntimeDependencies(

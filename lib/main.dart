@@ -115,6 +115,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     writerFence: controlled.writerFence,
     worldRoadMatching: controlled.worldRoadMatching,
     groupDriveServiceForTesting: controlled.groupDriveServiceForTesting,
+    groupDriveService: controlled.groupDriveService,
   );
   final runtime = (await LocalOwnershipBootstrap.run(
     gate: gate,
@@ -587,12 +588,16 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
               deviceArchiveSnapshot: widget.archive,
               deviceArchiveLoader: widget.archiveLoader,
               groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
+              groupDriveService: widget.runtime.dependencies.groupDriveService,
               groupGpsSourceFactory:
-                  widget.groupDriveServiceForTesting != null &&
+                  (widget.groupDriveServiceForTesting != null ||
+                          widget.runtime.dependencies.groupDriveService !=
+                              null) &&
                       Platform.isAndroid
                   ? () => AndroidGroupGpsSource(
-                      diagnostics: (event) =>
-                          debugPrint('A55_GROUP_GPS_DIAG:$event'),
+                      diagnostics: widget.groupDriveServiceForTesting == null
+                          ? null
+                          : (event) => debugPrint('A55_GROUP_GPS_DIAG:$event'),
                     )
                   : null,
               legacyChild: const SizedBox.shrink(),

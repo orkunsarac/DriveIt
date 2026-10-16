@@ -35,7 +35,7 @@ select ok((select prosecdef and proconfig @> array['search_path=""'] from pg_pro
 select ok(not has_function_privilege('anon','public.phase8_can_access_staging_object(text)','EXECUTE'),'anon cannot test staging access');
 select ok(not exists(select 1 from pg_proc where pronamespace='public'::regnamespace and proname like 'phase8_%' and prosecdef and not (coalesce(proconfig,'{}') @> array['search_path=""'])),'all Phase 8 security-definer functions pin an empty search_path');
 select ok(not exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'phase8_%' and p.prosecdef and has_function_privilege('anon',p.oid,'EXECUTE')),'anon cannot execute any Phase 8 security-definer function');
-select ok(not exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'phase8_%' and p.prosecdef and p.proname<>'phase8_can_access_staging_object' and has_function_privilege('authenticated',p.oid,'EXECUTE')),'authenticated can execute only the staging path predicate');
+select ok(not exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'phase8_%' and p.prosecdef and p.proname not in ('phase8_can_access_staging_object','phase8_group_command','phase8_group_topic_authorized') and has_function_privilege('authenticated',p.oid,'EXECUTE')),'authenticated can execute only staging and explicit group security functions');
 select ok(not exists(select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname like 'phase8_%' and p.proname not like 'phase8_m1_%' and p.prosecdef and not has_function_privilege('service_role',p.oid,'EXECUTE')),'service role can execute public RPCs, not retired M1 bypasses');
 
 set local role authenticated;

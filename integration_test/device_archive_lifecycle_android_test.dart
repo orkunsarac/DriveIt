@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart'
     as maps;
@@ -41,10 +42,38 @@ class _SystemLifecycle with WidgetsBindingObserver {
 }
 
 void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  final releaseAcceptance = const bool.fromEnvironment(
+    'DRIVEIT_RELEASE_ACCEPTANCE',
+  );
+  if (releaseAcceptance) {
+    final originalReporter = reportTestException;
+    reportTestException = (details, testDescription) {
+      originalReporter(details, testDescription);
+      final diagnostic = <String>[
+        details.exceptionAsString(),
+        if (details.stack != null) details.stack.toString(),
+      ].join('\n');
+      for (var offset = 0; offset < diagnostic.length; offset += 700) {
+        final end = offset + 700 < diagnostic.length
+            ? offset + 700
+            : diagnostic.length;
+        debugPrint(
+          'DRIVEIT_RELEASE_ERROR:$testDescription:'
+          '${diagnostic.substring(offset, end)}',
+        );
+      }
+      binding.results[testDescription] = diagnostic;
+    };
+    debugPrint('DRIVEIT_RELEASE_STAGE:archive_dart_test_main_entered');
+  }
   testWidgets('real Home and lockscreen revoke archive capability', (
     tester,
   ) async {
+    if (releaseAcceptance) {
+      expect(const bool.fromEnvironment('dart.vm.product'), isTrue);
+      debugPrint('DRIVEIT_RELEASE_STAGE:archive_test_body_entered');
+    }
     expect(SupabaseBootstrap.isIsolatedAndroidTest, true);
     expect(await SupabaseBootstrap.initializeIfConfigured(), false);
     final root = await Directory.systemTemp.createTemp(
@@ -117,9 +146,23 @@ void main() {
       }
 
       Future<DeviceDriveArchiveContext> authenticateOnDevice() async {
+        if (releaseAcceptance) {
+          final foregroundReady = await tester.runAsync(
+            _waitForRealArchiveForeground,
+          );
+          if (foregroundReady != true) {
+            throw StateError('archive_test_activity_not_foreground');
+          }
+          await _logArchiveHostState('before_native_challenge');
+          debugPrint('DRIVEIT_ARCHIVE_AUTH_STAGE:before_native_challenge');
+        }
         final authenticated = await tester.runAsync(authenticate);
         if (authenticated == null) {
           throw StateError('Native archive authentication did not complete');
+        }
+        if (releaseAcceptance) {
+          await _logArchiveHostState('after_native_challenge');
+          debugPrint('DRIVEIT_ARCHIVE_AUTH_STAGE:context_granted');
         }
         return authenticated;
       }
@@ -149,6 +192,9 @@ void main() {
         );
       });
       debugPrint('ARCHIVE_NATIVE_CANCEL_DENIED');
+      if (releaseAcceptance) {
+        await _logArchiveHostState('after_cancel_denied');
+      }
       final initialContext = await authenticateOnDevice();
       context = initialContext;
       expect(initialContext.isCurrent, true);
@@ -334,4 +380,52 @@ void main() {
       await root.delete(recursive: true);
     }
   });
+}
+
+Future<void> _logArchiveHostState(String checkpoint) async {
+  final flutterLifecycle =
+      WidgetsBinding.instance.lifecycleState?.name ?? 'null';
+  try {
+    final native = await const MethodChannel(
+      'driveit/device_archive_security',
+    ).invokeMapMethod<String, Object?>('getArchiveHostState');
+    debugPrint(
+      'DRIVEIT_ARCHIVE_HOST:$checkpoint:flutter=$flutterLifecycle:'
+      'native=$native',
+    );
+  } on PlatformException catch (error) {
+    debugPrint(
+      'DRIVEIT_ARCHIVE_HOST:$checkpoint:flutter=$flutterLifecycle:'
+      'native_error=${error.code}',
+    );
+  } on MissingPluginException {
+    debugPrint(
+      'DRIVEIT_ARCHIVE_HOST:$checkpoint:flutter=$flutterLifecycle:'
+      'native_error=missing_plugin',
+    );
+  }
+}
+
+Future<bool> _waitForRealArchiveForeground() async {
+  final deadline = DateTime.now().add(const Duration(seconds: 15));
+  Map<String, Object?>? lastNative;
+  var lastFlutter = WidgetsBinding.instance.lifecycleState?.name ?? 'null';
+  while (DateTime.now().isBefore(deadline)) {
+    lastFlutter = WidgetsBinding.instance.lifecycleState?.name ?? 'null';
+    lastNative = await const MethodChannel(
+      'driveit/device_archive_security',
+    ).invokeMapMethod<String, Object?>('getArchiveHostState');
+    if (lastFlutter == 'resumed' &&
+        lastNative?['activityResumed'] == true &&
+        lastNative?['windowFocus'] == true) {
+      debugPrint('DRIVEIT_ARCHIVE_HOST:foreground_ready:$lastNative');
+      return true;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  debugPrint(
+    'DRIVEIT_ARCHIVE_HOST:foreground_timeout:flutter=$lastFlutter:'
+    'native=$lastNative',
+  );
+  return false;
 }

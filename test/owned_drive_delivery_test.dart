@@ -386,7 +386,8 @@ class DeliverySyncRemote
     final filtered = _changes
         .where(
           (change) =>
-              int.parse(change.cursor) > int.parse(afterCursor.isEmpty ? '0' : afterCursor) &&
+              int.parse(change.cursor) >
+                  int.parse(afterCursor.isEmpty ? '0' : afterCursor) &&
               change.mutation.ownerId == ownerId,
         )
         .take(limit)
@@ -661,8 +662,9 @@ void main() {
 
       final drive = await f.record();
       await f.save(drive);
-      final sourceIdentity =
-          (await f.runtime.gps.requireBinding(drive.id)).provenance.sourceIdentity;
+      final sourceIdentity = (await f.runtime.gps.requireBinding(
+        drive.id,
+      )).provenance.sourceIdentity;
       await f.runtime.owner.syncSettled;
       expect(f.runtime.owner.lease.drives(), hasLength(1));
       expect(f.runtime.owner.worldErrorCode, 'owner_world_retry_pending');
@@ -775,6 +777,9 @@ void main() {
   );
 
   test('startup reconciliation repairs the Hive-to-outbox crash gap', () async {
+    await f.closeRuntime();
+    f.fakeSyncRemote = DeliverySyncRemote();
+    await f.boot();
     f.failGroup = OwnerDriveSyncClient.boxName;
     final drive = await f.record();
     await f.save(drive);
@@ -815,7 +820,13 @@ void main() {
     await f.runtime.owner.syncSettled;
     final lease = f.runtime.owner.lease;
     expect(lease.drives().single.id, drive.id);
-    expect(lease.pendingSyncKeys(), hasLength(1));
+    expect(lease.pendingSyncKeys(), isEmpty);
+    expect(
+      lease.syncRecord(
+        lease.keys(OwnerDriveSyncClient.boxName).single.toString(),
+      )?['state'],
+      'acknowledged',
+    );
     expect(f.runtime.owner.syncErrorCode, isNull);
   });
 

@@ -58,6 +58,7 @@ void main() {
         databaseFactory: databaseFactoryFfiNoIsolate,
         restoreAuth: restore ?? () async => auth,
         deviceGuestOwner: deviceGuestOwner,
+        automaticCloudDeletionRetry: false,
         producerRunning: () async => busy,
         openStore: (owner) =>
             OwnerScopedLocalStore.open(root: root.path, owner: owner),
@@ -99,6 +100,7 @@ void main() {
   test('guest bootstrap then account A/B revokes repository leases', () async {
     auth.userId = null;
     final handle = await boot();
+    expect(handle.owner.automaticCloudDeletionRetry, isFalse);
     expect(handle.owner.lease.owner.kind, GpsOwnerKind.guest);
     final guest = handle.owner.lease;
     auth.emit(a);

@@ -15,6 +15,7 @@ import '../features/my_world/services/world_intro_policy.dart';
 import '../features/my_world/services/world_trace_detail_service.dart';
 import '../features/my_world/services/world_trace_visibility_policy.dart';
 import '../features/my_world/services/world_trace_presentation_service.dart';
+import '../features/my_world/services/legacy_world_backfill.dart';
 import '../features/my_world/models/world_trace_travel_direction.dart';
 import '../models/drive_session.dart';
 import '../services/world_source_access.dart';
@@ -25,6 +26,7 @@ import 'world_mode_selection_screen.dart';
 import 'profile_settings_screen.dart';
 import 'world_trace_detail_screen.dart';
 import '../services/local_owner_lifecycle.dart';
+import '../services/gps_session_ownership.dart';
 import '../services/owner_personal_preferences.dart';
 import '../widgets/local_owner_view.dart';
 
@@ -104,6 +106,7 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       identical(widget.ownerLease, _owner) &&
       (_owner?.isCurrent ?? true);
   bool _rebuilding = false;
+  LegacyWorldBackfillPreview? _legacyBackfillPreview;
   int _worldRevision = 0;
   Timer? _highlightTimer;
 
@@ -181,6 +184,9 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
               MyWorldRuntime.indexRepository().activeDistanceForDrive,
         );
     _loadFuture = _loadWorldData();
+    if (_owner?.owner.kind == GpsOwnerKind.account) {
+      unawaited(_loadLegacyBackfillPreview());
+    }
     for (final color in _palette) {
       DriveMapVisuals.createWorldFlowTick(color: color, scale: .9).then((icon) {
         if (_viewCurrent) {
@@ -429,6 +435,18 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
             tooltip: 'Dünyayı yeniden oluştur',
             onPressed: _rebuilding ? null : _rebuildOwnedWorld,
             icon: const Icon(Icons.refresh),
+          ),
+        ),
+      if (_owner?.owner.kind == GpsOwnerKind.account &&
+          (_legacyBackfillPreview?.inspected ?? 0) > 0)
+        Positioned(
+          left: 16,
+          right: 76,
+          bottom: 20,
+          child: _LegacyWorldBackfillCard(
+            preview: _legacyBackfillPreview!,
+            busy: _rebuilding,
+            onPressed: _confirmLegacyWorldBackfill,
           ),
         ),
       if (_introPlaying)
@@ -1050,6 +1068,81 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(value)));
   }
 
+  Future<void> _loadLegacyBackfillPreview() async {
+    final owner = _owner;
+    if (owner == null ||
+        !owner.isCurrent ||
+        owner.owner.kind != GpsOwnerKind.account) {
+      return;
+    }
+    try {
+      final preview = await owner.previewLegacyWorldBackfill();
+      if (_viewCurrent) setState(() => _legacyBackfillPreview = preview);
+    } catch (_) {
+      // Preview is read-only and optional. Never block the World map on it.
+    }
+  }
+
+  Future<void> _confirmLegacyWorldBackfill() async {
+    final owner = _owner;
+    final preview = _legacyBackfillPreview;
+    if (!_viewCurrent || owner == null || preview == null || _rebuilding) {
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Eski sürüşleri Dünyama ekle?'),
+        content: Text(
+          '${preview.inspected} eski sürüş incelendi. '
+          '${preview.eligibleCount} rota ilk kontrolde 5 km veya üzerinde ve World v6 için eşleştirilmeye aday. '
+          '${preview.alreadyProcessed} sürüş zaten işlendi; '
+          '${preview.ineligible} sürüş ilk kontrolde uygun değil.\n\n'
+          'Kesin uygunluk, güncel World v6 yol eşleştirmesinden sonra belirlenir. '
+          'Onay verirseniz bu rotaların GPS noktaları yapılandırılmış yol eşleştirme sağlayıcısına gönderilir. '
+          'History, puan ve Career değiştirilmez; sonuç yalnız bu hesapta yerel tutulur.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Vazgeç'),
+          ),
+          FilledButton(
+            key: const Key('legacy_world_backfill_confirm'),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Eşleştir ve ekle'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !_viewCurrent || !owner.isCurrent) return;
+    setState(() => _rebuilding = true);
+    try {
+      final result = await owner.backfillLegacyWorld(
+        preview,
+        mapMatchingConsent: true,
+      );
+      if (!_viewCurrent) return;
+      final data = await owner.worldMap();
+      if (_viewCurrent) {
+        setState(() {
+          _applyOwnedData(data);
+          _message(
+            'Eklenen ${result.processed} · Zaten işlenmiş ${result.alreadyProcessed} · '
+            'Uygun değil ${result.ineligible} · Tekrar denenecek ${result.failed}',
+          );
+        });
+      }
+      await _loadLegacyBackfillPreview();
+    } catch (_) {
+      if (_viewCurrent) {
+        _message('Eski sürüşler işlenemedi; kayıtlar korunuyor.');
+      }
+    } finally {
+      if (_viewCurrent) setState(() => _rebuilding = false);
+    }
+  }
+
   Future<void> _rebuildOwnedWorld() async {
     if (!_viewCurrent || _rebuilding) return;
     setState(() => _rebuilding = true);
@@ -1069,6 +1162,45 @@ class _MyWorldMapScreenState extends State<MyWorldMapScreen>
       if (_viewCurrent) setState(() => _rebuilding = false);
     }
   }
+}
+
+class _LegacyWorldBackfillCard extends StatelessWidget {
+  const _LegacyWorldBackfillCard({
+    required this.preview,
+    required this.busy,
+    required this.onPressed,
+  });
+
+  final LegacyWorldBackfillPreview preview;
+  final bool busy;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    color: const Color(0xee14202a),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.history, color: Color(0xff53d7ff)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '${preview.inspected} eski sürüş · ${preview.eligibleCount} eşleştirme adayı\n'
+              '${preview.alreadyProcessed} işlendi · ${preview.ineligible} uygun değil',
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ),
+          if (preview.eligibleCount > 0)
+            TextButton(
+              key: const Key('legacy_world_backfill_open'),
+              onPressed: busy ? null : onPressed,
+              child: Text(busy ? 'İşleniyor' : 'Eski Sürüşleri Dünyama Ekle'),
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _ArrowPosition {

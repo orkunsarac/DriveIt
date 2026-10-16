@@ -65,7 +65,7 @@ class OwnedDriveFinalization {
     'sourceIdentity': binding.provenance.sourceIdentity,
   };
 
-  Future<void> prepare() async {
+  Future<void> prepare({bool automaticSyncEligible = false}) async {
     driveItReleaseAcceptanceDiagnostic(
       'prepare_started',
       binding: binding,
@@ -88,7 +88,13 @@ class OwnedDriveFinalization {
       store.owner,
       group,
       id,
-      previous ?? {...identity, 'state': 'pending', 'derivedReady': false},
+      previous ??
+          {
+            ...identity,
+            'state': 'pending',
+            'derivedReady': false,
+            if (automaticSyncEligible) 'automaticSyncEligible': true,
+          },
     );
     driveItReleaseAcceptanceDiagnostic(
       'prepare_persisted_pending',

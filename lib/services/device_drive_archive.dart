@@ -208,11 +208,13 @@ class DeviceDriveArchiveAccess {
     required this.snapshot,
     required this.authorizer,
     this.accessLifetime = const Duration(minutes: 2),
+    this.purpose = DeviceArchiveAccessPurpose.readOnly,
   });
   final LocalOwnershipGate gate;
   final DeviceDriveArchiveSnapshot snapshot;
   final DeviceArchiveAuthorizer authorizer;
   final Duration accessLifetime;
+  final DeviceArchiveAccessPurpose purpose;
   bool _opening = false;
   Future<DeviceDriveArchiveContext> open(LocalOwnerLease lease) async {
     if (!gate.enabled) throw StateError('archive_disabled');
@@ -233,7 +235,12 @@ class DeviceDriveArchiveAccess {
       await foreground.waitForForeground();
       lease.requireCurrent();
       foreground.requireForeground();
-      return DeviceDriveArchiveContext._(snapshot, lease, accessLifetime);
+      return DeviceDriveArchiveContext._(
+        snapshot,
+        lease,
+        accessLifetime,
+        purpose,
+      );
     } finally {
       foreground.close();
       _opening = false;
@@ -303,9 +310,16 @@ class _ArchiveAuthenticationLifecycle with WidgetsBindingObserver {
 }
 
 /// ID lookup requires this separate revocable capability, not an owner/drive ID.
+enum DeviceArchiveAccessPurpose { readOnly, accountTransfer }
+
 class DeviceDriveArchiveContext extends ChangeNotifier
     with WidgetsBindingObserver {
-  DeviceDriveArchiveContext._(this._snapshot, this._lease, this._lifetime) {
+  DeviceDriveArchiveContext._(
+    this._snapshot,
+    this._lease,
+    this._lifetime,
+    this._purpose,
+  ) {
     _lease.changes.addListener(_changed);
     WidgetsBinding.instance.addObserver(this);
     _clock.start();
@@ -313,6 +327,7 @@ class DeviceDriveArchiveContext extends ChangeNotifier
   }
   final DeviceDriveArchiveSnapshot _snapshot;
   final LocalOwnerLease _lease;
+  final DeviceArchiveAccessPurpose _purpose;
   bool _closed = false;
   bool _revoked = false;
   final Duration _lifetime;
@@ -338,6 +353,16 @@ class DeviceDriveArchiveContext extends ChangeNotifier
 
   void _require() {
     if (!isCurrent) throw StateError('archive_access_revoked');
+  }
+
+  /// Transfer/cleanup needs a separate purpose-bound device-auth grant, pinned
+  /// to the original lease. Read-only archive grants cannot authorize mutation.
+  void requireFor(LocalOwnerLease lease) {
+    _require();
+    if (_purpose != DeviceArchiveAccessPurpose.accountTransfer) {
+      throw StateError('archive_read_only_capability');
+    }
+    if (!identical(lease, _lease)) throw StateError('archive_owner_mismatch');
   }
 
   List<DriveSession> drives() {

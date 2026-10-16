@@ -399,8 +399,8 @@ class _FakeClient implements GroupDriveClient {
         throw const GroupDriveException('publication_revoked');
       }
       final age = now.difference(point.recordedAt);
-      if (age.isNegative ||
-          age > const Duration(seconds: 15) ||
+      if (age < -groupGpsFutureSkewTolerance ||
+          age > groupGpsMaximumAge ||
           point.recordedAt.isBefore(sharing.grant!.startedAt) ||
           point.sequence <= sharing.lastSequence ||
           (sharing.location != null &&

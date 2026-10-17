@@ -43,6 +43,9 @@ class FakeGroupGps implements GroupGpsSource {
   Stream<Position> positions() => stream.stream;
 }
 
+class FakeBackgroundGroupGps extends FakeGroupGps
+    implements BackgroundGroupGpsSource {}
+
 Position groupPosition(
   DateTime at, {
   double accuracy = 5,
@@ -361,6 +364,53 @@ void main() {
       expect(source.opens, 1);
       await gps.start(group.id, consent: true);
       expect(source.opens, 2);
+    },
+  );
+  test(
+    'explicit background consent keeps publishing across screen lock; pause and owner still revoke',
+    () async {
+      await gps.close();
+      gps.dispose();
+      await source.stream.close();
+      source = FakeBackgroundGroupGps();
+      gps = GroupGpsSharing(
+        lease: runtime.lease,
+        client: client,
+        source: source,
+        clock: () => now,
+      );
+      await groupWatch?.cancel();
+      groupWatch = client.changes.listen(gps.updateGroup);
+      await gps.start(group.id, consent: true, backgroundConsent: true);
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.paused,
+      );
+      expect(gps.active, true);
+      await emit(groupPosition(now));
+      expect(mine((await client.current())!).location, isNotNull);
+      await gps.pause(group.id);
+      expect(gps.active, false);
+      expect(mine((await client.current())!).location, null);
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      expect(gps.active, false);
+      await gps.start(group.id, consent: true, backgroundConsent: true);
+      auth.emit(b);
+      await runtime.settled;
+      expect(gps.active, false);
+      expect(source.cancels, 2);
+    },
+  );
+
+  test(
+    'background consent cannot upgrade an ordinary visible-only source',
+    () async {
+      await expectLater(
+        gps.start(group.id, consent: true, backgroundConsent: true),
+        throwsA(isA<GroupGpsException>()),
+      );
+      expect(source.opens, 0);
     },
   );
   test(

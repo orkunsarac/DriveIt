@@ -1,5 +1,7 @@
 import 'dart:io';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import '../../services/foreground_service.dart';
 
 class GroupGpsException implements Exception {
   const GroupGpsException(this.code);
@@ -12,6 +14,33 @@ abstract interface class GroupGpsSource {
   Stream<Position> positions();
 }
 
+/// Capability implemented only by the source backed by DriveIt's location FGS.
+abstract interface class BackgroundGroupGpsSource implements GroupGpsSource {}
+
+class ForegroundGroupGpsSource extends AndroidGroupGpsSource
+    implements BackgroundGroupGpsSource {
+  @override
+  Future<void> requestAccess() async {
+    await super.requestAccess();
+    var permission = await FlutterForegroundTask.checkNotificationPermission();
+    if (permission != NotificationPermission.granted) {
+      permission = await FlutterForegroundTask.requestNotificationPermission();
+    }
+    if (permission != NotificationPermission.granted) {
+      throw const GroupGpsException('notification_permission_required');
+    }
+  }
+
+  @override
+  Stream<Position> positions() => ForegroundService.groupPositions();
+
+  @override
+  Future<bool> hasAccess() async =>
+      await super.hasAccess() &&
+      await FlutterForegroundTask.checkNotificationPermission() ==
+          NotificationPermission.granted;
+}
+
 abstract interface class GroupGpsDiagnosticSource implements GroupGpsSource {
   void Function(String event)? get diagnostics;
 }
@@ -19,10 +48,7 @@ abstract interface class GroupGpsDiagnosticSource implements GroupGpsSource {
 /// Visible-app access only. Never configures a Geolocator foreground
 /// notification and never starts/stops DriveIt's recording foreground service.
 class AndroidGroupGpsSource implements GroupGpsDiagnosticSource {
-  AndroidGroupGpsSource({
-    GeolocatorPlatform? platform,
-    this._diagnostics,
-  })
+  AndroidGroupGpsSource({GeolocatorPlatform? platform, this._diagnostics})
     : _platform = platform ?? GeolocatorPlatform.instance,
       _injected = platform != null;
   final GeolocatorPlatform _platform;
@@ -80,18 +106,20 @@ class AndroidGroupGpsSource implements GroupGpsDiagnosticSource {
     // Geolocator stream is shared. Group publication is independently filtered.
     _diagnostics?.call('position_stream_requested');
     var callbackCount = 0;
-    return _platform.getPositionStream(
-      locationSettings: AndroidSettings(
-        accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 0,
-        intervalDuration: const Duration(milliseconds: 500),
-      ),
-    ).map((position) {
-      callbackCount++;
-      _diagnostics?.call(
-        'position_callback=count:$callbackCount,accuracy:${position.accuracy.isFinite ? position.accuracy.round() : 'invalid'}',
-      );
-      return position;
-    });
+    return _platform
+        .getPositionStream(
+          locationSettings: AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0,
+            intervalDuration: const Duration(milliseconds: 500),
+          ),
+        )
+        .map((position) {
+          callbackCount++;
+          _diagnostics?.call(
+            'position_callback=count:$callbackCount,accuracy:${position.accuracy.isFinite ? position.accuracy.round() : 'invalid'}',
+          );
+          return position;
+        });
   }
 }

@@ -522,6 +522,13 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
 
   void _taskData(Object data) {
     if (data is Map &&
+        data['openGroup'] == true &&
+        widget.runtime.owner.state == LocalOwnerState.ready &&
+        widget.runtime.dependencies.groupDriveService != null) {
+      _personalNavKey.currentState?.pushNamed('/group');
+      return;
+    }
+    if (data is Map &&
         data['openDrive'] == true &&
         widget.runtime.owner.state == LocalOwnerState.ready) {
       _personalNavKey.currentState?.pushNamed('/drive');
@@ -594,11 +601,15 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
                           widget.runtime.dependencies.groupDriveService !=
                               null) &&
                       Platform.isAndroid
-                  ? () => AndroidGroupGpsSource(
-                      diagnostics: widget.groupDriveServiceForTesting == null
-                          ? null
-                          : (event) => debugPrint('A55_GROUP_GPS_DIAG:$event'),
-                    )
+                  ? () => widget.groupDriveServiceForTesting == null
+                        ? ForegroundGroupGpsSource()
+                        : AndroidGroupGpsSource(
+                            diagnostics:
+                                widget.groupDriveServiceForTesting == null
+                                ? null
+                                : (event) =>
+                                      debugPrint('A55_GROUP_GPS_DIAG:$event'),
+                          )
                   : null,
               legacyChild: const SizedBox.shrink(),
             ),

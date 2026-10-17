@@ -26,12 +26,16 @@ class MapScreen extends StatefulWidget {
   final bool finishOnOpen;
   final bool resumeIfServiceStopped;
   final LocalOwnerLease? ownerLease;
+  final Widget? activeGroupAction;
+  final ValueChanged<bool>? onRecordingChanged;
   const MapScreen({
     super.key,
     this.resumeDrive = false,
     this.finishOnOpen = false,
     this.resumeIfServiceStopped = false,
     this.ownerLease,
+    this.activeGroupAction,
+    this.onRecordingChanged,
   });
 
   @override
@@ -601,6 +605,7 @@ class _MapScreenState extends State<MapScreen> {
       stoppedSeconds = 0;
       _isCanonicalMoving = false;
     });
+    widget.onRecordingChanged?.call(true);
     elapsedTimer?.cancel();
     elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || !isDriving) return;
@@ -685,6 +690,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       isDriving = false;
     });
+    widget.onRecordingChanged?.call(false);
 
     _gpsStoppedAt = (await ForegroundService.activeSession())?.stoppedAt;
     final journal = await ForegroundService.journal;
@@ -840,6 +846,7 @@ class _MapScreenState extends State<MapScreen> {
             .difference(driveStartTime!)
             .inSeconds;
       });
+      widget.onRecordingChanged?.call(true);
       if (!widget.finishOnOpen) await ForegroundService.resumeRecording();
       elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && isDriving) {
@@ -895,6 +902,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    widget.onRecordingChanged?.call(false);
     FlutterForegroundTask.removeTaskDataCallback(_onGpsTaskData);
     elapsedTimer?.cancel();
     backgroundSyncTimer?.cancel();
@@ -1190,6 +1198,8 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ),
+        if (isDriving && widget.activeGroupAction != null)
+          widget.activeGroupAction!,
       ],
     ),
   );

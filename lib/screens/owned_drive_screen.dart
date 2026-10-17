@@ -9,8 +9,15 @@ import 'map_screen.dart';
 /// Gate-open composition only. Uses the actual map/start/recovery/summary UI;
 /// missing foreground attachment is an error, never a shared-store fallback.
 class OwnedDriveScreen extends StatefulWidget {
-  const OwnedDriveScreen({super.key, required this.lease});
+  const OwnedDriveScreen({
+    super.key,
+    required this.lease,
+    this.activeGroupAction,
+    this.onRecordingChanged,
+  });
   final LocalOwnerLease lease;
+  final Widget? activeGroupAction;
+  final ValueChanged<bool>? onRecordingChanged;
   @override
   State<OwnedDriveScreen> createState() => _OwnedDriveScreenState();
 }
@@ -77,7 +84,11 @@ class _OwnedDriveScreenState extends State<OwnedDriveScreen> {
           );
         }
         if (snapshot.data!.canStartNewDrive) {
-          return MapScreen(ownerLease: widget.lease);
+          return MapScreen(
+            ownerLease: widget.lease,
+            activeGroupAction: widget.activeGroupAction,
+            onRecordingChanged: widget.onRecordingChanged,
+          );
         }
         return DriveRecoveryScreen(
           initialStatus: snapshot.data,
@@ -103,6 +114,8 @@ class _OwnedDriveScreenState extends State<OwnedDriveScreen> {
             resumeDrive: true,
             finishOnOpen: finish,
             resumeIfServiceStopped: resume,
+            activeGroupAction: widget.activeGroupAction,
+            onRecordingChanged: widget.onRecordingChanged,
           ),
         );
       },

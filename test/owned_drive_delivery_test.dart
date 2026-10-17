@@ -39,6 +39,9 @@ import 'package:driveit_project/models/route_point.dart';
 import 'package:hive/src/hive_impl.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/screens/device_drive_archive_screen.dart';
+import 'package:driveit_project/widgets/owner_personal_navigator.dart';
+import 'package:driveit_project/features/group_drive/group_drive_service.dart';
+import 'group_gps_sharing_test.dart' show FakeBackgroundGroupGps;
 
 /// No main(), global Hive, real GPS or network. Real public foreground/save
 /// entry points compose the same durable owner pipeline used by /drive.
@@ -1162,6 +1165,154 @@ void main() {
       );
       await f.save(drive);
       expect(f.runtime.owner.lease.drives().single.id, session.id);
+    },
+  );
+
+  testWidgets(
+    'active drive switches to group and returns to the same recorder; pause and stop are independent',
+    (tester) async {
+      final oldMaps = maps.GoogleMapsFlutterPlatform.instance;
+      final oldLocation = GeolocatorPlatform.instance;
+      maps.GoogleMapsFlutterPlatform.instance = DeliveryMaps();
+      GeolocatorPlatform.instance = DeliveryLocation();
+      final source = FakeBackgroundGroupGps();
+      final service = FakeGroupDriveService();
+      final navigation = GlobalKey<NavigatorState>();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      const permissions = MethodChannel(
+        'flutter.baseflow.com/permissions/methods',
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        permissions,
+        (call) async => call.method == 'requestPermissions'
+            ? {for (final id in call.arguments as List) id: 1}
+            : 1,
+      );
+      tester.view.physicalSize = const Size(800, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      Future<void> frames() async {
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+        await tester.pump();
+      }
+
+      Future<void> click(Key key) async {
+        final target = find.byKey(key);
+        await tester.ensureVisible(target);
+        await tester.tap(target);
+        await frames();
+      }
+
+      try {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: OwnerPersonalNavigator(
+              runtime: f.runtime.owner,
+              legacyChild: const SizedBox(),
+              initialRoute: '/drive',
+              navigatorKey: navigation,
+              groupDriveService: service,
+              groupGpsSourceFactory: () => source,
+            ),
+          ),
+        );
+        for (
+          var i = 0;
+          i < 20 && find.byType(MapScreen).evaluate().isEmpty;
+          i++
+        ) {
+          await tester.runAsync(() => ForegroundService.inspectRecovery());
+          await frames();
+        }
+        expect(find.byType(MapScreen), findsOneWidget);
+        final state = tester.state(find.byType(MapScreen)) as dynamic;
+        await tester.runAsync(() => state.startDriving() as Future<void>);
+        await frames();
+        final session = await tester.runAsync(ForegroundService.activeSession);
+        expect(session, isNotNull);
+        expect(find.byKey(const Key('drive_open_group')), findsNothing);
+        final member = service.forOwner(f.runtime.owner.lease);
+        await member.create();
+        await frames();
+        // Membership alone is enough: GPS sharing is still off.
+        await click(const Key('drive_open_group'));
+        expect(find.text('Devam eden sürüş'), findsNothing);
+        expect(find.byKey(const Key('group_return_to_drive')), findsOneWidget);
+        await click(const Key('group_share_start'));
+        await click(const Key('group_background_consent'));
+        await click(const Key('group_consent_confirm'));
+        expect(source.opens, 1);
+        await click(const Key('group_return_to_drive'));
+        expect(identical(tester.state(find.byType(MapScreen)), state), true);
+        expect(state.isDriving, true);
+        expect(source.cancels, 0);
+        // A notification opens the same named group route without arguments.
+        navigation.currentState!.pushNamed('/group');
+        await frames();
+        await click(const Key('group_return_to_drive'));
+        expect(identical(tester.state(find.byType(MapScreen)), state), true);
+        expect(source.opens, 1);
+        final elapsed = state.elapsedSeconds as int;
+        // startDriving ran in runAsync for its real countdown; its timers
+        // therefore use real time rather than the widget fake clock.
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(seconds: 2)),
+        );
+        await frames();
+        expect(state.elapsedSeconds, greaterThan(elapsed));
+        await click(const Key('drive_open_group'));
+        await click(const Key('group_share_pause'));
+        expect(source.cancels, 1);
+        final current = await tester.runAsync(ForegroundService.activeSession);
+        expect(current!.id, session!.id);
+        expect(current.state, 'recording');
+        await click(const Key('group_return_to_drive'));
+        expect(identical(tester.state(find.byType(MapScreen)), state), true);
+        // Normal back retains its real save/exit warning.
+        unawaited(navigation.currentState!.maybePop());
+        await frames();
+        expect(find.text('Devam eden sürüş'), findsOneWidget);
+        await tester.tap(find.text('Sürüşe dön'));
+        await frames();
+        // Paused membership still exposes the group route and explicit consent.
+        await click(const Key('drive_open_group'));
+        await click(const Key('group_share_start'));
+        await click(const Key('group_background_consent'));
+        await click(const Key('group_consent_confirm'));
+        expect(source.opens, 2);
+        await click(const Key('group_return_to_drive'));
+        await tester.runAsync(() async {
+          unawaited(state.stopDriving() as Future<void>);
+        });
+        for (var i = 0; i < 30 && state.isDriving == true; i++) {
+          await tester.runAsync(ForegroundService.inspectRecovery);
+          await frames();
+        }
+        expect(state.isDriving, false);
+        expect(
+          source.cancels,
+          1,
+          reason: 'Recording stop must retain group GPS',
+        );
+        final stopped = await tester.runAsync(
+          () => f.runtime.gps.journal.session(session.id),
+        );
+        expect(stopped!.state, 'stopped');
+        expect(find.byKey(const Key('drive_open_group')), findsNothing);
+      } finally {
+        await tester.pumpWidget(const SizedBox());
+        await frames();
+        await service.close();
+        await source.stream.close();
+        maps.GoogleMapsFlutterPlatform.instance = oldMaps;
+        GeolocatorPlatform.instance = oldLocation;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          permissions,
+          null,
+        );
+      }
     },
   );
 

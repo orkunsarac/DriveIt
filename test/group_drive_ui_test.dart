@@ -11,7 +11,8 @@ import 'package:driveit_project/features/group_drive/group_drive_map.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart'
     as maps;
 import 'group_drive_map_fake.dart';
-import 'group_gps_sharing_test.dart' show FakeGroupGps, groupPosition;
+import 'group_gps_sharing_test.dart'
+    show FakeGroupGps, FakeBackgroundGroupGps, groupPosition;
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/features/group_drive/group_drive_screen.dart';
 import 'package:driveit_project/features/group_drive/group_drive_service.dart';
@@ -664,6 +665,72 @@ void main() {
       expect(snapshot.members, hasLength(1));
       await tester.pumpWidget(const SizedBox());
       expect(tester.takeException(), null);
+    },
+  );
+
+  testWidgets(
+    'owner navigator keeps consented background session when group route is popped',
+    (tester) async {
+      tester.view.physicalSize = const Size(800, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final source = FakeBackgroundGroupGps();
+      final navigation = GlobalKey<NavigatorState>();
+      final existing = service.forOwner(ra.lease);
+      await existing.create();
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: ra,
+            legacyChild: const SizedBox(),
+            navigatorKey: navigation,
+            groupDriveServiceForTesting: service,
+            groupGpsSourceFactory: () => source,
+          ),
+        ),
+      );
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await click(tester, find.byKey(const Key('group_share_start')));
+      await tester.tap(find.byKey(const Key('group_background_consent')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('group_consent_confirm')));
+      await frames(tester);
+      expect(source.opens, 1);
+      navigation.currentState!.pop();
+      await frames(tester);
+      expect(source.cancels, 0);
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.inactive,
+      );
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.hidden,
+      );
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.paused,
+      );
+      source.stream.add(groupPosition(now));
+      await frames(tester);
+      expect((await existing.current())!.members.single.location, isNotNull);
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.hidden,
+      );
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.inactive,
+      );
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.resumed,
+      );
+      await click(tester, find.byKey(const Key('home_group_card')));
+      expect(source.opens, 1);
+      await click(tester, find.byKey(const Key('group_share_pause')));
+      expect(source.cancels, 1);
+      await tester.pumpWidget(const SizedBox());
+      await frames(tester);
+      await source.stream.close();
     },
   );
 

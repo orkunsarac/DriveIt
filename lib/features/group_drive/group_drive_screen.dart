@@ -11,6 +11,7 @@ import 'group_drive_service.dart';
 import 'group_drive_map.dart';
 import 'group_gps_source.dart';
 import 'group_gps_sharing.dart';
+import 'group_drive_session.dart';
 
 class GroupDriveScreen extends StatelessWidget {
   const GroupDriveScreen({
@@ -18,12 +19,16 @@ class GroupDriveScreen extends StatelessWidget {
     required this.lease,
     required this.service,
     this.gpsSource,
+    this.session,
+    this.onReturnToDrive,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
 
   /// Explicit controlled Android source. Null keeps the synthetic demo.
   final GroupGpsSource? gpsSource;
+  final GroupDriveSession? session;
+  final VoidCallback? onReturnToDrive;
   @override
   Widget build(BuildContext context) => LocalOwnerView(
     lease: lease,
@@ -43,6 +48,8 @@ class GroupDriveScreen extends StatelessWidget {
         lease: lease,
         service: service,
         gpsSource: gpsSource,
+        session: session,
+        onReturnToDrive: onReturnToDrive,
       );
     },
   );
@@ -54,10 +61,14 @@ class _GroupDrivePage extends StatefulWidget {
     required this.lease,
     required this.service,
     this.gpsSource,
+    this.session,
+    this.onReturnToDrive,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
   final GroupGpsSource? gpsSource;
+  final GroupDriveSession? session;
+  final VoidCallback? onReturnToDrive;
   @override
   State<_GroupDrivePage> createState() => _GroupDrivePageState();
 }
@@ -79,8 +90,12 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
   @override
   void initState() {
     super.initState();
-    _client = widget.service.forOwner(widget.lease);
-    if (widget.gpsSource != null) {
+    _client = widget.session?.client ?? widget.service.forOwner(widget.lease);
+    _group = widget.session?.snapshot;
+    _gps = widget.session?.gps;
+    if (_gps != null) {
+      _gps!.addListener(_onGpsChanged);
+    } else if (widget.gpsSource != null) {
       _gps = GroupGpsSharing(
         lease: widget.lease,
         client: _client,
@@ -144,33 +159,55 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         .where((m) => m.accountId == widget.lease.owner.userId)
         .single
         .membershipId;
+    var backgroundConsent = false;
+    final backgroundSupported = _gps?.source is BackgroundGroupGpsSource;
     final accepted = await showDialog<bool>(
       context: context,
       useRootNavigator: false,
-      builder: (context) => AlertDialog(
-        title: Text(
-          _gps == null
-              ? 'Sentetik konum paylaşımı'
-              : 'Cihaz GPS konumunu paylaş',
-        ),
-        content: Text(
-          _gps == null
-              ? 'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.'
-              : (widget.service.isSimulation
-                    ? 'Konum izni gereklidir. Bu cihazın GPS noktaları yalnız yerel fake grupta gösterilir; uzak sunucuya gönderilmez. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.'
-                    : 'Konum izni gereklidir. GPS noktaları yalnız bu grubun yetkili üyelerine geçici olarak iletilir; geçmiş rota olarak saklanmaz. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Vazgeç'),
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: Text(
+            _gps == null
+                ? 'Sentetik konum paylaşımı'
+                : 'Cihaz GPS konumunu paylaş',
           ),
-          TextButton(
-            key: const Key('group_consent_confirm'),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Onayla ve Başlat'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _gps == null
+                      ? 'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.'
+                      : (widget.service.isSimulation
+                            ? 'Konum izni gereklidir. Bu cihazın GPS noktaları yalnız yerel fake grupta gösterilir; uzak sunucuya gönderilmez. Paylaşım uygulama görünürken çalışır; arka plana veya ekran kilidine geçince duraklar. İstediğin an duraklatabilir veya kapatabilirsin.'
+                            : 'Konum izni gereklidir. GPS noktaları yalnız bu grubun yetkili üyelerine geçici olarak iletilir; geçmiş rota olarak saklanmaz. Arka plan seçeneğini açmazsan ekran kilidinde paylaşım duraklar. İstediğin an durdurabilirsin.'),
+                ),
+                if (backgroundSupported)
+                  CheckboxListTile(
+                    key: const Key('group_background_consent'),
+                    value: backgroundConsent,
+                    onChanged: (value) =>
+                        update(() => backgroundConsent = value == true),
+                    title: const Text('Ekran kilidinde ve arka planda paylaş'),
+                    subtitle: const Text(
+                      'Kalıcı bildirim gösterilir. Bildirime dokunarak paylaşımı durdurabilirsin.',
+                    ),
+                  ),
+              ],
+            ),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Vazgeç'),
+            ),
+            TextButton(
+              key: const Key('group_consent_confirm'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Onayla ve Başlat'),
+            ),
+          ],
+        ),
       ),
     );
     if (accepted != true ||
@@ -181,7 +218,11 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     }
     await _run(() async {
       if (_gps != null) {
-        await _gps!.start(group.id, consent: true);
+        await _gps!.start(
+          group.id,
+          consent: true,
+          backgroundConsent: backgroundConsent,
+        );
         return _client.current();
       }
       final grant = await _client.startSharing(group.id, consent: true);
@@ -312,7 +353,9 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     _inviteText.dispose();
     final gps = _gps;
     gps?.removeListener(_onGpsChanged);
-    if (gps != null) {
+    if (widget.session != null) {
+      // The navigator-owned session survives route disposal.
+    } else if (gps != null) {
       unawaited(
         gps.close().whenComplete(() async {
           gps.dispose();
@@ -349,6 +392,18 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            if (widget.onReturnToDrive != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: FilledButton.tonalIcon(
+                  key: const Key('group_return_to_drive'),
+                  onPressed: widget.lease.isCurrent
+                      ? widget.onReturnToDrive
+                      : null,
+                  icon: const Icon(Icons.directions_car),
+                  label: const Text('Sürüşe Dön'),
+                ),
+              ),
             Text(
               widget.service.isSimulation
                   ? 'Yerel test • Fake grup servisi'
@@ -362,13 +417,15 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
             Text(
               _gps == null
                   ? 'Gerçek çevrimiçi grup değildir. Canlı konum paylaşımı kapalı.'
-                  : 'Yetkili grup üyeleri • Cihaz GPS’i • Yalnız uygulama görünürken',
+                  : 'Yetkili grup üyeleri • Cihaz GPS’i • Arka plan paylaşımı için ayrıca onay gerekir',
               style: TextStyle(color: Colors.white70),
             ),
             Text(
               _gps == null
                   ? 'Haritadaki bütün noktalar sentetik test verisidir; gerçek GPS okunmaz.'
-                  : 'GPS paylaşımı ayrı onay ve konum izni ister. Konum geçmiş rota olarak saklanmaz. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.',
+                  : (_gps?.source is BackgroundGroupGpsSource
+                        ? 'GPS paylaşımı ayrı onay ve konum izni ister. Arka planda devam etmek için paylaşım onayındaki seçeneği aç. Konum geçmişi saklanmaz; normal sürüş kaydı bağımsızdır.'
+                        : 'GPS paylaşımı ayrı onay ve konum izni ister. Konum geçmiş rota olarak saklanmaz. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.'),
               style: TextStyle(color: Colors.white70),
             ),
             if (_busy) const LinearProgressIndicator(),
@@ -631,6 +688,8 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     _ => 'Grup işlemi tamamlanamadı ($code).',
   };
   static String _gpsDescription(String code) => switch (code) {
+    'notification_permission_required' =>
+      'Paylaşım bildiriminin görünmesi için bildirim izni gerekli. Paylaşım başlamadı.',
     'permission_denied' ||
     'permission_denied_forever' ||
     'permission_revoked' =>

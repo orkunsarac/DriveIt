@@ -14,7 +14,11 @@ class DriveTaskHandler extends TaskHandler {
   DriveTaskHandler({
     Future<GpsSessionStore> Function()? openJournal,
     this.verifySessionOwner,
-  }) : _openJournal = openJournal ?? openGpsJournal;
+    bool recordingRequested = true,
+  }) : _openJournal = openJournal ?? openGpsJournal,
+       // The public option intentionally configures an internal demand.
+       // ignore: prefer_initializing_formals
+       _recordingRequested = recordingRequested;
   final Future<GpsSessionStore> Function() _openJournal;
   final Future<void> Function(String sessionId)? verifySessionOwner;
   int seconds = 0;
@@ -26,6 +30,12 @@ class DriveTaskHandler extends TaskHandler {
   String? _activeSessionId;
   bool _draining = false;
   bool _starting = false;
+  bool _recordingRequested;
+  String? _groupToken;
+  DateTime? _groupRenewed;
+  bool _destroyed = false;
+  Future<void> _commands = Future.value();
+  Future<void> get settled => _commands;
   DateTime? _lastRawTimestamp;
   Future<void> _eventTail = Future.value();
   TaskStarter? _starter;
@@ -39,6 +49,7 @@ class DriveTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     _starter = starter;
+    if (!_recordingRequested) return; // No journal or GPS on group-only boot.
     if (_starting || _writer != null) return;
     _starting = true;
     try {
@@ -92,6 +103,7 @@ class DriveTaskHandler extends TaskHandler {
       return;
     }
     _isStopped = true;
+    _motionAnchor = null;
     _currentStopRegistered = false;
     _stationarySince = timestamp;
     List<Map<String, Object?>> events;
@@ -112,6 +124,12 @@ class DriveTaskHandler extends TaskHandler {
       await _drain(_activeSessionId!);
       return;
     }
+    await _ensureGps();
+    _starting = false;
+  }
+
+  Future<void> _ensureGps() async {
+    if (_gps != null || _destroyed) return;
     _gps = GpsStreamSupervisor<Position>(
       isFresh: (position) {
         if (_lastRawTimestamp != null &&
@@ -136,6 +154,17 @@ class DriveTaskHandler extends TaskHandler {
       ),
       onState: (state) {
         if (state == GpsFlowState.stopping) return;
+        if (state == GpsFlowState.permissionBlocked && _groupToken != null) {
+          FlutterForegroundTask.sendDataToMain({'groupGpsError': _groupToken});
+          _groupToken = null;
+        }
+        if (state == GpsFlowState.waiting &&
+            _gps?.lastReceivedAt != null &&
+            _groupToken != null) {
+          FlutterForegroundTask.sendDataToMain({'groupGpsError': _groupToken});
+          _groupToken = null;
+        }
+        if (_writer == null || !_recordingRequested || _draining) return;
         final at = DateTime.now();
         final kind = switch (state) {
           GpsFlowState.recording => 'gps_resumed',
@@ -163,13 +192,22 @@ class DriveTaskHandler extends TaskHandler {
         }
       },
       onSample: (position) {
+        final token = _groupToken;
+        if (token != null) {
+          FlutterForegroundTask.sendDataToMain({
+            'groupGpsSample': token,
+            'position': position.toJson(),
+          });
+        }
+        if (!_recordingRequested || _writer == null || _draining) return;
+        final writer = _writer!;
         if (_failure?.code == GpsErrorCode.gpsUnavailable) {
           _recordingError(false);
         }
         _updateStopState(position);
-        final before = _writer!.sequence;
+        final before = writer.sequence;
         unawaited(
-          _writer!
+          writer
               .add(
                 RawTelemetryInput(
                   latitude: position.latitude,
@@ -184,8 +222,8 @@ class DriveTaskHandler extends TaskHandler {
               )
               .then((_) {
                 if (_writeFailed &&
-                    _writer!.sequence > before &&
-                    !_writer!.hasPendingFailure) {
+                    writer.sequence > before &&
+                    !writer.hasPendingFailure) {
                   _recordingError(false);
                 }
               })
@@ -200,9 +238,10 @@ class DriveTaskHandler extends TaskHandler {
         );
       },
     );
-    _recordingError(true, failure: GpsFailure(GpsErrorCode.gpsUnavailable));
+    if (_writer != null) {
+      _recordingError(true, failure: GpsFailure(GpsErrorCode.gpsUnavailable));
+    }
     await _gps!.poll();
-    _starting = false;
   }
 
   void _recordingError(bool failed, {GpsFailure? failure}) {
@@ -251,10 +290,20 @@ class DriveTaskHandler extends TaskHandler {
     _draining = true;
     try {
       await _store!.requestStop(id);
-      await _gps?.close();
+      // The writer is drained independently from the shared physical source.
+      if (_groupToken == null) {
+        await _gps?.close();
+        _gps = null;
+      }
       await _eventTail;
       await _writer!.drain();
       await _store!.stop(id, expectedSequence: _writer!.sequence);
+      await _writer!.close();
+      _writer = null;
+      _recordingRequested = false;
+      _activeSessionId = null;
+      await _store!.close();
+      _store = null;
     } catch (error) {
       _recordingError(
         true,
@@ -319,25 +368,60 @@ class DriveTaskHandler extends TaskHandler {
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    if (_writer == null && _starter != null) {
+    if (_groupToken != null &&
+        timestamp.difference(_groupRenewed!) > const Duration(seconds: 10)) {
+      final expired = _groupToken;
+      _groupToken = null;
+      FlutterForegroundTask.sendDataToMain({'groupGpsError': expired});
+    }
+    if (!_recordingRequested && _groupToken == null) {
+      // A recreated engine never restores a group demand from preferences.
+      if (!_starting &&
+          timestamp.difference(_groupRenewed ?? timestamp) >
+              const Duration(seconds: 10)) {
+        _commands = _commands.then((_) async {
+          if (_destroyed || _recordingRequested || _groupToken != null) return;
+          await _gps?.close();
+          _gps = null;
+          await FlutterForegroundTask.stopService();
+        });
+      }
+      _groupRenewed ??= timestamp;
+      return;
+    }
+    if (_recordingRequested && _writer == null && _starter != null) {
       unawaited(onStart(timestamp, _starter!));
     }
     if (_gps != null && !_draining) {
       unawaited(_gps!.poll().catchError((Object _) {}));
     }
-    if (_writeFailed) {
+    if (_writeFailed && _recordingRequested) {
       _recordingError(true);
       return;
     }
     seconds++;
     FlutterForegroundTask.updateService(
-      notificationTitle: 'DriveIt - Sürüş devam ediyor',
-      notificationText: 'Arka planda kayıt: ${seconds}s',
+      notificationTitle: _groupToken == null
+          ? 'DriveIt - Sürüş devam ediyor'
+          : 'DriveIt • Grup konumu paylaşılıyor',
+      notificationText: _groupToken == null
+          ? 'Arka planda kayıt: ${seconds}s'
+          : (_recordingRequested
+                ? 'Sürüş kaydı ve grup paylaşımı etkin. Kontroller için dokun.'
+                : 'Grup paylaşımı etkin. Durdurmak için dokun.'),
     );
   }
 
   @override
   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    if (_destroyed) return;
+    _destroyed = true;
+    final token = _groupToken;
+    _groupToken = null;
+    if (token != null) {
+      FlutterForegroundTask.sendDataToMain({'groupGpsError': token});
+    }
+    await _commands;
     await _gps?.close();
     await _eventTail;
     try {
@@ -363,14 +447,78 @@ class DriveTaskHandler extends TaskHandler {
 
   @override
   void onNotificationPressed() {
-    FlutterForegroundTask.sendDataToMain({'openDrive': true});
+    FlutterForegroundTask.sendDataToMain({
+      if (_groupToken != null) 'openGroup': true else 'openDrive': true,
+    });
     FlutterForegroundTask.launchApp();
   }
 
   @override
   void onReceiveData(Object data) {
-    if (data is Map && data['drainSession'] is String) {
-      unawaited(_drain(data['drainSession'] as String));
-    }
+    if (data is! Map || _destroyed) return;
+    _commands = _commands
+        .then((_) async {
+          if (_destroyed) return;
+          if (data['queryRecording'] is String) {
+            FlutterForegroundTask.sendDataToMain({
+              'recordingState': data['queryRecording'],
+              'requested': _recordingRequested,
+              'sessionId': _activeSessionId,
+            });
+            return;
+          }
+          if (data['drainSession'] is String) {
+            await _drain(data['drainSession'] as String);
+            return;
+          }
+          if (data['attachRecording'] == true) {
+            _recordingRequested = true;
+            await onStart(DateTime.now(), _starter ?? TaskStarter.developer);
+            FlutterForegroundTask.sendDataToMain({
+              'recordingAttached': _activeSessionId,
+            });
+          }
+          final token = data['groupGpsToken'];
+          if (token is! String || token.isEmpty) return;
+          switch (data['groupGpsCommand']) {
+            case 'attach':
+              if (_groupToken != null && _groupToken != token) return;
+              _groupToken = token;
+              _groupRenewed = DateTime.now();
+              await _ensureGps();
+              if (_groupToken == token) {
+                FlutterForegroundTask.sendDataToMain({
+                  'groupGpsAttached': token,
+                });
+              }
+            case 'renew':
+              if (_groupToken == token) {
+                _groupRenewed = DateTime.now();
+                FlutterForegroundTask.sendDataToMain({'groupGpsAlive': token});
+              }
+            case 'detach':
+              if (_groupToken == token) {
+                _groupToken = null;
+                if (!_recordingRequested) {
+                  await _gps?.close();
+                  _gps = null;
+                }
+              }
+              FlutterForegroundTask.sendDataToMain({
+                'groupGpsDetached': token,
+                'recording': _recordingRequested,
+              });
+          }
+        })
+        .catchError((Object _) {
+          if (data['groupGpsCommand'] != null && _groupToken != null) {
+            FlutterForegroundTask.sendDataToMain({
+              'groupGpsError': _groupToken,
+            });
+            _groupToken = null;
+          } else if (data['attachRecording'] == true) {
+            _recordingError(true, failure: GpsFailure(GpsErrorCode.recovery));
+          }
+        });
   }
 }

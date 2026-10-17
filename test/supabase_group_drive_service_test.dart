@@ -27,6 +27,11 @@ class _SdkGroupFixture {
   final now = DateTime.utc(2026, 10, 17, 12);
   int generation = 7;
   bool paused = false;
+  int tokenLifetime = 3600;
+  int tokenRequests = 0;
+  bool rejectRefresh = false;
+  bool liveClock = false;
+  final commands = <String>[];
   late Directory root;
   final auth = TestAuth();
   late LocalOwnerLifecycle runtime;
@@ -57,12 +62,24 @@ class _SdkGroupFixture {
       httpClient: MockClient((request) async {
         Object response;
         if (request.url.path.endsWith('/token')) {
+          tokenRequests++;
+          if (rejectRefresh) {
+            return http.Response(
+              jsonEncode({
+                'error': 'invalid_grant',
+                'error_description': 'synthetic refresh rejection',
+              }),
+              400,
+              headers: {'content-type': 'application/json'},
+              request: request,
+            );
+          }
           response = {
             'access_token':
-                '${base64Url.encode(utf8.encode('{"alg":"HS256"}'))}.${base64Url.encode(utf8.encode(jsonEncode({'sub': a, 'aud': 'authenticated', 'role': 'authenticated', 'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600})))}.synthetic',
+                '${base64Url.encode(utf8.encode('{"alg":"HS256"}'))}.${base64Url.encode(utf8.encode(jsonEncode({'sub': a, 'aud': 'authenticated', 'role': 'authenticated', 'exp': DateTime.now().millisecondsSinceEpoch ~/ 1000 + tokenLifetime})))}.synthetic',
             'refresh_token': 'synthetic-refresh-token',
             'token_type': 'bearer',
-            'expires_in': 3600,
+            'expires_in': tokenLifetime,
             'user': {
               'id': a,
               'aud': 'authenticated',
@@ -71,6 +88,7 @@ class _SdkGroupFixture {
           };
         } else {
           final action = (jsonDecode(request.body) as Map)['p_action'];
+          if (action is String) commands.add(action);
           if (action == 'share_pause') {
             paused = true;
             generation++;
@@ -78,13 +96,21 @@ class _SdkGroupFixture {
           response = {
             'id': 'test-group',
             'generation': generation,
-            'observedAt': now.toIso8601String(),
+            'observedAt': (liveClock ? DateTime.now().toUtc() : now)
+                .toIso8601String(),
             'createdAt': now.toIso8601String(),
             'expiresAt': now.add(const Duration(hours: 12)).toIso8601String(),
             'status': 'active',
             'extensionCount': 0,
             'revision': generation,
             'inviteCode': '00000000-0000-4000-8000-000000000001',
+            if (action == 'share_start')
+              'grant': {
+                'membershipId': 'member-a',
+                'publicationId': 'synthetic-publication',
+                'generation': generation,
+                'startedAt': DateTime.now().toUtc().toIso8601String(),
+              },
             'members': [
               for (final (id, account, order) in [
                 ('member-a', a, 0),
@@ -172,6 +198,55 @@ void main() {
     late _SdkGroupFixture fixture;
     setUp(() async => fixture = await _SdkGroupFixture.create());
     tearDown(() => fixture.close());
+
+    test(
+      'active grant heartbeat continues over HTTP while Flutter is paused',
+      () async {
+        fixture.liveClock = true;
+        await fixture.client.startSharing('test-group', consent: true);
+        TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+          AppLifecycleState.paused,
+        );
+        try {
+        // Existing five-second polling and a ten-second minimum heartbeat
+        // interval can place the first renewal on the third poll.
+        await Future<void>.delayed(const Duration(seconds: 16));
+          expect(fixture.commands, contains('share_heartbeat'));
+        } finally {
+          TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+        }
+      },
+    );
+
+    test(
+      'paused foreground consumer explicitly refreshes expiring Auth before HTTP heartbeat/snapshot',
+      () async {
+        fixture.tokenLifetime = 1;
+        await fixture.supabase.auth.refreshSession();
+        fixture.tokenLifetime = 3600;
+        final before = fixture.tokenRequests;
+        TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+          AppLifecycleState.paused,
+        );
+        try {
+          expect(await fixture.client.current(), isNotNull);
+          expect(fixture.tokenRequests, before + 1);
+          fixture.tokenLifetime = 1;
+          await fixture.supabase.auth.refreshSession();
+          fixture.rejectRefresh = true;
+          await expectLater(
+            fixture.client.current(),
+            throwsA(isA<GroupDriveException>()),
+          );
+        } finally {
+          TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+        }
+      },
+    );
 
     test(
       'envelope reaches member cache and changes; bad/revoked data is rejected',

@@ -55,6 +55,27 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
   DateTime? _lastHeartbeat;
   int _generation = 0;
   bool _closed = false;
+  Future<void>? _authRefresh;
+
+  /// The Flutter SDK suspends automatic refresh while paused. The active
+  /// foreground consumer explicitly refreshes before its HTTP operations.
+  /// No session is copied into task preferences or a new persistent store.
+  Future<void> _ensureAuth() async {
+    _guard();
+    final session = _client.auth.currentSession;
+    if (session == null) throw const GroupDriveException('owner_auth_mismatch');
+    final expiry = session.expiresAt;
+    if (expiry != null &&
+        expiry <= DateTime.now().millisecondsSinceEpoch ~/ 1000 + 60) {
+      await (_authRefresh ??= _client.auth
+          .refreshSession()
+          .then<void>((_) {
+            _guard();
+          })
+          .whenComplete(() => _authRefresh = null));
+    }
+    _guard();
+  }
 
   String get _actor => _lease.owner.userId!;
   void _guard() {
@@ -116,6 +137,7 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
   }) async {
     _guard();
     try {
+      await _ensureAuth();
       final result = await _client.rpc(
         'phase8_group_command',
         params: {
@@ -492,6 +514,7 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
       throw const GroupDriveException('publication_revoked');
     }
     try {
+      await _ensureAuth();
       await _client.functions.invoke(
         'phase8-group-publish',
         body: {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/local_owner_lifecycle.dart';
 import '../screens/home_screen.dart';
@@ -18,11 +19,12 @@ import '../screens/owner_cloud_sync_screen.dart';
 import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
 import '../features/group_drive/group_gps_source.dart';
+import '../features/group_drive/group_drive_session.dart';
 import '../screens/account_drive_transfer_screen.dart';
 
 /// Owner navigation shared by the normal application and controlled tests.
 /// Unfinished routes remain unregistered instead of using shared personal data.
-class OwnerPersonalNavigator extends StatelessWidget {
+class OwnerPersonalNavigator extends StatefulWidget {
   const OwnerPersonalNavigator({
     super.key,
     required this.runtime,
@@ -54,6 +56,118 @@ class OwnerPersonalNavigator extends StatelessWidget {
   final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
   deviceArchiveLoader;
   @override
+  State<OwnerPersonalNavigator> createState() => _OwnerPersonalNavigatorState();
+}
+
+class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
+  GroupDriveSession? _groupSession;
+  _DriveGroupOrigin? _activeDrive;
+  LocalOwnerLifecycle get runtime => widget.runtime;
+  String get initialRoute => widget.initialRoute;
+  GlobalKey<NavigatorState>? get navigatorKey => widget.navigatorKey;
+  Widget get legacyChild => widget.legacyChild;
+  GroupDriveService? get _groupDriveService => widget._groupDriveService;
+  GroupGpsSource Function()? get groupGpsSourceFactory =>
+      widget.groupGpsSourceFactory;
+  DeviceDriveArchiveAccess? get deviceArchive => widget.deviceArchive;
+  DeviceDriveArchiveSnapshot? get deviceArchiveSnapshot =>
+      widget.deviceArchiveSnapshot;
+  Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
+  get deviceArchiveLoader => widget.deviceArchiveLoader;
+
+  GroupDriveSession? _sessionFor(LocalOwnerLease lease) {
+    if (_groupDriveService == null || lease.owner.userId == null) return null;
+    if (!identical(_groupSession?.lease, lease)) {
+      final source = groupGpsSourceFactory?.call();
+      if (source is! BackgroundGroupGpsSource) return null;
+      final previous = _groupSession;
+      if (previous != null) unawaited(previous.close());
+      _groupSession = GroupDriveSession(
+        lease: lease,
+        service: _groupDriveService!,
+        source: source,
+      );
+    }
+    return _groupSession;
+  }
+
+  Widget _groupPage(LocalOwnerLease lease) {
+    final candidate = _activeDrive;
+    final origin =
+        candidate != null &&
+            identical(candidate.lease, lease) &&
+            candidate.route.isActive
+        ? candidate
+        : null;
+    final session = _sessionFor(lease);
+    if (session != null) {
+      return GroupDriveScreen(
+        lease: lease,
+        service: _groupDriveService!,
+        gpsSource: session.gps.source,
+        session: session,
+        onReturnToDrive: origin?.returnToDrive,
+      );
+    }
+    return GroupDriveScreen(
+      lease: lease,
+      service: _groupDriveService!,
+      gpsSource: groupGpsSourceFactory?.call(),
+      onReturnToDrive: origin?.returnToDrive,
+    );
+  }
+
+  Widget _drivePage(BuildContext context, LocalOwnerLease lease) {
+    final session = _sessionFor(lease);
+    final route = ModalRoute.of(context)!;
+    final navigator = Navigator.of(context);
+    final origin = _DriveGroupOrigin(
+      lease: lease,
+      route: route,
+      navigator: navigator,
+    );
+    return OwnedDriveScreen(
+      lease: lease,
+      onRecordingChanged: (active) {
+        if (active && lease.isCurrent && route.isActive) {
+          _activeDrive = origin;
+        } else if (identical(_activeDrive?.route, route)) {
+          _activeDrive = null;
+        }
+      },
+      activeGroupAction: session == null
+          ? null
+          : ListenableBuilder(
+              listenable: session,
+              builder: (_, _) => !session.hasActiveMembership
+                  ? const SizedBox.shrink()
+                  : FilledButton.tonalIcon(
+                      key: const Key('drive_open_group'),
+                      icon: const Icon(Icons.group),
+                      label: const Text('Grup Sürüşüne Geç'),
+                      onPressed: () {
+                        if (!lease.isCurrent ||
+                            !route.isCurrent ||
+                            !session.hasActiveMembership) {
+                          return;
+                        }
+                        // Push above the existing recorder. Never pop/replace its
+                        // route: MapScreen's session, timers and journal stay live.
+                        navigator.pushNamed('/group');
+                      },
+                    ),
+            ),
+    );
+  }
+
+  @override
+  void dispose() {
+    final session = _groupSession;
+    if (session != null) unawaited(session.close());
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => LocalOwnerNavigator(
     runtime: runtime,
     initialRoute: initialRoute,
@@ -68,11 +182,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
         ),
       ),
       if (_groupDriveService != null)
-        '/group': (_, lease, _) => GroupDriveScreen(
-          lease: lease,
-          service: _groupDriveService!,
-          gpsSource: groupGpsSourceFactory?.call(),
-        ),
+        '/group': (_, lease, _) => _groupPage(lease),
       '/history': (_, lease, _) => HistoryScreen(
         ownerLease: lease,
         deviceArchiveLoader: deviceArchiveLoader,
@@ -87,7 +197,7 @@ class OwnerPersonalNavigator extends StatelessWidget {
         ownedDetailBuilder: (lease, id) =>
             OwnedDriveDetailScreen(lease: lease, driveId: id),
       ),
-      '/drive': (_, lease, _) => OwnedDriveScreen(lease: lease),
+      '/drive': (context, lease, _) => _drivePage(context, lease),
       '/career': (_, lease, _) => CareerScreen(
         ownerLease: lease,
         ownedDetailBuilder: (lease, id) =>
@@ -113,4 +223,23 @@ class OwnerPersonalNavigator extends StatelessWidget {
       '/posters': (_, lease, _) => PosterCenterScreen(ownerLease: lease),
     },
   );
+}
+
+/// Only a live, owner-bound drive route can be a return target. This handle
+/// is in memory and never creates or recovers a recording session.
+class _DriveGroupOrigin {
+  const _DriveGroupOrigin({
+    required this.lease,
+    required this.route,
+    required this.navigator,
+  });
+  final LocalOwnerLease lease;
+  final Route<void> route;
+  final NavigatorState navigator;
+
+  void returnToDrive() {
+    if (lease.isCurrent && route.isActive && navigator.mounted) {
+      navigator.popUntil((candidate) => identical(candidate, route));
+    }
+  }
 }

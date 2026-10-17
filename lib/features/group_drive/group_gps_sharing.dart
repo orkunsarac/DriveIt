@@ -6,8 +6,8 @@ import 'group_drive_models.dart';
 import 'group_drive_service.dart';
 import 'group_gps_source.dart';
 
-/// One revocable UI GPS subscription. No journal, storage, FGS or remote
-/// transport. Background/restart never resumes sharing without another consent.
+/// Revocable owner-scoped publication. Background continuation requires both
+/// explicit consent and the foreground-task-backed source; nothing is restored.
 class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   GroupGpsSharing({
     required this.lease,
@@ -33,6 +33,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _lastTimestamp;
   int _generation = 0, _sequence = 0;
   bool _closed = false, _sending = false, _checking = false;
+  bool _backgroundConsent = false;
   String? errorCode;
   String? sampleState;
   Future<void> _work = Future.value();
@@ -41,7 +42,10 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   bool get _visible =>
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
   bool _valid(int generation) =>
-      !_closed && lease.isCurrent && generation == _generation && _visible;
+      !_closed &&
+      lease.isCurrent &&
+      generation == _generation &&
+      (_visible || (_grant != null && _backgroundConsent));
   void _ownerChanged() {
     if (!lease.isCurrent) {
       diagnostics?.call('owner_epoch_invalidated');
@@ -63,16 +67,25 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
         )) {
       diagnostics?.call('grant_invalidated_group_or_membership');
       _halt();
+      errorCode = 'group_access_lost';
+      if (!_closed) notifyListeners();
     } else {
       diagnostics?.call('group_membership_valid');
     }
   }
 
-  Future<void> start(String groupId, {required bool consent}) async {
+  Future<void> start(
+    String groupId, {
+    required bool consent,
+    bool backgroundConsent = false,
+  }) async {
     diagnostics?.call(
       'start_requested:consent:$consent,visible:$_visible,owner_current:${lease.isCurrent}',
     );
     if (!consent) throw const GroupGpsException('consent_required');
+    if (backgroundConsent && source is! BackgroundGroupGpsSource) {
+      throw const GroupGpsException('background_source_required');
+    }
     if (!_visible || !lease.isCurrent || _closed) {
       throw const GroupGpsException('foreground_required');
     }
@@ -93,6 +106,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       throw const GroupGpsException('context_changed');
     }
     _grant = grant;
+    _backgroundConsent = backgroundConsent;
     diagnostics?.call(
       'sharing_grant_active:owner_current:${lease.isCurrent},visible:$_visible',
     );
@@ -189,6 +203,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
             sequence: ++_sequence,
           ),
         );
+        if (!_valid(generation) || _grant == null) return;
         _setSampleState('published');
         diagnostics?.call('gps_publish_completed');
         if (diagnostics != null) {
@@ -219,6 +234,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
 
   void _halt() {
     ++_generation;
+    _backgroundConsent = false;
     _grant = null;
     _latest = null;
     _permissionCheck?.cancel();
@@ -269,9 +285,11 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
     diagnostics?.call(
       'lifecycle:${state.name},visible:${state == AppLifecycleState.resumed}',
     );
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden ||
-        state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.detached ||
+        (!_backgroundConsent &&
+            (state == AppLifecycleState.paused ||
+                state == AppLifecycleState.hidden ||
+                state == AppLifecycleState.detached))) {
       unawaited(_fail('background_paused', _generation));
       _halt(); // Invalidates a pending permission request too.
     }

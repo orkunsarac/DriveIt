@@ -1,7 +1,10 @@
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
+import 'package:geolocator/geolocator.dart';
+import 'package:flutter/widgets.dart';
 import 'task_handler.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'gps_session_store.dart';
 import 'gps_session_runtime.dart';
 import 'drive_recovery_status.dart';
@@ -17,20 +20,33 @@ import 'owned_drive_finalization.dart';
 
 @pragma('vm:entry-point')
 void ownedStartCallback() {
-  final descriptor = Future<OwnedForegroundBootstrap>(() async {
+  FlutterForegroundTask.setTaskHandler(_ownerHandler(recording: true));
+}
+
+@pragma('vm:entry-point')
+void groupStartCallback() {
+  FlutterForegroundTask.setTaskHandler(_ownerHandler(recording: false));
+}
+
+DriveTaskHandler _ownerHandler({required bool recording}) {
+  OwnedForegroundBootstrap? descriptor;
+  Future<OwnedForegroundBootstrap> load() async {
     final value = await FlutterForegroundTask.getData<String>(
       key: OwnedForegroundBootstrap.preferenceKey,
     );
     if (value == null) throw StateError('Controlled GPS descriptor missing');
     return OwnedForegroundBootstrap.decode(value);
-  });
-  FlutterForegroundTask.setTaskHandler(
-    DriveTaskHandler(
-      openJournal: () async => (await descriptor).openJournal(databaseFactory),
-      verifySessionOwner: (id) async {
-        await (await descriptor).verifyHandoff(databaseFactory, id);
-      },
-    ),
+  }
+
+  return DriveTaskHandler(
+    recordingRequested: recording,
+    openJournal: () async {
+      descriptor = await load();
+      return descriptor!.openJournal(databaseFactory);
+    },
+    verifySessionOwner: (id) async {
+      await descriptor!.verifyHandoff(databaseFactory, id);
+    },
   );
 }
 
@@ -40,6 +56,142 @@ void startCallback() {
 }
 
 class ForegroundService {
+  static String? _groupToken;
+  static Future<void> _nativeTail = Future.value();
+  static Future<T> _nativeOperation<T>(Future<T> Function() action) {
+    final next = _nativeTail.then((_) => action());
+    _nativeTail = next.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return next;
+  }
+
+  /// Ephemeral IPC only. No Auth tokens or group coordinates are persisted.
+  /// The task expires the demand if this isolate stops renewing it.
+  static Stream<Position> groupPositions() {
+    final random = Random.secure();
+    final token = base64UrlEncode(
+      List<int>.generate(32, (_) => random.nextInt(256)),
+    );
+    Timer? renewal;
+    bool cancelled = false;
+    DateTime? lastAlive;
+    final ready = Completer<void>();
+    final detached = Completer<bool>();
+    late StreamController<Position> stream;
+    void command(String value) => FlutterForegroundTask.sendDataToTask({
+      'groupGpsCommand': value,
+      'groupGpsToken': token,
+    });
+    void receive(Object data) {
+      if (data is! Map) return;
+      if (data['groupGpsAttached'] == token && !ready.isCompleted) {
+        lastAlive = DateTime.now();
+        ready.complete();
+      }
+      if (data['groupGpsAlive'] == token) lastAlive = DateTime.now();
+      if (data['groupGpsDetached'] == token && !detached.isCompleted) {
+        if (data['recording'] is bool) {
+          detached.complete(data['recording'] as bool);
+        } else {
+          detached.completeError(
+            StateError('Invalid recording demand response'),
+          );
+        }
+      }
+      if (!cancelled && data['groupGpsError'] == token) {
+        stream.addError(StateError('group_gps_source_lost'));
+      }
+      if (!cancelled && data['groupGpsSample'] == token) {
+        try {
+          stream.add(
+            Position.fromMap(
+              Map<String, dynamic>.from(data['position'] as Map),
+            ),
+          );
+        } on Object {
+          stream.addError(StateError('group_gps_sample_invalid'));
+        }
+      }
+    }
+
+    Future<void> release() async {
+      if (cancelled) return;
+      cancelled = true;
+      renewal?.cancel();
+      try {
+        await _nativeOperation(() async {
+          if (_groupToken != token) return;
+          try {
+            command('detach');
+            final recording = await detached.future.timeout(
+              const Duration(seconds: 5),
+            );
+            if (!recording && await FlutterForegroundTask.isRunningService) {
+              await FlutterForegroundTask.stopService();
+            }
+          } finally {
+            _groupToken = null;
+          }
+        });
+      } finally {
+        FlutterForegroundTask.removeTaskDataCallback(receive);
+      }
+    }
+
+    stream = StreamController<Position>(
+      onListen: () async {
+        try {
+          await _nativeOperation(() async {
+            if (cancelled) return;
+            final bridge = _ownedBridge;
+            if (bridge == null ||
+                bridge.runtime.lease.owner.kind != GpsOwnerKind.account) {
+              throw StateError('Group requires current account owner');
+            }
+            bridge.runtime.lease.requireCurrent();
+            if (_groupToken != null) {
+              throw StateError('Group GPS already subscribed');
+            }
+            _groupToken = token;
+            FlutterForegroundTask.addTaskDataCallback(receive);
+            if (!await FlutterForegroundTask.isRunningService) {
+              if (WidgetsBinding.instance.lifecycleState !=
+                  AppLifecycleState.resumed) {
+                throw StateError('Visible Activity required for group FGS');
+              }
+              final result = await FlutterForegroundTask.startService(
+                serviceId: 100,
+                notificationTitle: 'DriveIt • Grup konumu paylaşılıyor',
+                notificationText:
+                    'Başlatılıyor. Paylaşım kontrolleri için dokun.',
+                serviceTypes: const [ForegroundServiceTypes.location],
+                callback: groupStartCallback,
+              );
+              if (result is ServiceRequestFailure) {
+                throw StateError('Group FGS start failed');
+              }
+            }
+            renewal = Timer.periodic(const Duration(seconds: 2), (_) {
+              if (cancelled) return;
+              if (lastAlive != null &&
+                  DateTime.now().difference(lastAlive!) >
+                      const Duration(seconds: 8)) {
+                stream.addError(StateError('group_gps_task_unresponsive'));
+                return;
+              }
+              command(ready.isCompleted ? 'renew' : 'attach');
+            });
+            command('attach');
+            await ready.future.timeout(const Duration(seconds: 8));
+          });
+        } on Object {
+          if (!cancelled) stream.addError(StateError('group_gps_start_failed'));
+        }
+      },
+      onCancel: release,
+    );
+    return stream.stream;
+  }
+
   static LocalOwnerGpsBridge? _ownedBridge;
   static OwnedForegroundBootstrap? _ownedDescriptor;
   static OwnedDriveTransfer? _ownedTransfer;
@@ -260,11 +412,34 @@ class ForegroundService {
     );
   }
 
-  static Future<void> _startNative() async {
+  static Future<void> _startNative() => _nativeOperation(() async {
     // External Auth events revoke the owner lease synchronously. Check at the
     // last possible point before asking Android to create the producer.
     final owned = _ownedBridge;
     if (owned != null) owned.runtime.lease.requireCurrent();
+    if (_groupToken != null && await FlutterForegroundTask.isRunningService) {
+      final session = await activeSession();
+      if (session == null || session.state != 'recording') {
+        throw StateError('Recording attachment requires an active session');
+      }
+      final attached = Completer<void>();
+      void receive(Object data) {
+        if (data is Map &&
+            data['recordingAttached'] == session.id &&
+            !attached.isCompleted) {
+          attached.complete();
+        }
+      }
+
+      FlutterForegroundTask.addTaskDataCallback(receive);
+      try {
+        FlutterForegroundTask.sendDataToTask({'attachRecording': true});
+        await attached.future.timeout(const Duration(seconds: 10));
+      } finally {
+        FlutterForegroundTask.removeTaskDataCallback(receive);
+      }
+      return;
+    }
     final result = await FlutterForegroundTask.startService(
       serviceId: 100,
       notificationTitle: 'DriveIt - Sürüş devam ediyor',
@@ -285,12 +460,13 @@ class ForegroundService {
       }
       throw GpsFailure(GpsErrorCode.serviceStart);
     }
-  }
+  });
 
   static Future<void> resumeRecording() async {
     final session = await activeSession();
     if (session?.state == 'recording' &&
-        !await FlutterForegroundTask.isRunningService) {
+        (_groupToken != null ||
+            !await FlutterForegroundTask.isRunningService)) {
       final owned = _ownedBridge;
       if (owned != null) {
         await owned.runtime.withOwnerOperation((lease) async {
@@ -367,7 +543,7 @@ class ForegroundService {
         throw GpsFailure(GpsErrorCode.serviceStop);
       }
     }
-    if (await FlutterForegroundTask.isRunningService) {
+    if (_groupToken == null && await FlutterForegroundTask.isRunningService) {
       final result = await FlutterForegroundTask.stopService();
       if (result is ServiceRequestFailure) {
         throw GpsFailure(GpsErrorCode.serviceStop);
@@ -376,8 +552,38 @@ class ForegroundService {
     // Legacy flags are never reset by the new SQLite recording path.
   }
 
+  static Future<bool> _recordingProducerRunning() async {
+    if (!await FlutterForegroundTask.isRunningService) return false;
+    final token = _groupToken;
+    if (token == null) return true; // Existing recording-only recovery path.
+    final expectedSession = await activeSession();
+    final result = Completer<bool>();
+    void receive(Object data) {
+      if (data is Map &&
+          data['recordingState'] == token &&
+          !result.isCompleted) {
+        if (data['requested'] is! bool ||
+            (data['requested'] == true &&
+                (expectedSession == null ||
+                    data['sessionId'] != expectedSession.id))) {
+          result.completeError(StateError('Invalid recording state'));
+        } else {
+          result.complete(data['requested'] as bool);
+        }
+      }
+    }
+
+    FlutterForegroundTask.addTaskDataCallback(receive);
+    try {
+      FlutterForegroundTask.sendDataToTask({'queryRecording': token});
+      return await result.future.timeout(const Duration(seconds: 3));
+    } finally {
+      FlutterForegroundTask.removeTaskDataCallback(receive);
+    }
+  }
+
   static Future<DriveRecoveryStatus> inspectRecovery() => inspectDriveRecovery(
-    producerRunning: () => FlutterForegroundTask.isRunningService,
+    producerRunning: _recordingProducerRunning,
     loadActive: () async {
       final store = await journal;
       var session = await store.active();
@@ -397,7 +603,7 @@ class ForegroundService {
             true ||
         await FlutterForegroundTask.getData(key: 'driveit_stop_requested') ==
             true ||
-        await FlutterForegroundTask.isRunningService,
+        (_groupToken == null && await FlutterForegroundTask.isRunningService),
     loadLegacy: readBackgroundRoute,
   );
 

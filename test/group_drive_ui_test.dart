@@ -96,10 +96,101 @@ void main() {
     await tester.pump();
     await tester.tap(finder);
     await frames(tester);
+    // Existing scenarios explicitly choose not to share at entry. Approval
+    // behavior is exercised separately below with the real dialog controls.
+    final without = find.byKey(const Key('group_entry_consent_without'));
+    if (without.evaluate().isNotEmpty) {
+      await tester.tap(without);
+      await frames(tester);
+    }
   }
 
   testWidgets(
-    'real Home navigation: A creates, B joins, both participants update, member leaves, admin ends',
+    'entry approval waits for lobby start; pause/resume reuses this membership consent',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final source = FakeGroupGps();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(
+            lease: ra.lease,
+            service: service,
+            gpsSource: source,
+          ),
+        ),
+      );
+      await frames(tester);
+      await tester.tap(find.byKey(const Key('group_create')));
+      await frames(tester);
+      expect(find.text('Konumumu paylaşarak devam et'), findsOneWidget);
+      expect(find.text('Konum paylaşmadan devam et'), findsOneWidget);
+      await click(tester, find.byKey(const Key('group_entry_consent_share')));
+      expect(find.byKey(const Key('group_lobby')), findsOneWidget);
+      expect(source.requests, 0);
+      expect(source.opens, 0);
+      await click(tester, find.byKey(const Key('group_start_ride')));
+      expect(source.opens, 1);
+      expect(find.byKey(const Key('group_consent_confirm')), findsNothing);
+      await click(tester, find.byKey(const Key('group_share_pause')));
+      await click(tester, find.byKey(const Key('group_share_start')));
+      expect(source.opens, 2);
+      expect(find.byKey(const Key('group_consent_confirm')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await frames(tester);
+      await source.stream.close();
+    },
+  );
+
+  testWidgets('running join shares only on approval and rejoin asks again', (
+    tester,
+  ) async {
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    final admin = service.forOwner(ra.lease);
+    final group = await admin.create();
+    await admin.startRide(group.id);
+    final source = FakeGroupGps();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: GroupDriveScreen(
+          lease: rb.lease,
+          service: service,
+          gpsSource: source,
+        ),
+      ),
+    );
+    await frames(tester);
+    await tester.enterText(
+      find.byKey(const Key('group_invite_input')),
+      group.invite.code,
+    );
+    await tester.ensureVisible(find.byKey(const Key('group_join')));
+    await tester.tap(find.byKey(const Key('group_join')));
+    await frames(tester);
+    await click(tester, find.byKey(const Key('group_entry_consent_share')));
+    expect(find.byType(GoogleMap), findsOneWidget);
+    expect(source.opens, 1);
+    await click(tester, find.byKey(const Key('group_leave')));
+    await click(tester, find.byKey(const Key('group_confirm')));
+    expect(source.cancels, 1);
+    await tester.enterText(
+      find.byKey(const Key('group_invite_input')),
+      group.invite.code,
+    );
+    await tester.ensureVisible(find.byKey(const Key('group_join')));
+    await tester.tap(find.byKey(const Key('group_join')));
+    await frames(tester);
+    expect(find.byKey(const Key('group_entry_consent_share')), findsOneWidget);
+    await click(tester, find.byKey(const Key('group_entry_consent_without')));
+    expect(find.byType(GoogleMap), findsOneWidget);
+    expect(source.opens, 1);
+    expect(find.byKey(const Key('group_share_start')), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await frames(tester);
+    await source.stream.close();
+  });
+
+  testWidgets(
+    'Home entry opens lobby; admin start moves both devices without GPS consent',
     (tester) async {
       tester.view.physicalSize = const Size(1400, 1200);
       tester.view.devicePixelRatio = 1;
@@ -128,26 +219,18 @@ void main() {
         within('deviceA', find.byKey(const Key('group_create'))),
       );
       expect(
-        within('deviceA', find.byKey(const Key('group_map_workspace'))),
+        within('deviceA', find.byKey(const Key('group_lobby'))),
         findsOneWidget,
       );
-      expect(
-        within('deviceA', find.text('Sentetik test konumları • 0 görünür üye')),
-        findsOneWidget,
-      );
-      expect(within('deviceA', find.text('Yönetici • KAPALI')), findsOneWidget);
-      final code = tester
-          .widget<SelectableText>(
-            within('deviceA', find.byKey(const Key('group_invite_code'))),
-          )
-          .data!;
-      String? copiedText;
+      expect(find.byType(GoogleMap), findsNothing);
+      final group = (await service.forOwner(ra.lease).current())!;
+      expect(group.phase, GroupRidePhase.lobby);
+      String? copied;
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         SystemChannels.platform,
         (call) async {
           if (call.method == 'Clipboard.setData') {
-            copiedText =
-                (call.arguments as Map<Object?, Object?>)['text'] as String?;
+            copied = (call.arguments as Map)['text'] as String;
           }
           return null;
         },
@@ -156,303 +239,15 @@ void main() {
         tester,
         within('deviceA', find.byKey(const Key('group_invite_copy'))),
       );
-      expect(copiedText, code);
+      expect(copied, group.invite.code);
       expect(
         within('deviceA', find.text('Davet kodu kopyalandı')),
         findsOneWidget,
       );
-      expect(within('deviceA', find.text('Yönetici • KAPALI')), findsOneWidget);
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
         SystemChannels.platform,
         null,
       );
-      await click(
-        tester,
-        within('deviceB', find.byKey(const Key('home_group_card'))),
-      );
-      await tester.enterText(
-        within('deviceB', find.byKey(const Key('group_invite_input'))),
-        code,
-      );
-      await click(
-        tester,
-        within('deviceB', find.byKey(const Key('group_join'))),
-      );
-      for (final device in ['deviceA', 'deviceB']) {
-        expect(within(device, find.text('Katılımcılar 2/10')), findsOneWidget);
-        expect(within(device, find.text('Hesap A')), findsOneWidget);
-        expect(within(device, find.text('Hesap B')), findsOneWidget);
-        expect(
-          within(device, find.textContaining('Canlı konum paylaşımı kapalı')),
-          findsOneWidget,
-        );
-      }
-      expect(
-        within('deviceB', find.byKey(const Key('group_end'))),
-        findsNothing,
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_extend'))),
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_extend'))),
-      );
-      expect(
-        tester
-            .widget<TextButton>(
-              within('deviceA', find.byKey(const Key('group_extend'))),
-            )
-            .onPressed,
-        null,
-      );
-      await click(
-        tester,
-        within('deviceB', find.byKey(const Key('group_leave'))),
-      );
-      await tester.tap(find.byKey(const Key('group_confirm')));
-      await frames(tester);
-      expect(within('deviceA', find.text('Katılımcılar 1/10')), findsOneWidget);
-      expect(
-        within('deviceB', find.byKey(const Key('group_create'))),
-        findsOneWidget,
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_end'))),
-      );
-      await tester.tap(find.byKey(const Key('group_confirm')));
-      await frames(tester);
-      expect(
-        within('deviceA', find.text('Grup sonlandırıldı')),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), null);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'map reserves gestures and the surrounding page scrolls outside it',
-    (tester) async {
-      tester.view.physicalSize = const Size(800, 800);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(MaterialApp(home: app(ra)));
-      await click(tester, find.byKey(const Key('home_group_card')));
-      await click(tester, find.byKey(const Key('group_create')));
-      final scrollable = tester.state<ScrollableState>(
-        find.byType(Scrollable).first,
-      );
-      final position = scrollable.position;
-      final map = tester.widget<GoogleMap>(
-        find.byKey(const Key('group_google_map')),
-      );
-      expect(
-        map.gestureRecognizers.any(
-          (recognizer) => recognizer.type == EagerGestureRecognizer,
-        ),
-        isTrue,
-      );
-      await tester.ensureVisible(find.byKey(const Key('group_member_count')));
-      final beforeOutsideDrag = position.pixels;
-      await tester.drag(
-        find.byKey(const Key('group_member_count')),
-        const Offset(0, 100),
-      );
-      await tester.pump();
-      expect(position.pixels, lessThan(beforeOutsideDrag));
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'owner A B A revokes group screen/cache and returns to own membership',
-    (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: OwnerPersonalNavigator(
-            runtime: ra,
-            legacyChild: const Text('legacy'),
-            initialRoute: '/group',
-            groupDriveServiceForTesting: service,
-          ),
-        ),
-      );
-      await frames(tester);
-      await click(tester, find.byKey(const Key('group_create')));
-      expect(find.text('Hesap A'), findsOneWidget);
-      await tester.runAsync(() async {
-        aa.emit(b);
-        await ra.settled;
-      });
-      await frames(tester);
-      expect(find.text('Hesap A'), findsNothing);
-      expect(find.byKey(const Key('group_invite_code')), findsNothing);
-      await click(tester, find.byKey(const Key('group_create')));
-      expect(find.text('Hesap B'), findsOneWidget);
-      await tester.runAsync(() async {
-        aa.emit(a);
-        await ra.settled;
-      });
-      await frames(tester);
-      expect(find.text('Hesap A'), findsOneWidget);
-      expect(find.text('Hesap B'), findsNothing);
-      expect(tester.takeException(), null);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'late Future after owner change never restores the old group page',
-    (tester) async {
-      await service.close();
-      final waiting = Completer<void>();
-      service = FakeGroupDriveService(beforeRequest: (_) => waiting.future);
-      await tester.pumpWidget(MaterialApp(home: app(ra)));
-      await click(tester, find.byKey(const Key('home_group_card')));
-      await tester.runAsync(() async {
-        aa.emit(b);
-        await ra.settled;
-      });
-      waiting.complete();
-      await frames(tester);
-      expect(find.byType(GroupDriveScreen), findsNothing);
-      expect(find.byType(HomeScreen), findsOneWidget);
-      expect(tester.takeException(), null);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'expiry refresh rejects joins; malformed invite and offline state are visible',
-    (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: OwnerPersonalNavigator(
-            runtime: ra,
-            legacyChild: const Text('legacy'),
-            initialRoute: '/group',
-            groupDriveServiceForTesting: service,
-          ),
-        ),
-      );
-      await frames(tester);
-      await tester.enterText(
-        find.byKey(const Key('group_invite_input')),
-        'invalid',
-      );
-      await click(tester, find.byKey(const Key('group_join')));
-      expect(find.text('Davet kodu veya bağlantısı geçersiz.'), findsOneWidget);
-      await click(tester, find.byKey(const Key('group_create')));
-      final invite = (await service.forOwner(ra.lease).current())!.invite;
-      now = now.add(const Duration(hours: 12));
-      await tester.pump(const Duration(hours: 12));
-      await frames(tester);
-      expect(find.text('Grubun süresi doldu'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('group_invite_input')),
-        200,
-        scrollable: find
-            .descendant(
-              of: find.byType(GroupDriveScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      await tester.pump();
-      await tester.enterText(
-        find.byKey(const Key('group_invite_input')),
-        invite.code,
-      );
-      await click(tester, find.byKey(const Key('group_join')));
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('group_error')),
-        -200,
-        scrollable: find
-            .descendant(
-              of: find.byType(GroupDriveScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      expect(
-        find.text('Grup sona erdi; katılım ve uzatma kapalı.'),
-        findsOneWidget,
-      );
-      service.available = false;
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('group_create')),
-        200,
-        scrollable: find
-            .descendant(
-              of: find.byType(GroupDriveScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      await click(tester, find.byKey(const Key('group_create')));
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('group_error')),
-        -200,
-        scrollable: find
-            .descendant(
-              of: find.byType(GroupDriveScreen),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      expect(find.textContaining('Grup servisine ulaşılamadı'), findsOneWidget);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'no injected simulator leaves production-style Home entry unchanged',
-    (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(home: HomeScreen(ownerLease: ra.lease)),
-      );
-      await click(tester, find.byKey(const Key('home_group_card')));
-      expect(find.text('Grup Sürüşü yakında'), findsOneWidget);
-      expect(find.byType(GroupDriveScreen), findsNothing);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'UI consent -> synthetic markers -> focus -> pause resume stop and leave',
-    (tester) async {
-      tester.view.physicalSize = const Size(1400, 2000);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Row(
-            children: [
-              Expanded(
-                child: KeyedSubtree(key: const Key('deviceA'), child: app(ra)),
-              ),
-              Expanded(
-                child: KeyedSubtree(key: const Key('deviceB'), child: app(rb)),
-              ),
-            ],
-          ),
-        ),
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('home_group_card'))),
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_create'))),
-      );
-      final ca = service.forOwner(ra.lease);
-      final group = (await ca.current())!;
       await click(
         tester,
         within('deviceB', find.byKey(const Key('home_group_card'))),
@@ -465,493 +260,676 @@ void main() {
         tester,
         within('deviceB', find.byKey(const Key('group_join'))),
       );
-      GoogleMap map(String device) =>
-          tester.widget<GoogleMap>(within(device, find.byType(GoogleMap)));
-      expect(map('deviceA').markers, isEmpty);
-      expect(map('deviceA').myLocationEnabled, false);
-      expect(map('deviceA').myLocationButtonEnabled, false);
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_share_start'))),
-      );
-      await tester.tap(within('deviceA', find.text('Vazgeç')));
-      await frames(tester);
       expect(
-        (await ca.current())!.members.first.sharingStatus,
-        GroupSharingStatus.off,
-      );
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_share_start'))),
-      );
-      await tester.tap(
-        within('deviceA', find.byKey(const Key('group_consent_confirm'))),
-      );
-      await frames(tester);
-      await click(
-        tester,
-        within('deviceA', find.byKey(const Key('group_send_synthetic'))),
-      );
-      expect(map('deviceA').markers, hasLength(1));
-      expect(
-        map('deviceA').markers.single.icon.toJson(),
-        BitmapDescriptor.defaultMarkerWithHue(
-          BitmapDescriptor.hueAzure,
-        ).toJson(),
-      );
-      const c = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-      final authC = TestAuth()..userId = c;
-      final rc = await tester.runAsync(() => runtime(authC, 'deviceC'));
-      try {
-        final cc = service.forOwner(rc!.lease);
-        await cc.join(group.invite);
-        final gc = await cc.startSharing(group.id, consent: true);
-        await cc.publishSynthetic(
-          gc,
-          GroupSyntheticLocation(
-            latitude: 10.5,
-            longitude: 20.5,
-            recordedAt: now,
-            sequence: 1,
-          ),
-        );
-        await frames(tester);
-        expect(map('deviceA').markers, hasLength(2)); // B never opted in.
-        expect(
-          map(
-            'deviceA',
-          ).markers.any((m) => m.infoWindow.title!.startsWith('Hesap B')),
-          false,
-        );
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_share_start'))),
-        );
-        await tester.tap(
-          within('deviceB', find.byKey(const Key('group_consent_confirm'))),
-        );
-        await frames(tester);
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_send_synthetic'))),
-        );
-        expect(map('deviceA').markers, hasLength(3));
-        final markerB = map(
-          'deviceA',
-        ).markers.singleWhere((m) => m.infoWindow.title == 'Hesap B');
-        expect(markerB.infoWindow.snippet, contains('Sentetik'));
-        markerB.onTap!();
-        await frames(tester);
-        expect(
-          within('deviceA', find.text('Seçili: Hesap B • Sentetik')),
-          findsOneWidget,
-        );
-        expect(
-          mapFake.calls.any((call) => call.method == 'camera#animate'),
-          true,
-        );
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_share_pause'))),
-        );
-        expect(map('deviceA').markers, hasLength(2));
-        expect(
-          within('deviceB', find.text('Sentetik paylaşım: DURAKLATILDI')),
-          findsOneWidget,
-        );
-        expect(
-          within('deviceB', find.byKey(const Key('group_send_synthetic'))),
-          findsNothing,
-        );
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_share_start'))),
-        );
-        await tester.tap(
-          within('deviceB', find.byKey(const Key('group_consent_confirm'))),
-        );
-        await frames(tester);
-        expect(map('deviceA').markers, hasLength(2)); // No old point on resume.
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_send_synthetic'))),
-        );
-        expect(map('deviceA').markers, hasLength(3));
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_share_stop'))),
-        );
-        expect(map('deviceA').markers, hasLength(2));
-        await click(
-          tester,
-          within('deviceB', find.byKey(const Key('group_leave'))),
-        );
-        await tester.tap(find.byKey(const Key('group_confirm')));
-        await frames(tester);
-        expect(
-          (await ca.current())!.members.any((m) => m.accountId == b),
-          false,
-        );
-        expect(map('deviceA').markers, hasLength(2));
-        await click(
-          tester,
-          within('deviceA', find.byKey(const Key('group_end'))),
-        );
-        await tester.tap(find.byKey(const Key('group_confirm')));
-        await frames(tester);
-        expect(map('deviceA').markers, isEmpty);
-        expect(tester.takeException(), null);
-      } finally {
-        await tester.pumpWidget(const SizedBox());
-        await tester.runAsync(() async {
-          await rc!.close();
-          rc.dispose();
-          await authC.events.close();
-        });
-      }
-    },
-  );
-
-  testWidgets(
-    'marker is removed when GPS sample exceeds the 15 second freshness bound',
-    (tester) async {
-      final ca = service.forOwner(ra.lease);
-      final group = await ca.create();
-      final grant = await ca.startSharing(group.id, consent: true);
-      await ca.publishSynthetic(
-        grant,
-        GroupSyntheticLocation(
-          latitude: 10,
-          longitude: 20,
-          recordedAt: now,
-          sequence: 1,
-        ),
-      );
-      final snapshot = (await ca.current())!;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SizedBox(
-            height: 400,
-            child: GroupDriveMap(
-              lease: ra.lease,
-              group: snapshot,
-              isSimulation: true,
-            ),
-          ),
-        ),
-      );
-      await frames(tester);
-      GoogleMap map() => tester.widget<GoogleMap>(find.byType(GoogleMap));
-      expect(map().markers.single.alpha, 1);
-      expect(
-        map().gestureRecognizers.any(
-          (recognizer) => recognizer.type == EagerGestureRecognizer,
-        ),
-        isTrue,
-      );
-      expect(
-        mapFake.calls.any((call) => call.method == 'camera#animate'),
-        isTrue,
-        reason: 'The first valid location should focus the map once.',
-      );
-      await tester.pump(const Duration(seconds: 16));
-      expect(map().markers, isEmpty);
-      expect(
-        find.text('Sentetik test konumları • 0 görünür üye'),
+        within('deviceB', find.byKey(const Key('group_lobby'))),
         findsOneWidget,
       );
-      await tester.pump(const Duration(seconds: 270));
-      expect(map().markers, isEmpty);
-      expect(snapshot.members, hasLength(1));
+      expect(
+        within('deviceB', find.byKey(const Key('group_start_ride'))),
+        findsNothing,
+      );
+      expect(find.text('Katılımcılar 2/10'), findsNWidgets(2));
+      await click(
+        tester,
+        within('deviceA', find.byKey(const Key('group_start_ride'))),
+      );
+      expect(find.byType(GoogleMap), findsNWidgets(2));
+      expect(find.byKey(const Key('group_lobby')), findsNothing);
+      expect(
+        (await service.forOwner(rb.lease).current())!.members.every(
+          (m) => m.sharingStatus == GroupSharingStatus.off,
+        ),
+        isTrue,
+      );
+      expect(find.byKey(const Key('group_share_start')), findsNWidgets(2));
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
-      expect(tester.takeException(), null);
     },
   );
 
   testWidgets(
-    'owner navigator keeps consented background session when group route is popped',
+    'lobby invite share uses the real invite link without starting GPS',
     (tester) async {
-      tester.view.physicalSize = const Size(800, 1800);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final source = FakeBackgroundGroupGps();
-      final navigation = GlobalKey<NavigatorState>();
-      final existing = service.forOwner(ra.lease);
-      await existing.create();
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.resumed,
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      const channel = MethodChannel('driveit/group_invite');
+      String? shared;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
+        call,
+      ) async {
+        shared = (call.arguments as Map)['link'] as String;
+        return null;
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(lease: ra.lease, service: service),
+        ),
       );
+      await frames(tester);
+      await click(tester, find.byKey(const Key('group_invite_share')));
+      expect(shared, group.invite.link.toString());
+      expect(
+        (await client.current())!.members.single.sharingStatus,
+        GroupSharingStatus.off,
+      );
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        null,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'running join goes directly to full-screen map and preserves map gestures',
+    (tester) async {
+      final admin = service.forOwner(ra.lease);
+      final group = await admin.create();
+      await admin.startRide(group.id);
+      await tester.pumpWidget(MaterialApp(home: app(rb)));
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await tester.enterText(
+        find.byKey(const Key('group_invite_input')),
+        group.invite.code,
+      );
+      await click(tester, find.byKey(const Key('group_join')));
+      expect(find.byKey(const Key('group_lobby')), findsNothing);
+      final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(
+        map.gestureRecognizers.any((r) => r.type == EagerGestureRecognizer),
+        isTrue,
+      );
+      expect(
+        tester.getSize(find.byType(GoogleMap)).height,
+        tester.view.physicalSize.height / tester.view.devicePixelRatio,
+      );
+      expect(find.byKey(const Key('group_go_to_drive')), findsOneWidget);
+      expect(map.myLocationEnabled, isFalse);
+      await tester.tap(find.byKey(const Key('group_settings')));
+      await frames(tester);
+      expect(find.byKey(const Key('group_end')), findsNothing);
+      expect(find.byKey(const Key('group_extend')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Sürüşe Git is always available and opens drive without starting it',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      await client.startRide(group.id);
+      var openedDrive = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(
+            lease: ra.lease,
+            service: service,
+            onGoToDrive: () => openedDrive = true,
+          ),
+        ),
+      );
+      await frames(tester);
+      final own = (await client.current())!.members.single;
+      expect(own.sharingStatus, GroupSharingStatus.off);
+      expect(find.byKey(const Key('group_go_to_drive')), findsOneWidget);
+      await click(tester, find.byKey(const Key('group_go_to_drive')));
+      expect(openedDrive, isTrue);
+      expect(
+        (await client.current())!.members.single.sharingStatus,
+        GroupSharingStatus.off,
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'Sürüşe Git returns to existing active drive instead of opening a new one',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      await client.startRide(group.id);
+      var returnedToActive = false;
+      var openedNewDrive = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(
+            lease: ra.lease,
+            service: service,
+            onReturnToDrive: () => returnedToActive = true,
+            onGoToDrive: () => openedNewDrive = true,
+          ),
+        ),
+      );
+      await frames(tester);
+      await click(tester, find.byKey(const Key('group_go_to_drive')));
+      expect(returnedToActive, isTrue);
+      expect(openedNewDrive, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'settings retain admin extension and end; leaving requires confirmation',
+    (tester) async {
+      final admin = service.forOwner(ra.lease);
+      final group = await admin.create();
+      await service.forOwner(rb.lease).join(group.invite);
+      await admin.startRide(group.id);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(lease: ra.lease, service: service),
+        ),
+      );
+      await frames(tester);
+      for (var i = 0; i < 2; i++) {
+        await click(tester, find.byKey(const Key('group_settings')));
+        await click(tester, find.byKey(const Key('group_extend')));
+      }
+      expect((await admin.current())!.extensionCount, 2);
+      await click(tester, find.byKey(const Key('group_leave')));
+      await tester.tap(find.text('Vazgeç'));
+      await frames(tester);
+      expect((await admin.current())!.members, hasLength(2));
+      await click(tester, find.byKey(const Key('group_settings')));
+      await click(tester, find.byKey(const Key('group_end')));
+      await click(tester, find.byKey(const Key('group_confirm')));
+      expect(find.byType(GoogleMap), findsNothing);
+      expect(find.text('Grup sonlandırıldı'), findsOneWidget);
+      expect((await service.forOwner(rb.lease).current())!.isActive, isFalse);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'owner change revokes UI; delayed request cannot repaint previous owner',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      await client.create();
       await tester.pumpWidget(
         MaterialApp(
           home: OwnerPersonalNavigator(
             runtime: ra,
             legacyChild: const SizedBox(),
-            navigatorKey: navigation,
+            initialRoute: '/group',
             groupDriveServiceForTesting: service,
-            groupGpsSourceFactory: () => source,
           ),
         ),
       );
-      await click(tester, find.byKey(const Key('home_group_card')));
-      await click(tester, find.byKey(const Key('group_share_start')));
-      await tester.tap(find.byKey(const Key('group_background_consent')));
-      await tester.pump();
-      await tester.tap(find.byKey(const Key('group_consent_confirm')));
       await frames(tester);
-      expect(source.opens, 1);
-      navigation.currentState!.pop();
-      await frames(tester);
-      expect(source.cancels, 0);
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.inactive,
-      );
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.hidden,
-      );
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.paused,
-      );
-      source.stream.add(groupPosition(now));
-      await frames(tester);
-      expect((await existing.current())!.members.single.location, isNotNull);
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.hidden,
-      );
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.inactive,
-      );
-      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
-        AppLifecycleState.resumed,
-      );
-      await click(tester, find.byKey(const Key('home_group_card')));
-      expect(source.opens, 1);
-      await click(tester, find.byKey(const Key('group_share_pause')));
-      expect(source.cancels, 1);
-      await tester.pumpWidget(const SizedBox());
-      await frames(tester);
-      await source.stream.close();
-    },
-  );
-
-  testWidgets(
-    'busy pause and owner switch reject delayed UI publication and remove the map',
-    (tester) async {
-      tester.view.physicalSize = const Size(800, 1400);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final entered = Completer<void>(), release = Completer<void>();
-      await service.close();
-      service = FakeGroupDriveService(
-        clock: () => now,
-        beforeRequest: (operation) async {
-          if (operation == 'publishSynthetic') {
-            entered.complete();
-            await release.future;
-          }
-        },
-      );
-      await tester.pumpWidget(MaterialApp(home: app(ra)));
-      await click(tester, find.byKey(const Key('home_group_card')));
-      await click(tester, find.byKey(const Key('group_create')));
-      await click(tester, find.byKey(const Key('group_share_start')));
-      await tester.tap(find.byKey(const Key('group_consent_confirm')));
-      await frames(tester);
-      await click(tester, find.byKey(const Key('group_send_synthetic')));
-      await entered.future;
-      await click(tester, find.byKey(const Key('group_share_pause')));
-      expect(find.text('Sentetik paylaşım: DURAKLATILDI'), findsOneWidget);
+      expect(find.text('Hesap A'), findsOneWidget);
       await tester.runAsync(() async {
         aa.emit(b);
         await ra.settled;
       });
-      release.complete();
       await frames(tester);
-      expect(find.byType(GoogleMap), findsNothing);
-      expect(find.byType(HomeScreen), findsOneWidget);
-      expect(await service.forOwner(ra.lease).current(), null);
-      expect(tester.takeException(), null);
+      expect(find.text('Hesap A'), findsNothing);
+      expect(find.byKey(const Key('group_invite_code')), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      await service.close();
+      final gate = Completer<void>();
+      service = FakeGroupDriveService(beforeRequest: (_) => gate.future);
+      await tester.pumpWidget(MaterialApp(home: app(ra)));
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await tester.runAsync(() async {
+        aa.emit(a);
+        await ra.settled;
+      });
+      gate.complete();
+      await frames(tester);
+      expect(find.byType(GroupDriveScreen), findsNothing);
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
 
   testWidgets(
-    'Home GPS consent to adapter to group map, pause and background',
+    'malformed invite, offline errors and expiry are visible in entry',
     (tester) async {
-      tester.view.physicalSize = const Size(800, 1600);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      final source = FakeGroupGps();
       await tester.pumpWidget(
         MaterialApp(
-          home: OwnerPersonalNavigator(
-            runtime: ra,
-            legacyChild: const Text('legacy'),
-            groupDriveServiceForTesting: service,
-            groupGpsSourceFactory: () => source,
+          home: GroupDriveScreen(lease: ra.lease, service: service),
+        ),
+      );
+      await frames(tester);
+      await tester.enterText(
+        find.byKey(const Key('group_invite_input')),
+        'invalid',
+      );
+      await click(tester, find.byKey(const Key('group_join')));
+      expect(find.text('Davet kodu veya bağlantısı geçersiz.'), findsOneWidget);
+      await click(tester, find.byKey(const Key('group_create')));
+      now = now.add(const Duration(hours: 12));
+      await tester.pump(const Duration(hours: 12));
+      await frames(tester);
+      expect(find.text('Grubun süresi doldu'), findsOneWidget);
+      service.available = false;
+      await click(tester, find.byKey(const Key('group_create')));
+      expect(find.textContaining('Grup servisine ulaşılamadı'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'GPS consent, pause, resume and foreground-only background revocation',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      await client.startRide(group.id);
+      final source = FakeGroupGps();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(
+            lease: ra.lease,
+            service: service,
+            gpsSource: source,
           ),
         ),
       );
-      await click(tester, find.byKey(const Key('home_group_card')));
-      await click(tester, find.byKey(const Key('group_create')));
-      expect(source.requests, 0);
-      expect(
-        find.text('Sentetik test konumları • 0 görünür üye'),
-        findsOneWidget,
-      );
-      await click(tester, find.byKey(const Key('group_share_start')));
-      await tester.tap(find.text('Vazgeç'));
       await frames(tester);
-      expect(source.requests, 0);
+      expect(source.opens, 0);
       await click(tester, find.byKey(const Key('group_share_start')));
-      await tester.tap(find.byKey(const Key('group_consent_confirm')));
-      await frames(tester);
+      await click(tester, find.text('Vazgeç'));
+      expect(source.opens, 0);
+      await click(tester, find.byKey(const Key('group_share_start')));
+      await click(tester, find.byKey(const Key('group_consent_confirm')));
       expect(source.opens, 1);
-      expect(find.text('GPS paylaşım: GPS ÖRNEĞİ BEKLENİYOR'), findsOneWidget);
-      expect(find.byKey(const Key('group_send_synthetic')), findsNothing);
       source.stream.add(groupPosition(now));
       await frames(tester);
       GoogleMap map() => tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(map().markers, hasLength(1));
-      expect(map().markers.single.infoWindow.snippet, contains('Cihaz GPS'));
-      expect(
-        find.text('Sentetik test konumları • 1 görünür üye'),
-        findsOneWidget,
-      );
-      expect(find.text('GPS paylaşım: CANLI GPS YAYINDA'), findsOneWidget);
       await click(tester, find.byKey(const Key('group_share_pause')));
       expect(map().markers, isEmpty);
-      expect(
-        find.text('Sentetik test konumları • 0 görünür üye'),
-        findsOneWidget,
-      );
-      expect(source.cancels, 1);
-      await click(tester, find.byKey(const Key('group_share_start')));
-      expect(source.opens, 1); // Resume still needs explicit consent.
-      await tester.tap(find.byKey(const Key('group_consent_confirm')));
+      source.stream.add(groupPosition(now.add(const Duration(seconds: 1))));
       await frames(tester);
+      expect(map().markers, isEmpty);
+      await click(tester, find.byKey(const Key('group_share_start')));
+      expect(find.byKey(const Key('group_consent_confirm')), findsNothing);
       expect(source.opens, 2);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await frames(tester);
       expect(source.cancels, 2);
-      expect(map().markers, isEmpty);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await frames(tester);
       expect(source.opens, 2);
-      expect(tester.takeException(), null);
       await tester.pumpWidget(const SizedBox());
+      await frames(tester);
       await source.stream.close();
     },
   );
 
-  testWidgets('group expiry clears consented points from the real map widget', (
-    tester,
-  ) async {
-    final client = service.forOwner(ra.lease);
-    final group = await client.create();
-    final grant = await client.startSharing(group.id, consent: true);
-    await client.publishSynthetic(
-      grant,
-      GroupSyntheticLocation(
-        latitude: 10,
-        longitude: 20,
-        recordedAt: now.add(const Duration(seconds: 2)),
-        sequence: 1,
-      ),
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: GroupDriveScreen(lease: ra.lease, service: service),
-      ),
-    );
-    await frames(tester);
-    expect(
-      tester.widget<GoogleMap>(find.byType(GoogleMap)).markers,
-      hasLength(1),
-    );
-    now = group.expiresAt;
-    await tester.pump(const Duration(hours: 12));
-    await frames(tester);
-    expect(tester.widget<GoogleMap>(find.byType(GoogleMap)).markers, isEmpty);
-    expect(
-      (await client.current())!.members.single.sharingStatus,
-      GroupSharingStatus.off,
-    );
-    await tester.pumpWidget(const SizedBox());
-    expect(tester.takeException(), null);
-  });
-
-  testWidgets('empty production map never claims to show synthetic locations', (
-    tester,
-  ) async {
-    final client = service.forOwner(ra.lease);
-    final group = await client.create();
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(
-          height: 400,
-          child: GroupDriveMap(
-            lease: ra.lease,
-            group: group,
-            isSimulation: false,
+  testWidgets(
+    'background consent and navigator session survive Home and reopen without a second consumer',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      await client.startRide(group.id);
+      final source = FakeBackgroundGroupGps();
+      final nav = GlobalKey<NavigatorState>();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: ra,
+            legacyChild: const SizedBox(),
+            navigatorKey: nav,
+            groupDriveServiceForTesting: service,
+            groupGpsSourceFactory: () => source,
           ),
         ),
-      ),
-    );
-    await frames(tester);
-    expect(find.text('Henüz canlı konum alınmadı'), findsOneWidget);
-    expect(find.textContaining('Sentetik test konumları'), findsNothing);
-    expect(tester.widget<GoogleMap>(find.byType(GoogleMap)).markers, isEmpty);
-    await tester.pumpWidget(const SizedBox());
-  });
+      );
+      await click(tester, find.byKey(const Key('home_group_card')));
+      await click(tester, find.byKey(const Key('group_share_start')));
+      await click(tester, find.byKey(const Key('group_background_consent')));
+      await click(tester, find.byKey(const Key('group_consent_confirm')));
+      expect(source.opens, 1);
+      await click(tester, find.byKey(const Key('group_back_home')));
+      expect(source.cancels, 0);
+      expect(find.byType(HomeScreen), findsOneWidget);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      source.stream.add(groupPosition(now));
+      await frames(tester);
+      expect((await client.current())!.members.single.location, isNotNull);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await click(tester, find.byKey(const Key('home_group_card')));
+      expect(source.opens, 1);
+      await click(tester, find.byKey(const Key('group_share_pause')));
+      expect(source.cancels, 1);
+      await tester.pumpWidget(const SizedBox());
+      await frames(tester);
+      await source.stream.close();
+    },
+  );
 
-  testWidgets('production map labels a GPS marker and focuses its first fix', (
-    tester,
-  ) async {
-    final client = service.forOwner(ra.lease);
-    final group = await client.create();
-    final grant = await client.startSharing(group.id, consent: true);
-    now = DateTime.now().toUtc();
-    await client.publishGps(
-      grant,
-      GroupGpsLocation(
-        latitude: 10,
-        longitude: 20,
-        recordedAt: now,
-        accuracyMeters: 5,
-        sequence: 1,
-      ),
-    );
-    final snapshot = (await client.current())!;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(
-          height: 400,
-          child: GroupDriveMap(
-            lease: ra.lease,
-            group: snapshot,
-            isSimulation: false,
+  testWidgets(
+    'empty real map and expiry never imply live synthetic coordinates',
+    (tester) async {
+      final client = service.forOwner(ra.lease);
+      final group = await client.create();
+      await client.startRide(group.id);
+      final grant = await client.startSharing(group.id, consent: true);
+      Future<void> render() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GroupDriveMap(
+              lease: ra.lease,
+              group: (await client.current())!,
+              isSimulation: false,
+            ),
           ),
+        );
+        await frames(tester);
+      }
+
+      await render();
+      expect(find.text('Henüz canlı konum alınmadı'), findsNothing);
+      expect(find.textContaining('Sentetik test'), findsNothing);
+      await client.publishGps(
+        grant,
+        GroupGpsLocation(
+          latitude: 10,
+          longitude: 20,
+          recordedAt: now,
+          sequence: 1,
+          accuracyMeters: 5,
         ),
-      ),
-    );
-    await frames(tester);
-    expect(find.text('Canlı GPS • 1 görünür üye'), findsOneWidget);
-    expect(
-      tester.widget<GoogleMap>(find.byType(GoogleMap)).markers,
-      hasLength(1),
-    );
-    expect(
-      mapFake.calls.any((call) => call.method == 'camera#animate'),
-      isTrue,
-    );
-    await tester.pumpWidget(const SizedBox());
-  });
+      );
+      await render();
+      expect(
+        tester.widget<GoogleMap>(find.byType(GoogleMap)).markers,
+        hasLength(1),
+      );
+      expect(find.text('Canlı GPS • 1 görünür üye'), findsNothing);
+      expect(find.byKey(const Key('group_marker_count')), findsNothing);
+      await tester.pump(const Duration(seconds: 10));
+      await render(); // An unchanged UI/snapshot cannot refresh the fix.
+      await tester.pump(const Duration(seconds: 6));
+      expect(tester.widget<GoogleMap>(find.byType(GoogleMap)).markers, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'camera follows selected member, manual gesture cancels, fit all ignores paused member',
+    (tester) async {
+      final ca = service.forOwner(ra.lease), cb = service.forOwner(rb.lease);
+      final group = await ca.create();
+      await ca.startRide(group.id);
+      await cb.join(group.invite);
+      final ga = await ca.startSharing(group.id, consent: true);
+      final gb = await cb.startSharing(group.id, consent: true);
+      await ca.publishGps(
+        ga,
+        GroupGpsLocation(
+          latitude: 10,
+          longitude: 20,
+          recordedAt: now,
+          sequence: 1,
+          accuracyMeters: 5,
+        ),
+      );
+      await cb.publishGps(
+        gb,
+        GroupGpsLocation(
+          latitude: 10.01,
+          longitude: 20.01,
+          recordedAt: now,
+          sequence: 1,
+          accuracyMeters: 5,
+        ),
+      );
+      final camera = GroupMapCamera();
+      Future<void> render() async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GroupDriveMap(
+              lease: ra.lease,
+              group: (await ca.current())!,
+              isSimulation: false,
+              camera: camera,
+            ),
+          ),
+        );
+        await frames(tester);
+      }
+
+      await render();
+      final snapshot = (await ca.current())!;
+      camera.follow(snapshot.members.last.membershipId);
+      await frames(tester);
+      // Native move-start may arrive after the animateCamera Future resolves.
+      // It must not cancel a programmatic follow operation.
+      tester.widget<GoogleMap>(find.byType(GoogleMap)).onCameraMoveStarted!();
+      final before = mapFake.calls
+          .where((c) => c.method == 'camera#animate')
+          .length;
+      now = now.add(const Duration(seconds: 2));
+      await cb.publishGps(
+        gb,
+        GroupGpsLocation(
+          latitude: 10.011,
+          longitude: 20.011,
+          recordedAt: now,
+          sequence: 2,
+          accuracyMeters: 5,
+        ),
+      );
+      await render();
+      expect(
+        mapFake.calls.where((c) => c.method == 'camera#animate').length,
+        greaterThan(before),
+      );
+      tester.widget<GoogleMap>(find.byType(GoogleMap)).onCameraIdle!();
+      tester.widget<GoogleMap>(find.byType(GoogleMap)).onCameraMoveStarted!();
+      expect(camera.membershipId, isNull);
+      final manual = mapFake.calls
+          .where((c) => c.method == 'camera#animate')
+          .length;
+      now = now.add(const Duration(seconds: 2));
+      await cb.publishGps(
+        gb,
+        GroupGpsLocation(
+          latitude: 10.012,
+          longitude: 20.012,
+          recordedAt: now,
+          sequence: 3,
+          accuracyMeters: 5,
+        ),
+      );
+      await render();
+      expect(
+        mapFake.calls.where((c) => c.method == 'camera#animate').length,
+        manual,
+      );
+      await cb.pauseSharing(group.id);
+      await render();
+      camera.showAll();
+      await frames(tester);
+      expect(
+        tester.widget<GoogleMap>(find.byType(GoogleMap)).markers,
+        hasLength(1),
+      );
+      expect(
+        mapFake.calls.where((c) => c.method == 'camera#animate').length,
+        greaterThan(manual),
+      );
+      await tester.pumpWidget(const SizedBox());
+      camera.dispose();
+    },
+  );
+
+  testWidgets(
+    'participant avatar selection follows that member and highlights avatar',
+    (tester) async {
+      final ca = service.forOwner(ra.lease);
+      final cb = service.forOwner(rb.lease);
+      final group = await ca.create();
+      await ca.startRide(group.id);
+      await cb.join(group.invite);
+      final ga = await ca.startSharing(group.id, consent: true);
+      final gb = await cb.startSharing(group.id, consent: true);
+      await ca.publishGps(
+        ga,
+        GroupGpsLocation(
+          latitude: 10,
+          longitude: 20,
+          recordedAt: now,
+          sequence: 1,
+          accuracyMeters: 5,
+        ),
+      );
+      await cb.publishGps(
+        gb,
+        GroupGpsLocation(
+          latitude: 10.01,
+          longitude: 20.01,
+          recordedAt: now,
+          sequence: 1,
+          accuracyMeters: 5,
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(lease: ra.lease, service: service),
+        ),
+      );
+      await frames(tester);
+      final peer = (await ca.current())!.members.firstWhere(
+        (member) => member.accountId == rb.lease.owner.userId,
+      );
+      final callsBefore = mapFake.calls
+          .where((call) => call.method == 'camera#animate')
+          .length;
+      await click(
+        tester,
+        find.byKey(ValueKey('group_profile_${peer.membershipId}')),
+      );
+      expect(
+        find.byKey(ValueKey('group_profile_selected_${peer.membershipId}')),
+        findsOneWidget,
+      );
+      expect(
+        mapFake.calls.where((call) => call.method == 'camera#animate').length,
+        greaterThan(callsBefore),
+      );
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'ten member panel pins self and scrolls other avatars on a small screen',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final ca = service.forOwner(ra.lease);
+      final group = await ca.create();
+      await ca.startRide(group.id);
+      await service.forOwner(rb.lease).join(group.invite);
+      final extra = <LocalOwnerLifecycle>[], auths = <TestAuth>[];
+      try {
+        for (var i = 0; i < 8; i++) {
+          final auth = TestAuth()
+            ..userId =
+                '00000000-0000-4000-8000-${(i + 10).toString().padLeft(12, '0')}';
+          auths.add(auth);
+          final r = (await tester.runAsync(() => runtime(auth, 'extra$i')))!;
+          extra.add(r);
+          await service.forOwner(r.lease).join(group.invite);
+        }
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GroupDriveScreen(lease: ra.lease, service: service),
+          ),
+        );
+        await frames(tester);
+        final own = (await ca.current())!.members.first;
+        final ownFinder = find.byKey(
+          ValueKey('group_profile_${own.membershipId}'),
+        );
+        final ownX = tester.getTopLeft(ownFinder).dx;
+        await tester.drag(
+          find.byKey(const Key('group_other_profiles')),
+          const Offset(-450, 0),
+        );
+        await frames(tester);
+        expect(tester.getTopLeft(ownFinder).dx, ownX);
+        expect(find.text('10/10'), findsOneWidget);
+        final controls = [
+          'group_back_home',
+          'group_share_start',
+          'group_go_to_drive',
+          'group_leave',
+          'group_settings',
+        ].map((key) => tester.getRect(find.byKey(Key(key)))).toList();
+        for (var i = 1; i < controls.length; i++) {
+          expect(controls[i].width, closeTo(controls.first.width, .01));
+          expect(controls[i].center.dy, controls.first.center.dy);
+          expect(
+            controls[i].left,
+            greaterThanOrEqualTo(controls[i - 1].right - .01),
+          );
+        }
+        for (final label in ['Geri', 'Devam', 'Sürüş', 'Çık', 'Ayarlar']) {
+          expect(find.text(label), findsOneWidget);
+        }
+        await tester.drag(
+          find.byKey(const Key('group_participant_panel')),
+          const Offset(0, -450),
+        );
+        await frames(tester);
+        expect(
+          find.byKey(const Key('group_participant_panel')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(const SizedBox());
+      } finally {
+        await tester.runAsync(() async {
+          for (final r in extra) {
+            await r.close();
+            r.dispose();
+          }
+          for (final auth in auths) {
+            await auth.events.close();
+          }
+        });
+      }
+    },
+  );
+
+  testWidgets(
+    'Home without service remains gated; Guest cannot enter real membership',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(home: HomeScreen(ownerLease: ra.lease)),
+      );
+      await click(tester, find.byKey(const Key('home_group_card')));
+      expect(find.text('Grup Sürüşü yakında'), findsOneWidget);
+      final guestAuth = TestAuth()..userId = null;
+      final guest = (await tester.runAsync(() => runtime(guestAuth, 'guest')))!;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GroupDriveScreen(lease: guest.lease, service: service),
+        ),
+      );
+      expect(find.text('Grup Sürüşü için hesap gerekli.'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() async {
+        await guest.close();
+        guest.dispose();
+        await guestAuth.events.close();
+      });
+    },
+  );
 }

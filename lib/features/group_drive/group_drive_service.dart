@@ -21,6 +21,7 @@ abstract interface class GroupDriveClient {
   Stream<GroupDriveSnapshot?> get changes;
   Future<GroupDriveSnapshot> create();
   Future<GroupDriveSnapshot> join(GroupDriveInvite invite);
+  Future<GroupDriveSnapshot> startRide(String groupId);
   Future<GroupDriveSnapshot> extend(String groupId);
   Future<void> leave(String groupId);
   Future<GroupDriveSnapshot> ban(String groupId, String memberOwnerId);
@@ -235,6 +236,9 @@ class _FakeClient implements GroupDriveClient {
         if (group.status != GroupDriveStatus.active) {
           throw const GroupDriveException('group_inactive');
         }
+        if (group.banned.contains(actor)) {
+          throw const GroupDriveException('membership_banned');
+        }
         final existing = service._current(actor);
         if (existing?.status == GroupDriveStatus.active &&
             existing!.id != group.id) {
@@ -246,6 +250,18 @@ class _FakeClient implements GroupDriveClient {
           }
           group.add(actor, service._displayNames[actor] ?? 'Katılımcı', now);
           service._membership[actor] = group.id;
+          group.revision++;
+          service._notify();
+        }
+        return group.snapshot(now);
+      });
+
+  @override
+  Future<GroupDriveSnapshot> startRide(String groupId) =>
+      service._request(lease, 'startRide', (actor, now) {
+        final group = service._authorized(actor, groupId, admin: true);
+        if (group.phase == GroupRidePhase.lobby) {
+          group.phase = GroupRidePhase.running;
           group.revision++;
           service._notify();
         }
@@ -299,6 +315,7 @@ class _FakeClient implements GroupDriveClient {
         if (group.members.remove(memberOwnerId) == null) {
           throw const GroupDriveException('member_not_found');
         }
+        group.banned.add(memberOwnerId);
         group.sharing.remove(memberOwnerId);
         if (service._membership[memberOwnerId] == groupId) {
           service._membership.remove(memberOwnerId);
@@ -328,6 +345,9 @@ class _FakeClient implements GroupDriveClient {
       _requireOpen();
       if (!consent) throw const GroupDriveException('consent_required');
       final group = service._authorized(actor, groupId);
+      if (group.phase != GroupRidePhase.running) {
+        throw const GroupDriveException('ride_not_started');
+      }
       final member = group.members[actor]!;
       final grant = GroupLocationGrant(
         groupId: groupId,
@@ -443,10 +463,12 @@ class _Group {
   DateTime expiresAt;
   String admin;
   GroupDriveStatus status = GroupDriveStatus.active;
+  GroupRidePhase phase = GroupRidePhase.lobby;
   int extensionCount = 0;
   int revision = 1;
   int nextOrder = 0;
   final Map<String, GroupDriveMember> members = {};
+  final Set<String> banned = {};
   final Map<String, _Sharing> sharing = {};
   void stopAllSharing() {
     for (final value in sharing.values) {
@@ -485,6 +507,9 @@ class _Group {
     extensionCount: extensionCount,
     revision: revision,
     invite: invite,
+    phase: status == GroupDriveStatus.active && now.isBefore(expiresAt)
+        ? phase
+        : GroupRidePhase.ended,
     members: members.values.map(
       (member) => GroupDriveMember(
         membershipId: member.membershipId,

@@ -67,6 +67,7 @@ void main() {
           cb = service.forOwner(rb.lease),
           cc = service.forOwner(rc.lease);
       final group = await ca.create();
+      await ca.startRide(group.id);
       await cb.join(group.invite);
       await cc.join(group.invite);
       expect(
@@ -108,6 +109,7 @@ void main() {
     () async {
       final ca = service.forOwner(ra.lease), cb = service.forOwner(rb.lease);
       final group = await ca.create();
+      await ca.startRide(group.id);
       await cb.join(group.invite);
       final ga = await ca.startSharing(group.id, consent: true);
       final gb = await cb.startSharing(group.id, consent: true);
@@ -162,6 +164,7 @@ void main() {
       );
       final client = service.forOwner(ra.lease);
       final group = await client.create();
+      await client.startRide(group.id);
       final grant = await client.startSharing(group.id, consent: true);
       final send = client.publishSynthetic(grant, point());
       final rejected = expectLater(
@@ -187,6 +190,7 @@ void main() {
   test('leave/rejoin replaces membership and rejects old grant', () async {
     final ca = service.forOwner(ra.lease), cb = service.forOwner(rb.lease);
     final group = await ca.create();
+    await ca.startRide(group.id);
     await cb.join(group.invite);
     final grant = await cb.startSharing(group.id, consent: true);
     await cb.publishSynthetic(grant, point());
@@ -207,6 +211,7 @@ void main() {
     () async {
       final ca = service.forOwner(ra.lease), cb = service.forOwner(rb.lease);
       var group = await ca.create();
+      await ca.startRide(group.id);
       await cb.join(group.invite);
       final grant = await cb.startSharing(group.id, consent: true);
       await cb.publishSynthetic(grant, point());
@@ -223,6 +228,7 @@ void main() {
         throwsA(errorCode('group_inactive')),
       );
       group = await ca.create();
+      await ca.startRide(group.id);
       await cb.join(group.invite);
       final newGrant = await cb.startSharing(group.id, consent: true);
       await cb.publishSynthetic(newGrant, point());
@@ -248,6 +254,7 @@ void main() {
           cb = service.forOwner(rb.lease),
           cc = service.forOwner(rc.lease);
       final group = await ca.create();
+      await ca.startRide(group.id);
       await cb.join(group.invite);
       await cc.create();
       final grant = await ca.startSharing(group.id, consent: true);
@@ -276,6 +283,7 @@ void main() {
     () async {
       final client = service.forOwner(ra.lease);
       final group = await client.create();
+      await client.startRide(group.id);
       final grant = await client.startSharing(group.id, consent: true);
       await client.publishSynthetic(grant, point());
       await expectLater(

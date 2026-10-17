@@ -54,7 +54,7 @@ try {
     Write-Host 'The local public key is supplied via an ignored file and will not be printed.'
     Write-Host 'Automatic upload is limited to newly saved, proven account drives; historical/Guest/archive data is not auto-enqueued.'
     Write-Host 'M2 deletion requires per-drive consent; only consented pending deletions may retry.'
-    Write-Host 'Group Drive uses the accepted Planet DEV backend; GPS requires consent and a visible app.'
+    Write-Host 'Group Drive requires visible startup and consent; background continuation also requires its explicit checkbox and location FGS.'
     flutter build apk --release --config-only `
         --dart-define=DRIVEIT_LOCAL_OWNER_ACTIVATION=true `
         --dart-define=DRIVEIT_ACCOUNT_SYNC_ENABLED=true `

@@ -188,6 +188,12 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
       final member = Map<String, dynamic>.from(raw);
       final memberId = _string(member, 'membershipId');
       final state = _sharing(_string(member, 'sharingStatus'));
+      final color = _int(member, 'colorIndex');
+      if (color < 0 ||
+          color >= GroupDriveSnapshot.maximumMembers ||
+          members.any((existing) => existing.colorIndex == color)) {
+        throw const GroupDriveException('response_invalid');
+      }
       members.add(
         GroupDriveMember(
           membershipId: memberId,
@@ -199,7 +205,7 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
               ? GroupDriveRole.administrator
               : GroupDriveRole.member,
           sharingStatus: state,
-          colorIndex: _int(member, 'colorIndex'),
+          colorIndex: color,
         ),
       );
     }
@@ -249,6 +255,13 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
       extensionCount: _int(data, 'extensionCount'),
       revision: _int(data, 'revision'),
       invite: invite,
+      phase: switch (data['phase']) {
+        'lobby' => GroupRidePhase.lobby,
+        'running' => GroupRidePhase.running,
+        'ended' => GroupRidePhase.ended,
+        null => throw const GroupDriveException('backend_upgrade_required'),
+        _ => throw const GroupDriveException('response_invalid'),
+      },
       members: members,
     );
     final merged = withFreshGroupLocations(
@@ -282,6 +295,7 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
             !_lease.isCurrent ||
             _topic != topic ||
             _snapshot?.id != groupId ||
+            _snapshot?.isRunning != true ||
             message['type'] != 'broadcast' ||
             message['event'] != 'location' ||
             message['payload'] is! Map) {
@@ -396,6 +410,9 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
   Future<GroupDriveSnapshot> extend(String groupId) async =>
       _acceptSnapshot((await _command('extend', groupId: groupId))!);
   @override
+  Future<GroupDriveSnapshot> startRide(String groupId) async =>
+      _acceptSnapshot((await _command('start', groupId: groupId))!);
+  @override
   Future<void> leave(String groupId) async {
     _localGrant = null;
     await _command('leave', groupId: groupId);
@@ -435,6 +452,13 @@ class _SupabaseGroupDriveClient implements GroupDriveClient {
     final after = DateTime.now().toUtc();
     if (currentGroup == null || _string(currentGroup, 'id') != groupId) {
       throw const GroupDriveException('membership_required');
+    }
+    if (currentGroup['phase'] != 'running') {
+      throw GroupDriveException(
+        currentGroup['phase'] == 'lobby'
+            ? 'ride_not_started'
+            : 'backend_upgrade_required',
+      );
     }
     final observedAt = _date(currentGroup, 'observedAt');
     if (observedAt.isBefore(before.subtract(const Duration(seconds: 3))) ||
@@ -596,12 +620,14 @@ GroupSharingStatus _sharing(String value) => switch (value) {
 String _mapServerError(String message, String? code) {
   final text = '$message $code'.toLowerCase();
   for (final value in const [
+    'ride_not_started',
     'account_required',
     'already_in_group',
     'group_full',
     'extension_limit',
     'administrator_required',
     'membership_required',
+    'membership_banned',
     'group_generation_revoked',
     'publication_revoked',
     'consent_required',
@@ -614,5 +640,6 @@ String _mapServerError(String message, String? code) {
     if (text.contains(value)) return value;
   }
   if (text.contains('42501')) return 'membership_required';
+  if (code == '23505') return 'membership_conflict';
   return 'remote_unavailable';
 }

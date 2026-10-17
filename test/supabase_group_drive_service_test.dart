@@ -31,6 +31,10 @@ class _SdkGroupFixture {
   int tokenRequests = 0;
   bool rejectRefresh = false;
   bool liveClock = false;
+  String? phase = 'running';
+  String? rpcFailureCode, rpcFailureMessage;
+  bool left = false;
+  String ownMembership = 'member-a';
   final commands = <String>[];
   late Directory root;
   final auth = TestAuth();
@@ -60,7 +64,7 @@ class _SdkGroupFixture {
       'synthetic-public-key',
       authOptions: const AuthClientOptions(autoRefreshToken: false),
       httpClient: MockClient((request) async {
-        Object response;
+        Object? response;
         if (request.url.path.endsWith('/token')) {
           tokenRequests++;
           if (rejectRefresh) {
@@ -89,6 +93,29 @@ class _SdkGroupFixture {
         } else {
           final action = (jsonDecode(request.body) as Map)['p_action'];
           if (action is String) commands.add(action);
+          if (action == 'join' && rpcFailureCode != null) {
+            return http.Response(
+              jsonEncode({
+                'code': rpcFailureCode,
+                'message': rpcFailureMessage,
+                'details': null,
+                'hint': null,
+              }),
+              409,
+              headers: {'content-type': 'application/json'},
+              request: request,
+            );
+          }
+          if (action == 'leave') {
+            left = true;
+            generation++;
+          }
+          if (action == 'join' && left) {
+            left = false;
+            generation++;
+            ownMembership = 'member-a-rejoined';
+          }
+          if (action == 'start') phase = 'running';
           if (action == 'share_pause') {
             paused = true;
             generation++;
@@ -101,6 +128,7 @@ class _SdkGroupFixture {
             'createdAt': now.toIso8601String(),
             'expiresAt': now.add(const Duration(hours: 12)).toIso8601String(),
             'status': 'active',
+            if (phase != null) 'phase': phase,
             'extensionCount': 0,
             'revision': generation,
             'inviteCode': '00000000-0000-4000-8000-000000000001',
@@ -113,7 +141,7 @@ class _SdkGroupFixture {
               },
             'members': [
               for (final (id, account, order) in [
-                ('member-a', a, 0),
+                (ownMembership, a, 0),
                 ('member-b', b, 1),
               ])
                 {
@@ -129,6 +157,7 @@ class _SdkGroupFixture {
                 },
             ],
           };
+          if (action == 'current' && left) response = null;
         }
         return http.Response(
           jsonEncode(response),
@@ -200,6 +229,81 @@ void main() {
     tearDown(() => fixture.close());
 
     test(
+      'membership RPC errors stay distinct from transport and Realtime failures',
+      () async {
+        for (final (code, message, expected) in [
+          ('42501', 'membership_banned', 'membership_banned'),
+          ('23505', 'duplicate membership', 'membership_conflict'),
+          ('PT409', 'group_full', 'group_full'),
+          ('P0002', 'invite_unavailable', 'invite_unavailable'),
+        ]) {
+          fixture.rpcFailureCode = code;
+          fixture.rpcFailureMessage = message;
+          await expectLater(
+            fixture.client.join(fixture.initial.invite),
+            throwsA(
+              isA<GroupDriveException>().having(
+                (e) => e.code,
+                'code',
+                expected,
+              ),
+            ),
+          );
+        }
+      },
+    );
+
+    test(
+      'leave/rejoin replaces channel and rejects callbacks from previous generation and membership',
+      () async {
+        final changes = <GroupDriveSnapshot?>[];
+        final watch = fixture.client.changes.listen(changes.add);
+        try {
+          final oldTopic = fixture.topic;
+          fixture.send(fixture.point());
+          expect(changes.last!.members.first.location, isNotNull);
+          await fixture.client.leave('test-group');
+          expect(changes.last, isNull);
+          final rejoined = await fixture.client.join(fixture.initial.invite);
+          expect(rejoined.members.first.membershipId, 'member-a-rejoined');
+          expect(rejoined.members.first.location, isNull);
+          final count = changes.length;
+          fixture.send(fixture.point(sequence: 2), topic: oldTopic);
+          fixture.send(fixture.point(sequence: 2));
+          expect(changes.length, count);
+          fixture.send(fixture.point(member: 'member-a-rejoined'));
+          expect(changes.length, count + 1);
+          expect(changes.last!.members.first.location, isNotNull);
+        } finally {
+          await watch.cancel();
+        }
+      },
+    );
+
+    test(
+      'V2 phase uses server start and rejects a backend without the contract',
+      () async {
+        fixture.phase = 'lobby';
+        expect((await fixture.client.current())!.phase, GroupRidePhase.lobby);
+        final started = await fixture.client.startRide('test-group');
+        expect(fixture.commands.last, 'start');
+        expect(started.phase, GroupRidePhase.running);
+        expect(fixture.commands, isNot(contains('share_start')));
+        fixture.phase = null;
+        await expectLater(
+          fixture.client.current(),
+          throwsA(
+            isA<GroupDriveException>().having(
+              (e) => e.code,
+              'code',
+              'backend_upgrade_required',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
       'active grant heartbeat continues over HTTP while Flutter is paused',
       () async {
         fixture.liveClock = true;
@@ -208,9 +312,9 @@ void main() {
           AppLifecycleState.paused,
         );
         try {
-        // Existing five-second polling and a ten-second minimum heartbeat
-        // interval can place the first renewal on the third poll.
-        await Future<void>.delayed(const Duration(seconds: 16));
+          // Existing five-second polling and a ten-second minimum heartbeat
+          // interval can place the first renewal on the third poll.
+          await Future<void>.delayed(const Duration(seconds: 16));
           expect(fixture.commands, contains('share_heartbeat'));
         } finally {
           TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
@@ -409,7 +513,8 @@ void main() {
             markers.every((m) => m.position == const LatLng(10, 20)),
             isTrue,
           );
-          expect(find.text('Canlı GPS • 2 görünür üye'), findsOneWidget);
+          expect(find.text('Canlı GPS • 2 görünür üye'), findsNothing);
+          expect(find.byKey(const Key('group_marker_count')), findsNothing);
           await tester.pumpWidget(const SizedBox());
           await tester.pump();
         } finally {
@@ -553,6 +658,7 @@ void main() {
             actions.add(action);
             response = {
               'id': 'test-group',
+              'phase': 'running',
               'observedAt': DateTime.now()
                   .toUtc()
                   .add(offset)

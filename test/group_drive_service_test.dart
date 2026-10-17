@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/features/group_drive/group_drive_models.dart';
 import 'package:driveit_project/features/group_drive/group_drive_service.dart';
+import 'package:driveit_project/features/group_drive/group_drive_visuals.dart';
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 
@@ -84,6 +88,152 @@ void main() {
   );
 
   test(
+    'LEFT rejoin uses a new grant identity; banned membership stays denied',
+    () async {
+      final ca = service.forOwner((await runtime(a)).lease);
+      final cb = service.forOwner((await runtime(b)).lease);
+      final group = await ca.create();
+      await ca.startRide(group.id);
+      final joined = await cb.join(group.invite);
+      final oldMember = joined.members.last.membershipId;
+      final oldGrant = await cb.startSharing(group.id, consent: true);
+      await cb.leave(group.id);
+      final again = await cb.join(group.invite);
+      expect(again.members, hasLength(2));
+      expect(again.members.last.membershipId, isNot(oldMember));
+      expect(again.members.last.sharingStatus, GroupSharingStatus.off);
+      await expectLater(
+        cb.publishGps(
+          oldGrant,
+          GroupGpsLocation(
+            latitude: 10,
+            longitude: 20,
+            recordedAt: now,
+            accuracyMeters: 5,
+            sequence: 1,
+          ),
+        ),
+        throwsA(errorCode('publication_revoked')),
+      );
+      await ca.ban(group.id, b);
+      await expectLater(
+        cb.join(group.invite),
+        throwsA(errorCode('membership_banned')),
+      );
+    },
+  );
+
+  test('custom navigation and stationary icons are decodable PNGs', () async {
+    for (final moving in [false, true]) {
+      final icon =
+          GroupMarkerIcons.icon(Colors.blue, moving: moving) as BytesMapBitmap;
+      final codec = await ui.instantiateImageCodec(icon.byteData);
+      final frame = await codec.getNextFrame();
+      expect(frame.image.width, 64);
+      expect(frame.image.height, 64);
+      expect(icon.width, 36);
+      expect(icon.height, 36);
+      final rgba = (await frame.image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      ))!;
+      final opaqueX = <int>[], opaqueY = <int>[];
+      for (var y = 0; y < 64; y++) {
+        for (var x = 0; x < 64; x++) {
+          if (rgba.getUint8((y * 64 + x) * 4 + 3) > 0) {
+            opaqueX.add(x);
+            opaqueY.add(y);
+          }
+        }
+      }
+      opaqueX.sort();
+      opaqueY.sort();
+      expect(opaqueX.last - opaqueX.first + 1, inInclusiveRange(24, 32));
+      expect(opaqueY.last - opaqueY.first + 1, inInclusiveRange(24, 32));
+      expect(
+        identical(icon, GroupMarkerIcons.icon(Colors.blue, moving: moving)),
+        isTrue,
+      );
+      frame.image.dispose();
+      codec.dispose();
+    }
+  });
+
+  test(
+    'V2 lobby, admin idempotent start, late join, stable reusable colours and own blue',
+    () async {
+      final ca = service.forOwner((await runtime(a)).lease);
+      final cb = service.forOwner((await runtime(b)).lease);
+      final group = await ca.create();
+      expect(group.phase, GroupRidePhase.lobby);
+      await cb.join(group.invite);
+      await expectLater(
+        cb.startRide(group.id),
+        throwsA(errorCode('admin_required')),
+      );
+      await expectLater(
+        ca.startSharing(group.id, consent: true),
+        throwsA(errorCode('ride_not_started')),
+      );
+      final started = await ca.startRide(group.id);
+      expect(started.phase, GroupRidePhase.running);
+      expect((await ca.startRide(group.id)).revision, started.revision);
+      expect((await cb.current())!.isRunning, true);
+      expect(
+        started.members.every((m) => m.sharingStatus == GroupSharingStatus.off),
+        true,
+      );
+      final colours = {
+        for (final m in started.members) m.membershipId: m.colorIndex,
+      };
+      final self = started.members.first;
+      expect(groupMemberColor(self, a), const Color(0xff2997ff));
+      expect(
+        groupMemberColor(started.members.last, b),
+        const Color(0xff2997ff),
+      );
+      expect(groupMemberColor(self, b), groupMemberPalette[self.colorIndex]);
+      await cb.leave(group.id);
+      final cc = service.forOwner(
+        (await runtime('cccccccc-cccc-4ccc-8ccc-cccccccccccc')).lease,
+      );
+      final joined = await cc.join(group.invite);
+      expect(joined.isRunning, true);
+      expect(joined.members.map((m) => m.colorIndex).toSet(), hasLength(2));
+      expect(joined.members.first.colorIndex, colours[self.membershipId]);
+      expect(joined.members.last.colorIndex, started.members.last.colorIndex);
+    },
+  );
+
+  test(
+    'real fixes determine movement beyond accuracy; icons cached and initials owner-specific',
+    () {
+      GroupGpsLocation fix(double lat, int seconds, {double accuracy = 5}) =>
+          GroupGpsLocation(
+            latitude: lat,
+            longitude: 20,
+            recordedAt: now.add(Duration(seconds: seconds)),
+            sequence: seconds + 1,
+            accuracyMeters: accuracy,
+          );
+      expect(GroupMotion.between(fix(10, 0), fix(10.00001, 2)).moving, false);
+      final motion = GroupMotion.between(fix(10, 0), fix(10.001, 2));
+      expect(motion.moving, true);
+      expect(motion.heading, closeTo(0, .01));
+      expect(GroupMotion.between(fix(10, 0), fix(10.001, 16)).moving, false);
+      expect(
+        identical(
+          GroupMarkerIcons.icon(Colors.blue, moving: true),
+          GroupMarkerIcons.icon(Colors.blue, moving: true),
+        ),
+        true,
+      );
+      expect(groupMemberInitials('  Orkun  Şahin '), 'OŞ');
+      expect(groupMemberInitials('ACESA'), 'AC');
+      expect(groupMemberInitials(''), '?');
+    },
+  );
+
+  test(
     'invite parser rejects wrong schemes and ambiguous code/version',
     () async {
       final group = await service.forOwner((await runtime(a)).lease).create();
@@ -109,6 +259,7 @@ void main() {
   test('concurrent requests enforce ten including administrator', () async {
     final admin = service.forOwner((await runtime(a)).lease);
     final group = await admin.create();
+    await admin.startRide(group.id);
     final clients = <GroupDriveClient>[];
     for (var i = 1; i <= 10; i++) {
       clients.add(
@@ -284,130 +435,136 @@ void main() {
     },
   );
 
-  test('group location grants fence stale, paused, left and banned publishers', () async {
-    final ra = await runtime(a);
-    final rb = await runtime(b);
-    final admin = service.forOwner(ra.lease);
-    final member = service.forOwner(rb.lease);
-    final group = await admin.create();
-    await member.join(group.invite);
+  test(
+    'group location grants fence stale, paused, left and banned publishers',
+    () async {
+      final ra = await runtime(a);
+      final rb = await runtime(b);
+      final admin = service.forOwner(ra.lease);
+      final member = service.forOwner(rb.lease);
+      final group = await admin.create();
+      await admin.startRide(group.id);
+      await member.join(group.invite);
 
-    final firstGrant = await member.startSharing(group.id, consent: true);
-    await expectLater(
-      member.publishGps(
-        firstGrant,
-        GroupGpsLocation(
-          latitude: 41,
-          longitude: 29,
-          recordedAt: now.subtract(const Duration(seconds: 16)),
-          sequence: 1,
-          accuracyMeters: 5,
+      final firstGrant = await member.startSharing(group.id, consent: true);
+      await expectLater(
+        member.publishGps(
+          firstGrant,
+          GroupGpsLocation(
+            latitude: 41,
+            longitude: 29,
+            recordedAt: now.subtract(const Duration(seconds: 16)),
+            sequence: 1,
+            accuracyMeters: 5,
+          ),
         ),
-      ),
-      throwsA(errorCode('stale_location')),
-    );
-    await member.publishGps(
-      firstGrant,
-      GroupGpsLocation(
-        latitude: 41,
-        longitude: 29,
-        recordedAt: now,
-        sequence: 1,
-        accuracyMeters: 5,
-      ),
-    );
-    expect((await admin.current())!.members.last.location, isNotNull);
-
-    final paused = await member.pauseSharing(group.id);
-    expect(paused.members.last.location, isNull);
-    await expectLater(
-      member.publishGps(
+        throwsA(errorCode('stale_location')),
+      );
+      await member.publishGps(
         firstGrant,
         GroupGpsLocation(
           latitude: 41,
           longitude: 29,
           recordedAt: now,
-          sequence: 2,
+          sequence: 1,
           accuracyMeters: 5,
         ),
-      ),
-      throwsA(errorCode('publication_revoked')),
-    );
-    final resumedGrant = await member.startSharing(group.id, consent: true);
-    expect(resumedGrant.publicationId, isNot(firstGrant.publicationId));
-    await member.publishGps(
-      resumedGrant,
-      GroupGpsLocation(
-        latitude: 41,
-        longitude: 29,
-        recordedAt: now,
-        sequence: 1,
-        accuracyMeters: 5,
-      ),
-    );
+      );
+      expect((await admin.current())!.members.last.location, isNotNull);
 
-    await admin.ban(group.id, b);
-    expect(await member.current(), isNull);
-    expect((await admin.current())!.members, hasLength(1));
-    await expectLater(
-      member.publishGps(
+      final paused = await member.pauseSharing(group.id);
+      expect(paused.members.last.location, isNull);
+      await expectLater(
+        member.publishGps(
+          firstGrant,
+          GroupGpsLocation(
+            latitude: 41,
+            longitude: 29,
+            recordedAt: now,
+            sequence: 2,
+            accuracyMeters: 5,
+          ),
+        ),
+        throwsA(errorCode('publication_revoked')),
+      );
+      final resumedGrant = await member.startSharing(group.id, consent: true);
+      expect(resumedGrant.publicationId, isNot(firstGrant.publicationId));
+      await member.publishGps(
         resumedGrant,
         GroupGpsLocation(
           latitude: 41,
           longitude: 29,
           recordedAt: now,
-          sequence: 2,
+          sequence: 1,
           accuracyMeters: 5,
         ),
-      ),
-      throwsA(errorCode('membership_required')),
-    );
-  });
+      );
 
-  test('owner epoch revokes old publication and clears coordinates for peers', () async {
-    final ra = await runtime(a);
-    final rb = await runtime(b);
-    final ownerClient = service.forOwner(ra.lease);
-    final peerClient = service.forOwner(rb.lease);
-    final group = await ownerClient.create();
-    await peerClient.join(group.invite);
-    final grant = await ownerClient.startSharing(group.id, consent: true);
-    await ownerClient.publishGps(
-      grant,
-      GroupGpsLocation(
-        latitude: 41,
-        longitude: 29,
-        recordedAt: now,
-        sequence: 1,
-        accuracyMeters: 5,
-      ),
-    );
-    expect((await peerClient.current())!.members.first.location, isNotNull);
+      await admin.ban(group.id, b);
+      expect(await member.current(), isNull);
+      expect((await admin.current())!.members, hasLength(1));
+      await expectLater(
+        member.publishGps(
+          resumedGrant,
+          GroupGpsLocation(
+            latitude: 41,
+            longitude: 29,
+            recordedAt: now,
+            sequence: 2,
+            accuracyMeters: 5,
+          ),
+        ),
+        throwsA(errorCode('membership_required')),
+      );
+    },
+  );
 
-    auths[auths.length - 2].emit(
-      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-    );
-    await ra.settled;
-    final peerSnapshot = (await peerClient.current())!;
-    final oldOwner = peerSnapshot.members.firstWhere(
-      (member) => member.accountId == a,
-    );
-    expect(oldOwner.sharingStatus, GroupSharingStatus.paused);
-    expect(oldOwner.location, isNull);
-    await expectLater(
-      ownerClient.publishGps(
+  test(
+    'owner epoch revokes old publication and clears coordinates for peers',
+    () async {
+      final ra = await runtime(a);
+      final rb = await runtime(b);
+      final ownerClient = service.forOwner(ra.lease);
+      final peerClient = service.forOwner(rb.lease);
+      final group = await ownerClient.create();
+      await ownerClient.startRide(group.id);
+      await peerClient.join(group.invite);
+      final grant = await ownerClient.startSharing(group.id, consent: true);
+      await ownerClient.publishGps(
         grant,
         GroupGpsLocation(
           latitude: 41,
           longitude: 29,
           recordedAt: now,
-          sequence: 2,
+          sequence: 1,
           accuracyMeters: 5,
         ),
-      ),
-      throwsStateError,
-    );
-  });
+      );
+      expect((await peerClient.current())!.members.first.location, isNotNull);
+
+      auths[auths.length - 2].emit('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+      await ra.settled;
+      final peerSnapshot = (await peerClient.current())!;
+      final oldOwner = peerSnapshot.members.firstWhere(
+        (member) => member.accountId == a,
+      );
+      expect(oldOwner.sharingStatus, GroupSharingStatus.paused);
+      expect(oldOwner.location, isNull);
+      await expectLater(
+        ownerClient.publishGps(
+          grant,
+          GroupGpsLocation(
+            latitude: 41,
+            longitude: 29,
+            recordedAt: now,
+            sequence: 2,
+            accuracyMeters: 5,
+          ),
+        ),
+        throwsStateError,
+      );
+    },
+  );
 
   test(
     'offline group service leaves actual normal drive save and sync intact',
@@ -417,6 +574,7 @@ void main() {
       try {
         final client = service.forOwner(f.runtime.owner.lease);
         final group = await client.create();
+        await client.startRide(group.id);
         final grant = await client.startSharing(group.id, consent: true);
         await client.publishSynthetic(
           grant,

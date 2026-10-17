@@ -5,6 +5,8 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.app.KeyguardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
@@ -17,6 +19,28 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "driveit/group_invite")
+            .setMethodCallHandler { call, result ->
+                val link = call.argument<String>("link")
+                val uri = link?.let { Uri.parse(it) }
+                if (call.method != "share") {
+                    result.notImplemented()
+                } else if (uri?.scheme != "driveit" || uri.host != "group" ||
+                    uri.path != "/join" || uri.getQueryParameter("v") != "1" ||
+                    uri.getQueryParameter("code")?.matches(Regex("[0-9a-f-]{36}")) != true) {
+                    result.error("invalid_invite", "Invalid group invitation", null)
+                } else {
+                    try {
+                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "DriveIt Grup Sürüşü daveti: $link")
+                        }, "Grup davetini paylaş"))
+                        result.success(null)
+                    } catch (_: Exception) {
+                        result.error("share_unavailable", "Share sheet unavailable", null)
+                    }
+                }
+            }
         posterBridge = PosterBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         localImportStorageBridge = LocalImportStorageBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         archiveSecurityChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger,

@@ -91,7 +91,7 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
     return _groupSession;
   }
 
-  Widget _groupPage(LocalOwnerLease lease) {
+  Widget _groupPage(BuildContext context, LocalOwnerLease lease) {
     final candidate = _activeDrive;
     final origin =
         candidate != null &&
@@ -100,6 +100,23 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
         ? candidate
         : null;
     final session = _sessionFor(lease);
+    void goHome() {
+      if (!lease.isCurrent) return;
+      final navigator = Navigator.of(context);
+      if (origin != null && origin.route.isActive) {
+        // Keep the existing recorder below a Home route. Popping to the first
+        // route would dispose it and terminate the independent drive consumer.
+        navigator.pushNamedAndRemoveUntil(
+          '/',
+          (route) => identical(route, origin.route),
+        );
+      } else if (navigator.canPop()) {
+        navigator.popUntil((route) => route.isFirst);
+      } else {
+        navigator.pushReplacementNamed('/');
+      }
+    }
+
     if (session != null) {
       return GroupDriveScreen(
         lease: lease,
@@ -107,6 +124,14 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
         gpsSource: session.gps.source,
         session: session,
         onReturnToDrive: origin?.returnToDrive,
+        onGoToDrive: () {
+          if (origin != null && origin.route.isActive) {
+            origin.returnToDrive();
+          } else {
+            Navigator.of(context).pushNamed('/drive');
+          }
+        },
+        onGoHome: goHome,
       );
     }
     return GroupDriveScreen(
@@ -114,6 +139,14 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
       service: _groupDriveService!,
       gpsSource: groupGpsSourceFactory?.call(),
       onReturnToDrive: origin?.returnToDrive,
+      onGoToDrive: () {
+        if (origin != null && origin.route.isActive) {
+          origin.returnToDrive();
+        } else {
+          Navigator.of(context).pushNamed('/drive');
+        }
+      },
+      onGoHome: goHome,
     );
   }
 
@@ -182,7 +215,7 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
         ),
       ),
       if (_groupDriveService != null)
-        '/group': (_, lease, _) => _groupPage(lease),
+        '/group': (context, lease, _) => _groupPage(context, lease),
       '/history': (_, lease, _) => HistoryScreen(
         ownerLease: lease,
         deviceArchiveLoader: deviceArchiveLoader,

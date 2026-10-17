@@ -8,10 +8,10 @@ import '../../services/local_owner_lifecycle.dart';
 import '../../widgets/local_owner_view.dart';
 import 'group_drive_models.dart';
 import 'group_drive_service.dart';
-import 'group_drive_map.dart';
 import 'group_gps_source.dart';
 import 'group_gps_sharing.dart';
 import 'group_drive_session.dart';
+import 'group_drive_views.dart';
 
 class GroupDriveScreen extends StatelessWidget {
   const GroupDriveScreen({
@@ -21,6 +21,8 @@ class GroupDriveScreen extends StatelessWidget {
     this.gpsSource,
     this.session,
     this.onReturnToDrive,
+    this.onGoToDrive,
+    this.onGoHome,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
@@ -29,6 +31,8 @@ class GroupDriveScreen extends StatelessWidget {
   final GroupGpsSource? gpsSource;
   final GroupDriveSession? session;
   final VoidCallback? onReturnToDrive;
+  final VoidCallback? onGoToDrive;
+  final VoidCallback? onGoHome;
   @override
   Widget build(BuildContext context) => LocalOwnerView(
     lease: lease,
@@ -50,6 +54,8 @@ class GroupDriveScreen extends StatelessWidget {
         gpsSource: gpsSource,
         session: session,
         onReturnToDrive: onReturnToDrive,
+        onGoToDrive: onGoToDrive,
+        onGoHome: onGoHome,
       );
     },
   );
@@ -63,12 +69,16 @@ class _GroupDrivePage extends StatefulWidget {
     this.gpsSource,
     this.session,
     this.onReturnToDrive,
+    this.onGoToDrive,
+    this.onGoHome,
   });
   final LocalOwnerLease lease;
   final GroupDriveService service;
   final GroupGpsSource? gpsSource;
   final GroupDriveSession? session;
   final VoidCallback? onReturnToDrive;
+  final VoidCallback? onGoToDrive;
+  final VoidCallback? onGoHome;
   @override
   State<_GroupDrivePage> createState() => _GroupDrivePageState();
 }
@@ -85,6 +95,8 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
   int _sequence = 0;
   GroupGpsSharing? _gps;
   bool _disposing = false;
+  String? _syntheticConsentGroup, _syntheticConsentMembership;
+  bool _syntheticAutoStart = false;
   bool get _current => mounted && !_disposing && widget.lease.isCurrent;
 
   @override
@@ -143,6 +155,20 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       _grant = null;
     }
     setState(() => _group = value);
+    if (value?.id != _syntheticConsentGroup ||
+        own?.membershipId != _syntheticConsentMembership ||
+        value?.isActive != true) {
+      _syntheticConsentGroup = null;
+      _syntheticConsentMembership = null;
+      _syntheticAutoStart = false;
+    } else if (_syntheticAutoStart && value!.isRunning) {
+      _syntheticAutoStart = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_current && _group?.id == value.id) {
+          unawaited(_beginSharing(value, false));
+        }
+      });
+    }
     if (value?.isActive == true) {
       final remaining = value!.expiresAt.difference(value.observedAt);
       // One expiry refresh; no heartbeat, location subscription, or polling.
@@ -152,13 +178,9 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     }
   }
 
-  Future<void> _consent() async {
-    final group = _group;
-    if (group == null || !group.isActive || !_current) return;
-    final membership = group.members
-        .where((m) => m.accountId == widget.lease.owner.userId)
-        .single
-        .membershipId;
+  Future<({bool share, bool background})?> _sharingChoice({
+    bool entry = false,
+  }) async {
     var backgroundConsent = false;
     final backgroundSupported = _gps?.source is BackgroundGroupGpsSource;
     final accepted = await showDialog<bool>(
@@ -167,7 +189,9 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
       builder: (context) => StatefulBuilder(
         builder: (context, update) => AlertDialog(
           title: Text(
-            _gps == null
+            entry
+                ? 'Grup için konum paylaşımı'
+                : _gps == null
                 ? 'Sentetik konum paylaşımı'
                 : 'Cihaz GPS konumunu paylaş',
           ),
@@ -175,6 +199,10 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (entry)
+                  const Text(
+                    'Paylaşım isteğe bağlıdır. Lobide GPS başlamaz; sürüş başladığında, uygulama görünürken başlar. Android konum izni ayrıca istenir.',
+                  ),
                 Text(
                   _gps == null
                       ? 'Bu testte yalnız üretilmiş konumlar gruptaki üyelere gösterilir. Gerçek GPS okunmaz ve konum izni istenmez. İstediğin an duraklatabilir veya kapatabilirsin.'
@@ -198,24 +226,90 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
           ),
           actions: [
             TextButton(
+              key: entry ? const Key('group_entry_consent_without') : null,
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Vazgeç'),
+              child: Text(entry ? 'Konum paylaşmadan devam et' : 'Vazgeç'),
             ),
             TextButton(
-              key: const Key('group_consent_confirm'),
+              key: Key(
+                entry ? 'group_entry_consent_share' : 'group_consent_confirm',
+              ),
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Onayla ve Başlat'),
+              child: Text(
+                entry ? 'Konumumu paylaşarak devam et' : 'Onayla ve Başlat',
+              ),
             ),
           ],
         ),
       ),
     );
-    if (accepted != true ||
+    if (!_current || accepted == null || (!entry && !accepted)) return null;
+    return (share: accepted, background: accepted && backgroundConsent);
+  }
+
+  Future<void> _enter(Future<GroupDriveSnapshot> Function() action) async {
+    if (!_current || _busy) return;
+    final choice = await _sharingChoice(entry: true);
+    if (choice == null || !_current) return;
+    GroupDriveSnapshot? joined;
+    await _run(() async => joined = await action());
+    if (!_current || joined == null || !choice.share) return;
+    final group = joined!;
+    if (_gps != null) {
+      _gps!.rememberConsent(group, backgroundConsent: choice.background);
+    } else {
+      _syntheticConsentGroup = group.id;
+      _syntheticConsentMembership = group.members
+          .singleWhere((m) => m.accountId == widget.lease.owner.userId)
+          .membershipId;
+      _syntheticAutoStart = !group.isRunning;
+      if (group.isRunning) await _beginSharing(group, false);
+    }
+  }
+
+  Future<void> _consent() async {
+    final group = _group;
+    if (group == null || !group.isRunning || !_current) return;
+    if (_gps?.hasSharingConsent(group) == true) {
+      await _beginSharing(group, _gps!.consentedBackground);
+      return;
+    }
+    if (_gps == null &&
+        _syntheticConsentGroup == group.id &&
+        group.members.any(
+          (m) =>
+              m.membershipId == _syntheticConsentMembership &&
+              m.accountId == widget.lease.owner.userId,
+        )) {
+      await _beginSharing(group, false);
+      return;
+    }
+    final membership = group.members
+        .singleWhere((m) => m.accountId == widget.lease.owner.userId)
+        .membershipId;
+    final choice = await _sharingChoice();
+    if (choice == null ||
         !_current ||
         _group?.id != group.id ||
         !_group!.members.any((m) => m.membershipId == membership)) {
       return;
     }
+    _gps?.rememberConsent(
+      group,
+      backgroundConsent: choice.background,
+      startWhenRunning: false,
+    );
+    if (_gps == null) {
+      _syntheticConsentGroup = group.id;
+      _syntheticConsentMembership = membership;
+    }
+    await _beginSharing(group, choice.background);
+  }
+
+  Future<void> _beginSharing(
+    GroupDriveSnapshot group,
+    bool backgroundConsent,
+  ) async {
     await _run(() async {
       if (_gps != null) {
         await _gps!.start(
@@ -368,6 +462,157 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     super.dispose();
   }
 
+  Future<void> _shareInvite(GroupDriveSnapshot group) async {
+    if (!_current) return;
+    try {
+      await const MethodChannel(
+        'driveit/group_invite',
+      ).invokeMethod<void>('share', {'link': group.invite.link.toString()});
+    } on PlatformException {
+      if (_current) {
+        setState(() => _error = 'Davet paylaşılamadı; kodu kopyalayabilirsin.');
+      }
+    } on MissingPluginException {
+      if (_current) {
+        setState(
+          () =>
+              _error = 'Bu cihazda paylaşım açılamadı; kodu kopyalayabilirsin.',
+        );
+      }
+    }
+  }
+
+  void _settings() {
+    showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: false,
+      isScrollControlled: true,
+      backgroundColor: groupSurface,
+      showDragHandle: true,
+      builder: (sheetContext) => LocalOwnerView(
+        lease: widget.lease,
+        builder: (_) => StreamBuilder<GroupDriveSnapshot?>(
+          stream: _client.changes,
+          initialData: _group,
+          builder: (context, state) {
+            final group = state.data;
+            if (group?.isActive != true) {
+              return const SizedBox(
+                height: 100,
+                child: Center(child: Text('Grup sona erdi.')),
+              );
+            }
+            final admin = group!.members.any(
+              (m) =>
+                  m.accountId == widget.lease.owner.userId &&
+                  m.role == GroupDriveRole.administrator,
+            );
+            void action(VoidCallback callback) {
+              Navigator.pop(sheetContext);
+              if (_current) callback();
+            }
+
+            return SafeArea(
+              child: SizedBox(
+                height: MediaQuery.sizeOf(context).height * .8,
+                child: ListView(
+                  padding: const EdgeInsets.all(20),
+                  children: [
+                    const Text(
+                      'Grup ayarları',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    GroupInviteCard(
+                      group: group,
+                      onCopy: () => _copyInviteCode(group.invite.code),
+                      onShare: () => _shareInvite(group),
+                    ),
+                    Text(
+                      'Bitiş: ${group.expiresAt.toLocal()} • Uzatma: ${group.extensionCount}/2',
+                    ),
+                    for (final member in group.members)
+                      ListTile(
+                        leading: GroupMemberAvatar(
+                          member: member,
+                          viewer: widget.lease.owner.userId,
+                        ),
+                        title: Text(member.displayName),
+                        subtitle: Text(
+                          member.role == GroupDriveRole.administrator
+                              ? 'Yönetici'
+                              : 'Üye',
+                        ),
+                        trailing:
+                            admin &&
+                                member.accountId != widget.lease.owner.userId
+                            ? IconButton(
+                                tooltip: 'Üyeyi çıkar',
+                                icon: const Icon(Icons.person_remove_outlined),
+                                onPressed: () => action(() => _ban(member)),
+                              )
+                            : null,
+                      ),
+                    if (admin) ...[
+                      TextButton(
+                        key: const Key('group_extend'),
+                        onPressed: _busy || group.extensionCount >= 2
+                            ? null
+                            : () => action(
+                                () => _run(() => _client.extend(group.id)),
+                              ),
+                        child: const Text('6 saat uzat'),
+                      ),
+                      TextButton(
+                        key: const Key('group_end'),
+                        onPressed: _busy
+                            ? null
+                            : () => action(() => _confirm(true)),
+                        child: const Text('Grubu Sonlandır'),
+                      ),
+                    ],
+                    TextButton(
+                      onPressed: () => action(() => _confirm(false)),
+                      child: const Text('Gruptan Ayrıl'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _ban(GroupDriveMember member) async {
+    final group = _group;
+    if (!_current || group == null) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      useRootNavigator: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Üyeyi gruptan çıkar?'),
+        content: Text('${member.displayName} bu gruba erişimini kaybedecek.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Vazgeç'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Çıkar'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && _current) {
+      await _run(() => _client.ban(group.id, member.accountId));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final group = _group;
@@ -375,244 +620,160 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
     final own = group?.members
         .where((m) => m.accountId == widget.lease.owner.userId)
         .firstOrNull;
-    final admin =
-        group?.members.any(
-          (member) =>
-              member.accountId == widget.lease.owner.userId &&
-              member.role == GroupDriveRole.administrator,
-        ) ==
-        true;
-    return Scaffold(
-      backgroundColor: const Color(0xff020a18),
-      appBar: AppBar(
-        title: const Text('Grup Sürüşü'),
-        backgroundColor: const Color(0xff020a18),
-      ),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            if (widget.onReturnToDrive != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: FilledButton.tonalIcon(
-                  key: const Key('group_return_to_drive'),
-                  onPressed: widget.lease.isCurrent
-                      ? widget.onReturnToDrive
-                      : null,
-                  icon: const Icon(Icons.directions_car),
-                  label: const Text('Sürüşe Dön'),
-                ),
-              ),
-            Text(
-              widget.service.isSimulation
-                  ? 'Yerel test • Fake grup servisi'
-                  : 'DriveIt Grup Sürüşü • Canlı DEV servisi',
-              style: TextStyle(
-                color: Color(0xffbd82ff),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _gps == null
-                  ? 'Gerçek çevrimiçi grup değildir. Canlı konum paylaşımı kapalı.'
-                  : 'Yetkili grup üyeleri • Cihaz GPS’i • Arka plan paylaşımı için ayrıca onay gerekir',
-              style: TextStyle(color: Colors.white70),
-            ),
-            Text(
-              _gps == null
-                  ? 'Haritadaki bütün noktalar sentetik test verisidir; gerçek GPS okunmaz.'
-                  : (_gps?.source is BackgroundGroupGpsSource
-                        ? 'GPS paylaşımı ayrı onay ve konum izni ister. Arka planda devam etmek için paylaşım onayındaki seçeneği aç. Konum geçmişi saklanmaz; normal sürüş kaydı bağımsızdır.'
-                        : 'GPS paylaşımı ayrı onay ve konum izni ister. Konum geçmiş rota olarak saklanmaz. Arka planda paylaşım yok; normal sürüş kaydı bağımsızdır.'),
-              style: TextStyle(color: Colors.white70),
-            ),
-            if (_busy) const LinearProgressIndicator(),
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(
-                  _error!,
-                  key: const Key('group_error'),
-                  style: const TextStyle(color: Colors.orangeAccent),
-                ),
-              ),
-            if (_error != null)
-              TextButton(
-                key: const Key('group_retry'),
-                onPressed: _busy ? null : () => _run(_client.current),
-                child: const Text('Yeniden Dene'),
-              ),
-            if (group != null) ...[
-              const SizedBox(height: 16),
-              SizedBox(
-                key: const Key('group_map_workspace'),
-                height: 280,
-                child: GroupDriveMap(
-                  lease: widget.lease,
-                  group: group,
-                  isSimulation: widget.service.isSimulation,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                switch (group.status) {
-                  GroupDriveStatus.active => 'Grup aktif',
-                  GroupDriveStatus.ended => 'Grup sonlandırıldı',
-                  GroupDriveStatus.expired => 'Grubun süresi doldu',
-                },
-                key: const Key('group_status'),
-                style: const TextStyle(color: Colors.white, fontSize: 18),
-              ),
-              Text(
-                'Bitiş: ${group.expiresAt.toLocal()} • Uzatma: ${group.extensionCount}/2',
-                style: const TextStyle(color: Colors.white70),
-              ),
-              Text(
-                'Katılımcılar ${group.members.length}/10',
-                key: const Key('group_member_count'),
-                style: const TextStyle(color: Colors.white),
-              ),
-              for (final member in group.members)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(
-                    member.role == GroupDriveRole.administrator
-                        ? Icons.shield_outlined
-                        : Icons.person_outline,
-                    color: const Color(0xff248fff),
-                  ),
-                  title: Text(
-                    member.displayName,
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  subtitle: Text(
-                    '${member.role == GroupDriveRole.administrator ? 'Yönetici' : 'Üye'} • ${_memberSharingLabel(member)}${member.location == null ? '' : ' • ${member.location!.origin == GroupLocationOrigin.synthetic ? 'Sentetik' : 'Cihaz GPS'}, ${group.observedAt.difference(member.location!.recordedAt).inSeconds} sn önce'}',
-                    style: const TextStyle(color: Colors.white70),
-                  ),
-                ),
-              if (active) ...[
-                Text(
-                  '${_gps == null ? 'Sentetik' : 'GPS'} paylaşım: ${_memberSharingLabel(own!, isOwn: true)}',
-                  key: const Key('group_sharing_status'),
-                  style: const TextStyle(color: Colors.white),
-                ),
-                if (own.sharingStatus != GroupSharingStatus.sharing ||
-                    (_gps == null ? _grant == null : !_gps!.active))
-                  FilledButton(
-                    key: const Key('group_share_start'),
-                    onPressed: _busy ? null : _consent,
-                    child: Text(
-                      own.sharingStatus == GroupSharingStatus.paused
-                          ? 'Devam Et'
-                          : (_gps == null
-                                ? 'Sentetik Paylaşımı Başlat'
-                                : 'GPS Paylaşımını Başlat'),
-                    ),
-                  ),
-                if (own.sharingStatus == GroupSharingStatus.sharing) ...[
+    final admin = own?.role == GroupDriveRole.administrator;
+    final sharing =
+        own?.sharingStatus == GroupSharingStatus.sharing &&
+        (_gps == null ? _grant != null : _gps!.active);
+    final running = active && group!.isRunning;
+    final message = _error == null
+        ? null
+        : Material(
+            color: const Color(0xff38251b),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(child: Text(_error!, key: const Key('group_error'))),
                   TextButton(
-                    key: const Key('group_share_pause'),
-                    onPressed: () => _withdrawSharing(true),
-                    child: const Text('Paylaşımı Duraklat'),
+                    key: const Key('group_retry'),
+                    onPressed: _busy ? null : () => _run(_client.current),
+                    child: const Text('Yeniden Dene'),
                   ),
-                  if (_gps == null)
-                    FilledButton(
-                      key: const Key('group_send_synthetic'),
-                      onPressed: _busy || _grant == null
-                          ? null
-                          : _sendSynthetic,
-                      child: const Text('Sentetik Nokta Gönder'),
+                ],
+              ),
+            ),
+          );
+    return Theme(
+      data: ThemeData.dark(useMaterial3: true).copyWith(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xff2997ff),
+          brightness: Brightness.dark,
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: const Color(0xff020a18),
+        appBar: running
+            ? null
+            : AppBar(
+                title: Text(active ? 'Grup Lobisi' : 'Grup Sürüşü'),
+                backgroundColor: const Color(0xff020a18),
+                actions: [
+                  if (active)
+                    IconButton(
+                      key: const Key('group_settings'),
+                      tooltip: 'Grup ayarları',
+                      onPressed: _settings,
+                      icon: const Icon(Icons.tune),
                     ),
                 ],
-                if (own.sharingStatus != GroupSharingStatus.off)
-                  TextButton(
-                    key: const Key('group_share_stop'),
-                    onPressed: () => _withdrawSharing(false),
-                    child: const Text('Paylaşımı Kapat'),
-                  ),
-                const Text(
-                  'Davet kodu',
-                  style: TextStyle(color: Colors.white70),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SelectableText(
-                        group.invite.code,
-                        key: const Key('group_invite_code'),
-                        style: const TextStyle(color: Colors.white),
+              ),
+        body: running
+            ? Stack(
+                children: [
+                  Positioned.fill(
+                    child: GroupDriveLiveView(
+                      key: ValueKey('running_${group.id}'),
+                      group: group,
+                      lease: widget.lease,
+                      isSimulation: widget.service.isSimulation,
+                      isSharing: sharing,
+                      onBack: () {
+                        if (widget.onGoHome != null) {
+                          widget.onGoHome!();
+                        } else {
+                          Navigator.of(context).maybePop();
+                        }
+                      },
+                      onReturnToDrive: widget.onReturnToDrive,
+                      onGoToDrive:
+                          widget.onGoToDrive ??
+                          () {
+                            Navigator.of(context).pushNamed('/drive');
+                          },
+                      onSharing: sharing
+                          ? () => _withdrawSharing(true)
+                          : () {
+                              if (!_busy) _consent();
+                            },
+                      onLeave: () => _confirm(false),
+                      onSettings: _settings,
+                      memberStatus: (member) => _memberSharingLabel(
+                        member,
+                        isOwn: member.accountId == widget.lease.owner.userId,
                       ),
+                      onSynthetic: _gps == null && _grant != null
+                          ? _sendSynthetic
+                          : null,
+                      onStopSharing:
+                          own?.sharingStatus != GroupSharingStatus.off
+                          ? () => _withdrawSharing(false)
+                          : null,
                     ),
-                    IconButton(
-                      key: const Key('group_invite_copy'),
-                      tooltip: 'Davet kodunu kopyala',
-                      onPressed: group.invite.code.isEmpty
-                          ? null
-                          : () => _copyInviteCode(group.invite.code),
-                      icon: const Icon(Icons.copy),
+                  ),
+                  if (_busy)
+                    const Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: SafeArea(child: LinearProgressIndicator()),
+                    ),
+                  if (message != null)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: MediaQuery.sizeOf(context).height * .21,
+                      child: message,
+                    ),
+                ],
+              )
+            : SafeArea(
+                child: Column(
+                  children: [
+                    if (_busy) const LinearProgressIndicator(),
+                    ?message,
+                    Expanded(
+                      child: active
+                          ? GroupDriveLobbyView(
+                              group: group!,
+                              viewer: widget.lease.owner.userId,
+                              memberStatus: _memberSharingLabel,
+                              onCopy: () => _copyInviteCode(group.invite.code),
+                              onShare: () => _shareInvite(group),
+                              onLeave: () => _confirm(false),
+                              onStart: admin && !_busy
+                                  ? () =>
+                                        _run(() => _client.startRide(group.id))
+                                  : null,
+                            )
+                          : Column(
+                              children: [
+                                if (group != null)
+                                  Text(
+                                    group.status == GroupDriveStatus.expired
+                                        ? 'Grubun süresi doldu'
+                                        : 'Grup sonlandırıldı',
+                                    key: const Key('group_status'),
+                                  ),
+                                Expanded(
+                                  child: GroupDriveEntryView(
+                                    invite: _inviteText,
+                                    busy: _busy,
+                                    onCreate: () => _enter(_client.create),
+                                    onJoin: () => _enter(
+                                      () => _client.join(
+                                        GroupDriveInvite.parse(
+                                          _inviteText.text,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                     ),
                   ],
                 ),
-                SelectableText(
-                  group.invite.link.toString(),
-                  key: const Key('group_invite_link'),
-                  style: const TextStyle(color: Colors.white70),
-                ),
-                if (admin) ...[
-                  TextButton(
-                    key: const Key('group_extend'),
-                    onPressed: _busy || group.extensionCount >= 2
-                        ? null
-                        : () => _run(() => _client.extend(group.id)),
-                    child: const Text('6 saat uzat'),
-                  ),
-                  TextButton(
-                    key: const Key('group_end'),
-                    onPressed: _busy ? null : () => _confirm(true),
-                    child: const Text('Grubu Sonlandır'),
-                  ),
-                ],
-                TextButton(
-                  key: const Key('group_leave'),
-                  onPressed: _busy ? null : () => _confirm(false),
-                  child: const Text('Gruptan Ayrıl'),
-                ),
-              ],
-            ],
-            if (!active) ...[
-              const SizedBox(height: 16),
-              FilledButton(
-                key: const Key('group_create'),
-                onPressed: _busy ? null : () => _run(_client.create),
-                child: const Text('Grup Oluştur'),
               ),
-              const SizedBox(height: 16),
-              TextField(
-                key: const Key('group_invite_input'),
-                controller: _inviteText,
-                enabled: !_busy,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Davet kodu veya bağlantısı',
-                  labelStyle: TextStyle(color: Colors.white70),
-                ),
-              ),
-              FilledButton(
-                key: const Key('group_join'),
-                onPressed: _busy
-                    ? null
-                    : () => _run(
-                        () => _client.join(
-                          GroupDriveInvite.parse(_inviteText.text),
-                        ),
-                      ),
-                child: const Text('Davetle Katıl'),
-              ),
-            ],
-          ],
-        ),
       ),
     );
   }
@@ -661,10 +822,19 @@ class _GroupDrivePageState extends State<_GroupDrivePage> {
   };
 
   static String _description(String code) => switch (code) {
+    'ride_not_started' =>
+      'GPS paylaşımı için yöneticinin sürüşü başlatması gerekiyor.',
+    'backend_upgrade_required' =>
+      'Grup Sürüşü güncellemesi sunucuda henüz hazır değil.',
     'device_clock_out_of_sync' =>
       'Cihaz saati sunucuyla uyumlu değil. Telefonun otomatik tarih ve saat ayarını açıp yeniden dene. GPS paylaşımı başlamadı.',
-    'realtime_unavailable' || 'remote_unavailable' =>
-      'Canlı grup bağlantısı kurulamadı. İnternet bağlantını kontrol edip yeniden dene.',
+    'realtime_unavailable' =>
+      'Canlı konum kanalına bağlanılamadı. Yeniden bağlanmayı dene.',
+    'remote_unavailable' =>
+      'Grup sunucusuna ulaşılamadı. İnternet bağlantını kontrol edip yeniden dene.',
+    'membership_banned' => 'Bu gruba katılımın yönetici tarafından engellendi.',
+    'membership_conflict' =>
+      'Grup üyeliği doğrulanamadı. Yeniden katılım için sunucu güncellemesi gerekiyor.',
     'offline' => 'Grup servisine ulaşılamadı. Normal sürüş kaydı etkilenmez.',
     'invalid_invite' => 'Davet kodu veya bağlantısı geçersiz.',
     'group_full' => 'Grup dolu; en fazla 10 kişi katılabilir.',

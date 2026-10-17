@@ -1,5 +1,7 @@
 enum GroupDriveStatus { active, ended, expired }
 
+enum GroupRidePhase { lobby, running, ended }
+
 enum GroupDriveRole { administrator, member }
 
 enum GroupSharingStatus { off, sharing, paused }
@@ -175,6 +177,7 @@ class GroupDriveSnapshot {
     required this.revision,
     required this.invite,
     required Iterable<GroupDriveMember> members,
+    this.phase = GroupRidePhase.running,
   }) : members = List.unmodifiable(members);
   static const maximumMembers = 10;
   static const initialLifetime = Duration(hours: 12);
@@ -188,8 +191,10 @@ class GroupDriveSnapshot {
   final int extensionCount;
   final int revision;
   final GroupDriveInvite invite;
+  final GroupRidePhase phase;
   final List<GroupDriveMember> members;
   bool get isActive => status == GroupDriveStatus.active;
+  bool get isRunning => isActive && phase == GroupRidePhase.running;
 }
 
 /// Applies only transient, fresh points to a server snapshot. A normal
@@ -209,6 +214,7 @@ GroupDriveSnapshot withFreshGroupLocations({
   extensionCount: snapshot.extensionCount,
   revision: snapshot.revision,
   invite: snapshot.invite,
+  phase: snapshot.phase,
   members: snapshot.members.map((member) {
     final point = locations[member.membershipId];
     return GroupDriveMember(
@@ -220,7 +226,8 @@ GroupDriveSnapshot withFreshGroupLocations({
       role: member.role,
       sharingStatus: member.sharingStatus,
       location:
-          member.sharingStatus == GroupSharingStatus.sharing &&
+          snapshot.isRunning &&
+              member.sharingStatus == GroupSharingStatus.sharing &&
               point != null &&
               isGroupGpsTimestampFresh(point.recordedAt, referenceTime)
           ? point

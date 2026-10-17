@@ -1234,24 +1234,33 @@ void main() {
         expect(session, isNotNull);
         expect(find.byKey(const Key('drive_open_group')), findsNothing);
         final member = service.forOwner(f.runtime.owner.lease);
-        await member.create();
+        final activeGroup = await member.create();
+        await member.startRide(activeGroup.id);
         await frames();
         // Membership alone is enough: GPS sharing is still off.
         await click(const Key('drive_open_group'));
         expect(find.text('Devam eden sürüş'), findsNothing);
-        expect(find.byKey(const Key('group_return_to_drive')), findsOneWidget);
+        expect(find.byKey(const Key('group_go_to_drive')), findsOneWidget);
         await click(const Key('group_share_start'));
         await click(const Key('group_background_consent'));
         await click(const Key('group_consent_confirm'));
         expect(source.opens, 1);
-        await click(const Key('group_return_to_drive'));
+        // Home must retain the recorder route underneath, not pop/dispose it.
+        await click(const Key('group_back_home'));
+        expect(source.cancels, 0);
+        expect(
+          (await tester.runAsync(ForegroundService.activeSession))!.id,
+          session!.id,
+        );
+        await click(const Key('home_group_card'));
+        await click(const Key('group_go_to_drive'));
         expect(identical(tester.state(find.byType(MapScreen)), state), true);
         expect(state.isDriving, true);
         expect(source.cancels, 0);
         // A notification opens the same named group route without arguments.
         navigation.currentState!.pushNamed('/group');
         await frames();
-        await click(const Key('group_return_to_drive'));
+        await click(const Key('group_go_to_drive'));
         expect(identical(tester.state(find.byType(MapScreen)), state), true);
         expect(source.opens, 1);
         final elapsed = state.elapsedSeconds as int;
@@ -1266,9 +1275,9 @@ void main() {
         await click(const Key('group_share_pause'));
         expect(source.cancels, 1);
         final current = await tester.runAsync(ForegroundService.activeSession);
-        expect(current!.id, session!.id);
+        expect(current!.id, session.id);
         expect(current.state, 'recording');
-        await click(const Key('group_return_to_drive'));
+        await click(const Key('group_go_to_drive'));
         expect(identical(tester.state(find.byType(MapScreen)), state), true);
         // Normal back retains its real save/exit warning.
         unawaited(navigation.currentState!.maybePop());
@@ -1276,13 +1285,12 @@ void main() {
         expect(find.text('Devam eden sürüş'), findsOneWidget);
         await tester.tap(find.text('Sürüşe dön'));
         await frames();
-        // Paused membership still exposes the group route and explicit consent.
+        // Resume reuses the explicit approval for this same membership.
         await click(const Key('drive_open_group'));
         await click(const Key('group_share_start'));
-        await click(const Key('group_background_consent'));
-        await click(const Key('group_consent_confirm'));
+        expect(find.byKey(const Key('group_consent_confirm')), findsNothing);
         expect(source.opens, 2);
-        await click(const Key('group_return_to_drive'));
+        await click(const Key('group_go_to_drive'));
         await tester.runAsync(() async {
           unawaited(state.stopDriving() as Future<void>);
         });

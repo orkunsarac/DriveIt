@@ -31,9 +31,11 @@ class FakeGroupGps implements GroupGpsSource {
   bool allowed = true;
   int opens = 0, cancels = 0, requests = 0;
   Completer<bool>? accessHold;
+  Completer<void>? requestHold;
   @override
   Future<void> requestAccess() async {
     requests++;
+    await requestHold?.future;
     if (!allowed) throw const GroupGpsException('permission_denied');
   }
 
@@ -120,6 +122,7 @@ void main() {
     service = FakeGroupDriveService(clock: () => now);
     client = service.forOwner(runtime.lease);
     group = await client.create();
+    group = await client.startRide(group.id);
     source = FakeGroupGps();
     gps = GroupGpsSharing(
       lease: runtime.lease,
@@ -150,6 +153,116 @@ void main() {
 
   GroupDriveMember mine(GroupDriveSnapshot snapshot) =>
       snapshot.members.singleWhere((m) => m.accountId == a);
+
+  test(
+    'leaving during Android permission invalidates the pending membership approval',
+    () async {
+      source.requestHold = Completer<void>();
+      gps.rememberConsent(group, backgroundConsent: false);
+      expect(source.requests, 1);
+      await client.leave(group.id);
+      source.requestHold!.complete();
+      await gps.settled;
+      expect(gps.active, isFalse);
+      expect(source.opens, 0);
+      expect(gps.hasSharingConsent(group), isFalse);
+    },
+  );
+
+  test(
+    'membership consent waits in lobby, starts once in running and resumes without renewed consent',
+    () async {
+      await client.end(group.id);
+      final lobby = await client.create();
+      gps.rememberConsent(lobby, backgroundConsent: false);
+      expect(gps.hasSharingConsent(lobby), isTrue);
+      expect(source.requests, 0);
+      expect(source.opens, 0);
+      group = await client.startRide(lobby.id);
+      await gps.settled;
+      expect(source.requests, 1);
+      expect(source.opens, 1);
+      gps.updateGroup(await client.current());
+      await gps.settled;
+      expect(source.opens, 1);
+      await gps.pause(group.id);
+      expect(gps.hasSharingConsent((await client.current())!), isTrue);
+      await gps.start(group.id, consent: true);
+      expect(source.opens, 2);
+    },
+  );
+
+  test(
+    'running join consent starts, leave/rejoin and application restart clear it',
+    () async {
+      gps.rememberConsent(group, backgroundConsent: false);
+      await gps.settled;
+      expect(source.opens, 1);
+      final peerAuth = TestAuth()..userId = b;
+      final peer = LocalOwnerLifecycle(
+        gate: LocalOwnershipGate.synthetic(),
+        auth: peerAuth,
+        openStore: (owner) =>
+            OwnerScopedLocalStore.open(root: '${root.path}/peer', owner: owner),
+        driveInProgress: () async => false,
+      );
+      await peer.start();
+      final other = service.forOwner(peer.lease);
+      try {
+        await other.join(group.invite);
+        await client.leave(group.id);
+        expect(gps.active, isFalse);
+        group = await client.join(group.invite);
+        expect(gps.hasSharingConsent(group), isFalse);
+        expect(source.opens, 1);
+        final restored = GroupGpsSharing(
+          lease: runtime.lease,
+          client: client,
+          source: source,
+          clock: () => now,
+        );
+        restored.updateGroup(group);
+        expect(restored.hasSharingConsent(group), isFalse);
+        expect(restored.active, isFalse);
+        await restored.close();
+        restored.dispose();
+      } finally {
+        await other.close();
+        await peer.close();
+        peer.dispose();
+        await peerAuth.events.close();
+      }
+    },
+  );
+
+  test(
+    'pending lobby approval cannot start a source while backgrounded or after owner change',
+    () async {
+      await client.end(group.id);
+      final lobby = await client.create();
+      gps.rememberConsent(lobby, backgroundConsent: false);
+      TestWidgetsFlutterBinding.instance.handleAppLifecycleStateChanged(
+        AppLifecycleState.paused,
+      );
+      group = await client.startRide(lobby.id);
+      await gps.settled;
+      expect(source.requests, 0);
+      expect(gps.active, isFalse);
+      await runtime.close();
+      expect(gps.hasSharingConsent(group), isFalse);
+      expect(source.requests, 0);
+    },
+  );
+
+  test('unapproved lobby never starts GPS after admin start', () async {
+    await client.end(group.id);
+    group = await client.create();
+    await client.startRide(group.id);
+    await gps.settled;
+    expect(source.requests, 0);
+    expect(source.opens, 0);
+    expect(gps.active, isFalse);
+  });
 
   test(
     'no consent or permission -> no source subscription; approved GPS reaches group',
@@ -299,6 +412,7 @@ void main() {
       expect(gps.active, false);
       expect(source.cancels, 1);
       group = await client.create();
+      group = await client.startRide(group.id);
       await gps.start(group.id, consent: true);
       await emit(groupPosition(now));
       now = group.expiresAt;
@@ -448,6 +562,7 @@ void main() {
       await f.open();
       final fClient = service.forOwner(f.runtime.owner.lease);
       final fg = await fClient.create();
+      await fClient.startRide(fg.id);
       final fSource = FakeGroupGps();
       final fGps = GroupGpsSharing(
         lease: f.runtime.owner.lease,

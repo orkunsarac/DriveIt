@@ -36,8 +36,15 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   bool _backgroundConsent = false;
   String? errorCode;
   String? sampleState;
+  String? _consentedGroup, _consentedMembership;
+  bool _consentedBackground = false, _autoStartPending = false;
+  Future<void> _consentWork = Future.value();
   Future<void> _work = Future.value();
-  Future<void> get settled => _work;
+  Future<void> get settled async {
+    await _consentWork;
+    await _work;
+  }
+
   bool get active => _grant != null && lease.isCurrent && !_closed;
   bool get _visible =>
       WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
@@ -48,17 +55,89 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       (_visible || (_grant != null && _backgroundConsent));
   void _ownerChanged() {
     if (!lease.isCurrent) {
+      _clearConsent();
       diagnostics?.call('owner_epoch_invalidated');
       _halt();
     }
   }
 
+  bool hasSharingConsent(GroupDriveSnapshot group) =>
+      !_closed &&
+      lease.isCurrent &&
+      group.isActive &&
+      group.id == _consentedGroup &&
+      group.members.any(
+        (m) =>
+            m.accountId == lease.owner.userId &&
+            m.membershipId == _consentedMembership,
+      );
+
+  bool get consentedBackground => _consentedBackground;
+
+  /// In-memory approval belongs to this exact membership and owner lease.
+  /// Nothing is restored across application starts or membership replacement.
+  void rememberConsent(
+    GroupDriveSnapshot group, {
+    required bool backgroundConsent,
+    bool startWhenRunning = true,
+  }) {
+    lease.requireCurrent();
+    if (_closed || !group.isActive) return;
+    final own = group.members
+        .where((m) => m.accountId == lease.owner.userId)
+        .single;
+    _consentedGroup = group.id;
+    _consentedMembership = own.membershipId;
+    _consentedBackground = backgroundConsent;
+    _autoStartPending = startWhenRunning;
+    updateGroup(group);
+  }
+
+  void _clearConsent() {
+    _consentedGroup = null;
+    _consentedMembership = null;
+    _consentedBackground = false;
+    _autoStartPending = false;
+  }
+
+  Future<void> _startApproved(String groupId, bool background) async {
+    final membership = _consentedMembership;
+    bool sameApproval() =>
+        !_closed &&
+        lease.isCurrent &&
+        _consentedGroup == groupId &&
+        _consentedMembership == membership;
+    try {
+      await start(groupId, consent: true, backgroundConsent: background);
+    } on GroupGpsException catch (error) {
+      if (!sameApproval()) return;
+      errorCode = error.code;
+      if (!_closed) notifyListeners();
+    } on GroupDriveException catch (error) {
+      if (!sameApproval()) return;
+      errorCode = error.code;
+      if (!_closed) notifyListeners();
+    } on StateError {
+      if (lease.isCurrent && !_closed) rethrow;
+    }
+  }
+
   void updateGroup(GroupDriveSnapshot? group) {
+    if (group == null || !hasSharingConsent(group)) {
+      final hadConsent = _consentedMembership != null;
+      _clearConsent();
+      if (hadConsent) {
+        _halt(); // Revoke an in-flight Android permission request.
+      }
+    } else if (_autoStartPending && group.isRunning && _visible && !active) {
+      _autoStartPending = false;
+      _consentWork = _startApproved(group.id, _consentedBackground);
+    }
     final grant = _grant;
     if (grant == null) {
       return;
     }
-    if (group?.isActive != true ||
+    if (group?.isRunning != true ||
         group?.id != grant.groupId ||
         !group!.members.any(
           (m) =>
@@ -89,6 +168,11 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
     if (!_visible || !lease.isCurrent || _closed) {
       throw const GroupGpsException('foreground_required');
     }
+    final approvedMembership = _consentedMembership;
+    bool approvalCurrent() =>
+        approvedMembership == null ||
+        (_consentedGroup == groupId &&
+            _consentedMembership == approvedMembership);
     final previousGroup = _grant?.groupId;
     _halt();
     final generation = _generation;
@@ -99,9 +183,11 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
       onTimeout: () => throw const GroupGpsException('permission_timeout'),
     );
     diagnostics?.call('permission_access_granted');
-    if (!_valid(generation)) throw const GroupGpsException('context_changed');
+    if (!_valid(generation) || !approvalCurrent()) {
+      throw const GroupGpsException('context_changed');
+    }
     final grant = await client.startSharing(groupId, consent: true);
-    if (!_valid(generation)) {
+    if (!_valid(generation) || !approvalCurrent()) {
       await client.pauseSharing(groupId);
       throw const GroupGpsException('context_changed');
     }
@@ -271,11 +357,13 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<GroupDriveSnapshot> pause(String groupId) async {
+    _autoStartPending = false;
     _halt();
     return client.pauseSharing(groupId);
   }
 
   Future<GroupDriveSnapshot> stop(String groupId) async {
+    _autoStartPending = false;
     _halt();
     return client.stopSharing(groupId);
   }
@@ -318,6 +406,7 @@ class GroupGpsSharing extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> close() async {
     if (_closed) return;
+    _clearConsent();
     final group = _grant?.groupId;
     _halt();
     _closed = true;

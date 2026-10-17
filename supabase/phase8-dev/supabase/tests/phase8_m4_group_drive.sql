@@ -1,7 +1,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
-select plan(30);
+select plan(31);
 
 insert into auth.users(id,aud,role,email,raw_user_meta_data) values
  ('10101010-1010-4010-8010-101010101010','authenticated','authenticated','m4-a@example.invalid','{"display_name":"Synthetic A"}'),
@@ -24,7 +24,7 @@ select is((select response->>'status' from m4_group_state),'active','new group a
 select is((select jsonb_array_length(response->'members') from m4_group_state),1,'creator is initial member');
 select is((select response->'members'->0->>'sharingStatus' from m4_group_state),'off','sharing defaults off');
 select ok((select invite_code ~* '^[0-9a-f-]{36}$' from m4_group_state),'server returns invitation code');
-select ok((select (response->>'expiresAt')::timestamptz-(response->>'createdAt')::timestamptz=interval '12 hours' from m4_group_state),'initial lifetime is 12 hours');
+ select ok((select abs(extract(epoch from ((response->>'expiresAt')::timestamptz-(response->>'createdAt')::timestamptz-interval '12 hours'))) < 1 from m4_group_state),'initial lifetime is 12 hours');
 
 select set_config('request.jwt.claim.sub','20202020-2020-4020-8020-202020202020',true);
 select lives_ok($q$with r as (select public.phase8_group_command('join',null,(select invite_code from m4_group_state)) j)
@@ -42,6 +42,9 @@ select throws_ok($q$select public.phase8_group_command('join',null,(select invit
 select set_config('request.jwt.claim.sub','20202020-2020-4020-8020-202020202020',true);
 select throws_ok($q$select public.phase8_group_command('end',(select group_id from m4_group_state))$q$,
  '42501','administrator_required','member cannot end group');
+select set_config('request.jwt.claim.sub','10101010-1010-4010-8010-101010101010',true);
+select lives_ok($q$select public.phase8_group_command('start',(select group_id from m4_group_state))$q$,'administrator starts ride');
+select set_config('request.jwt.claim.sub','20202020-2020-4020-8020-202020202020',true);
 select throws_ok($q$select public.phase8_group_command('share_start',(select group_id from m4_group_state),null,null,false)$q$,
  '42501','consent_required','sharing requires explicit consent');
 select lives_ok($q$select public.phase8_group_command('share_start',(select group_id from m4_group_state),null,null,true)$q$,

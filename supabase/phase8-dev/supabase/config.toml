@@ -27,3 +27,12 @@ verify_jwt = true
 
 [functions.phase8-drive-cleanup]
 verify_jwt = false
+
+[functions.phase8-drive-delete]
+verify_jwt = true
+
+[functions.phase8-drive-lease]
+verify_jwt = true
+
+[functions.phase8-group-publish]
+verify_jwt = true

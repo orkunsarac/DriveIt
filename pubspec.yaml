@@ -92,6 +92,7 @@ flutter:
     - assets/branding/driveit_logo_clean.png
     - assets/branding/driveit_logo_current.png
     - assets/branding/driveit_hero.png
+    - assets/branding/driveit_drives_route.png
     - assets/onboarding/welcome_background.png
     - assets/onboarding/welcome_background_phone.png
     - assets/onboarding/features_background_phone.png

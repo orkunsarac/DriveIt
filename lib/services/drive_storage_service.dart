@@ -5,7 +5,6 @@ import 'owned_drive_transfer_route.dart';
 import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
-import '../models/route_point.dart';
 import '../models/canonical_telemetry_point.dart';
 import '../models/drive_score_record.dart';
 import '../features/my_world/services/my_world_runtime.dart';
@@ -27,8 +26,6 @@ class DriveStorageService {
       SourceWriterBoundary.box('history', Hive.box<DriveSession>('drives'));
   static Box<dynamic> get _careerBox =>
       SourceWriterBoundary.box('career', Hive.box<dynamic>('career_totals'));
-  static Box<dynamic> get _symbolicBox =>
-      SourceWriterBoundary.box('history', Hive.box<dynamic>('symbolic_routes'));
   static Box<dynamic> get _namesBox =>
       SourceWriterBoundary.box('history', Hive.box<dynamic>('drive_names'));
 
@@ -187,31 +184,6 @@ class DriveStorageService {
     return ((_careerBox.get('atomicTotals') as Map?)?['totalDuration'] ??
             _careerBox.get('totalDuration', defaultValue: 0) as num)
         .toInt();
-  }
-
-  static List<RoutePoint> getSymbolicRoute(List<DriveSession> drives) {
-    if (!Hive.isBoxOpen('symbolic_routes')) {
-      return drives.isEmpty ? const <RoutePoint>[] : drives.last.route;
-    }
-    final stored = _symbolicBox.get('driveit_symbolic_route');
-    if (stored is List && stored.isNotEmpty) {
-      return stored
-          .whereType<Map>()
-          .map(
-            (p) => RoutePoint(
-              latitude: (p['lat'] as num).toDouble(),
-              longitude: (p['lng'] as num).toDouble(),
-            ),
-          )
-          .toList();
-    }
-    if (drives.isEmpty) return const <RoutePoint>[];
-    final first = drives.reduce((a, b) => a.date.isBefore(b.date) ? a : b);
-    final encoded = first.route
-        .map((p) => {'lat': p.latitude, 'lng': p.longitude})
-        .toList();
-    _symbolicBox.put('driveit_symbolic_route', encoded);
-    return first.route;
   }
 
   /// Tüm sürüşler

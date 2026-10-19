@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 
 import '../models/drive_session.dart';
-import '../models/route_point.dart';
 import '../features/drive_poster/poster_screens.dart';
 import '../features/onboarding/widgets/home_tour_overlay.dart';
 import '../services/drive_storage_service.dart';
@@ -527,86 +526,77 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _drives(
-    BuildContext context,
-    List<DriveSession> drives,
-  ) => GestureDetector(
-    onTap: () => Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => HistoryScreen(
-          ownerLease: widget.ownerLease,
-          ownedDetailBuilder: (lease, id) =>
-              OwnedDriveDetailScreen(lease: lease, driveId: id),
+  Widget _drives(BuildContext context, List<DriveSession> drives) =>
+      GestureDetector(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => HistoryScreen(
+              ownerLease: widget.ownerLease,
+              ownedDetailBuilder: (lease, id) =>
+                  OwnedDriveDetailScreen(lease: lease, driveId: id),
+            ),
+          ),
         ),
-      ),
-    ),
-    child: _glass(
-      const Color(0xff9d5cff),
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(
+        child: _glass(
+          const Color(0xff9d5cff),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.alt_route, color: Color(0xffbd82ff), size: 18),
-              SizedBox(width: 5),
-              Expanded(
-                child: Text(
-                  'Sürüşlerim',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: textFont,
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+              const Row(
+                children: [
+                  Icon(Icons.alt_route, color: Color(0xffbd82ff), size: 18),
+                  SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      'Sürüşlerim',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: textFont,
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 7),
+              SizedBox(
+                height: 68,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Image.asset(
+                    'assets/branding/driveit_drives_route.png',
+                    key: const Key('home_drives_route_asset'),
+                    fit: BoxFit.contain,
+                    excludeFromSemantics: true,
+                  ),
+                ),
+              ),
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Toplam Sürüş ${drives.length}',
+                      maxLines: 1,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 9,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 7),
-          SizedBox(
-            height: 68,
-            child: Builder(
-              builder: (_) {
-                final route = widget.ownerLease == null
-                    ? DriveStorageService.getSymbolicRoute(drives)
-                    : (drives.isEmpty ? <RoutePoint>[] : drives.first.route);
-                return route.length < 2
-                    ? const Center(
-                        child: Icon(
-                          Icons.route,
-                          color: Colors.white38,
-                          size: 28,
-                        ),
-                      )
-                    : Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 3),
-                        child: NeonRoutePreview(route: route),
-                      );
-              },
-            ),
-          ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 3),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.center,
-                child: Text(
-                  'Toplam Sürüş ${drives.length}',
-                  maxLines: 1,
-                  style: const TextStyle(color: Colors.white70, fontSize: 9),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
 
   Widget _driveButton(BuildContext context) => _AnimatedDriveButton(
     onTap: () => _navigate('/drive', (_) => const DriveCenterScreen()),

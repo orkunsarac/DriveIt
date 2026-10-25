@@ -28,6 +28,42 @@ DriveSession drive({
       ],
 );
 
+DriveReplayController canonicalController(Duration duration, {int? samples}) {
+  final count = samples ?? (duration == Duration.zero ? 1 : 2);
+  final start = DateTime.utc(2026);
+  final points = List.generate(count, (index) {
+    final elapsed = count == 1
+        ? Duration.zero
+        : Duration(
+            microseconds: (duration.inMicroseconds * index / (count - 1))
+                .round(),
+          );
+    return CanonicalTelemetryPoint(
+      latitude: 41,
+      longitude: 29 + index / 1000,
+      timestamp: start.add(elapsed),
+      speedMps: 10,
+      headingDegrees: 90,
+      altitudeMeters: 0,
+      accuracyMeters: 3,
+      distanceFromPreviousMeters: index == 0 ? 0 : 100,
+      accelerationMps2: 0,
+      speedSource: 'native',
+    );
+  });
+  final session = drive(durationSeconds: duration.inSeconds);
+  final telemetry = ReplayTelemetryAdapter.build(
+    session,
+    DriveTelemetryRecord(
+      driveSessionId: session.id,
+      dataVersion: DriveTelemetryRecord.currentDataVersion,
+      createdAt: start,
+      points: points,
+    ),
+  );
+  return DriveReplayController(session, telemetry: telemetry);
+}
+
 void main() {
   test('interpolates coordinates between route points', () {
     const points = [
@@ -263,6 +299,136 @@ void main() {
     final controller = DriveReplayController(session, telemetry: telemetry);
     controller.seek(.5);
     expect(controller.frame.speedKmh, isNull);
+    controller.dispose();
+  });
+
+  test('canonical base multiplier caps base preview at thirty seconds', () {
+    final cases = <({Duration drive, double multiplier, Duration preview})>[
+      (
+        drive: const Duration(minutes: 2),
+        multiplier: 10,
+        preview: const Duration(seconds: 12),
+      ),
+      (
+        drive: const Duration(minutes: 5),
+        multiplier: 10,
+        preview: const Duration(seconds: 30),
+      ),
+      (
+        drive: const Duration(minutes: 20),
+        multiplier: 40,
+        preview: const Duration(seconds: 30),
+      ),
+      (
+        drive: const Duration(minutes: 92, seconds: 14),
+        multiplier: (92 * 60 + 14) / 30,
+        preview: const Duration(seconds: 30),
+      ),
+      (
+        drive: const Duration(days: 365),
+        multiplier: (365 * 24 * 60 * 60) / 30,
+        preview: const Duration(seconds: 30),
+      ),
+    ];
+    for (final testCase in cases) {
+      final controller = canonicalController(testCase.drive);
+      expect(controller.isCanonical, isTrue);
+      expect(
+        controller.basePlaybackMultiplier,
+        closeTo(testCase.multiplier, 1e-9),
+      );
+      expect(
+        controller.effectivePlaybackMultiplier,
+        closeTo(testCase.multiplier, 1e-9),
+      );
+      expect(controller.basePreviewDuration, testCase.preview);
+      controller.dispose();
+    }
+  });
+
+  test('canonical selected speeds are relative to the adaptive base', () {
+    final controller = canonicalController(const Duration(minutes: 20));
+    final expectedDurations = [
+      const Duration(seconds: 30),
+      const Duration(seconds: 15),
+      const Duration(seconds: 6),
+      const Duration(seconds: 3),
+    ];
+    for (final (index, speed) in [1.0, 2.0, 5.0, 10.0].indexed) {
+      controller.setDisplayPlaybackSpeed(speed);
+      expect(controller.effectivePlaybackMultiplier, 40 * speed);
+      expect(controller.selectedPreviewDuration, expectedDurations[index]);
+    }
+    controller
+      ..setDisplayPlaybackSpeed(5)
+      ..seek(.5);
+    expect(controller.selectedPreviewTime, const Duration(seconds: 3));
+    controller.dispose();
+  });
+
+  test('canonical very short and zero-duration timelines stay safe', () {
+    final veryShort = canonicalController(const Duration(microseconds: 1));
+    expect(veryShort.isCanonical, isTrue);
+    expect(veryShort.canReplay, isTrue);
+    expect(veryShort.basePlaybackMultiplier, 10);
+    expect(veryShort.basePreviewDuration, const Duration(microseconds: 1));
+    veryShort
+      ..play()
+      ..advance(const Duration(microseconds: 1));
+    expect(veryShort.isComplete, isTrue);
+    veryShort.dispose();
+
+    final zero = canonicalController(Duration.zero);
+    expect(zero.isCanonical, isTrue);
+    expect(zero.canReplay, isFalse);
+    expect(zero.basePlaybackMultiplier, 10);
+    expect(zero.basePreviewDuration, Duration.zero);
+    zero
+      ..play()
+      ..advance(const Duration(seconds: 1));
+    expect(zero.isPlaying, isFalse);
+    expect(zero.isComplete, isFalse);
+    zero.dispose();
+  });
+
+  test(
+    'invalid legacy duration remains unavailable without negative preview',
+    () {
+      final invalid = DriveReplayController(drive(durationSeconds: -1));
+      expect(invalid.isCanonical, isFalse);
+      expect(invalid.canReplay, isFalse);
+      expect(invalid.basePlaybackMultiplier, 10);
+      expect(invalid.basePreviewDuration, Duration.zero);
+      expect(invalid.previewTime, Duration.zero);
+      invalid.dispose();
+    },
+  );
+
+  test('canonical large timer delta completes without duration overflow', () {
+    final controller = canonicalController(const Duration(days: 365));
+    controller
+      ..play()
+      ..advance(const Duration(days: 100));
+    expect(controller.currentTime, controller.totalDuration);
+    expect(controller.isComplete, isTrue);
+    expect(controller.isPlaying, isFalse);
+    controller.dispose();
+  });
+
+  test('legacy durations and preview speed mapping remain unchanged', () {
+    final controller = DriveReplayController(drive(durationSeconds: 1200));
+    expect(controller.isCanonical, isFalse);
+    expect(controller.basePlaybackMultiplier, 10);
+    expect(controller.basePreviewDuration, const Duration(minutes: 2));
+    for (final (speed, effective) in [
+      (1.0, 10.0),
+      (2.0, 20.0),
+      (5.0, 50.0),
+      (10.0, 100.0),
+    ]) {
+      controller.setDisplayPlaybackSpeed(speed);
+      expect(controller.effectivePlaybackMultiplier, effective);
+    }
     controller.dispose();
   });
 }

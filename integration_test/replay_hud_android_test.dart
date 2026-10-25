@@ -62,6 +62,46 @@ void expectFrame(WidgetTester tester, DriveSession drive) {
   );
 }
 
+void expectCanonicalFrame(
+  WidgetTester tester,
+  ReplayTelemetryData data,
+  Duration totalDuration,
+) {
+  final progress = tester.widget<Slider>(find.byType(Slider)).value;
+  final elapsed = Duration(
+    microseconds: (totalDuration.inMicroseconds * progress).round(),
+  );
+  final frame = ReplayInterpolator.frameAtTelemetry(data, elapsed);
+  final minutes = elapsed.inMinutes.toString().padLeft(2, '0');
+  final seconds = elapsed.inSeconds.remainder(60).toString().padLeft(2, '0');
+  expect(hud(tester, 'elapsed'), '$minutes:$seconds');
+  expect(
+    hud(tester, 'distance'),
+    '${(frame.distanceMeters / 1000).toStringAsFixed(2)} km',
+  );
+  final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+  if (frame.isGap || frame.latitude == null || frame.longitude == null) {
+    expect(map.markers, isEmpty);
+    expect(hud(tester, 'speed'), '—');
+  } else {
+    expect(map.markers, hasLength(1));
+    expect(
+      map.markers.single.position.latitude,
+      closeTo(frame.latitude!, 1e-9),
+    );
+    expect(
+      map.markers.single.position.longitude,
+      closeTo(frame.longitude!, 1e-9),
+    );
+    expect(
+      hud(tester, 'speed'),
+      frame.speedKmh == null
+          ? '—'
+          : '${frame.speedKmh!.toStringAsFixed(0)} km/h',
+    );
+  }
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets('DI007 stage 1 HUD agrees with replay marker on Android', (
@@ -189,19 +229,19 @@ void main() {
       final drive = DriveSession(
         id: 'synthetic-canonical-replay',
         date: DateTime.utc(2026),
-        distance: 500,
-        durationSeconds: 90,
+        distance: 12000,
+        durationSeconds: 1200,
         averageSpeed: 72,
         maxSpeed: 120,
         mapImagePath: '',
         route: route,
       );
-      final points = List.generate(
-        5,
-        (i) => CanonicalTelemetryPoint(
+      final points = List.generate(241, (i) {
+        final longitude = i < 4 ? 29 + i / 1000 : 29.003 + (i - 3) * .0011;
+        return CanonicalTelemetryPoint(
           latitude: 41,
-          longitude: 29 + i / 1000,
-          timestamp: base.add(Duration(seconds: i)),
+          longitude: longitude,
+          timestamp: base.add(Duration(seconds: i * 5)),
           speedMps: i == 3 ? 8 : 12,
           headingDegrees: 90,
           altitudeMeters: 0,
@@ -214,8 +254,8 @@ void main() {
             _ => 'native',
           },
           breakBefore: i == 2,
-        ),
-      );
+        );
+      });
       await drives.put(drive.id, drive);
       await DriveTelemetryStorageService.save(
         driveSessionId: drive.id,
@@ -227,13 +267,9 @@ void main() {
       final savedTelemetry = Hive.box<DriveTelemetryRecord>(
         'drive_telemetry',
       ).get(drive.id)!;
-      expect(savedTelemetry.points.map((point) => point.speedSource), [
-        'native',
-        'native',
-        'unavailable',
-        'geometry_estimate',
-        'native',
-      ]);
+      expect(savedTelemetry.points, hasLength(241));
+      expect(savedTelemetry.points[2].speedSource, 'unavailable');
+      expect(savedTelemetry.points[3].speedSource, 'geometry_estimate');
       final replayData = ReplayTelemetryAdapter.build(drive, savedTelemetry);
       expect(replayData.source, ReplayTelemetrySource.canonical);
       expect(
@@ -262,14 +298,74 @@ void main() {
       expect(find.text('KAYITLI GPS MESAFESİ'), findsOneWidget);
       expect(find.text('GPS SÜRESİ'), findsOneWidget);
       expect(find.text('GPS KAYNAKLI HIZ'), findsOneWidget);
-      tester.widget<Slider>(find.byType(Slider)).onChanged!(.375);
+      expect(
+        find.textContaining('GPS 00:00 · Önizleme (1×, efektif 40×)'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('00:00 / 00:30'), findsOneWidget);
+      final speedControl = tester.widget<PopupMenuButton<double>>(
+        find.byType(PopupMenuButton<double>),
+      );
+      for (final (speed, effective) in [
+        (1.0, 40.0),
+        (2.0, 80.0),
+        (5.0, 200.0),
+        (10.0, 400.0),
+      ]) {
+        speedControl.onSelected!(speed);
+        await tester.pump();
+        expect(
+          find.textContaining(
+            'Önizleme (${speed.toInt()}×, efektif ${effective.toInt()}×)',
+          ),
+          findsOneWidget,
+        );
+        final previewSeconds = (30 / speed).round().toString().padLeft(2, '0');
+        expect(
+          find.textContaining('00:00 / 00:$previewSeconds'),
+          findsOneWidget,
+        );
+      }
+      speedControl.onSelected!(5);
+      await tester.pump();
+      await tester.tap(find.text('Başla!'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expectCanonicalFrame(tester, replayData, const Duration(seconds: 1200));
+      final pausedHud = [
+        hud(tester, 'speed'),
+        hud(tester, 'distance'),
+        hud(tester, 'elapsed'),
+      ];
+      final pausedProgress = tester.widget<Slider>(find.byType(Slider)).value;
+      await tester.tap(find.byIcon(Icons.pause_rounded));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect([
+        hud(tester, 'speed'),
+        hud(tester, 'distance'),
+        hud(tester, 'elapsed'),
+      ], pausedHud);
+      expect(tester.widget<Slider>(find.byType(Slider)).value, pausedProgress);
+      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester.widget<Slider>(find.byType(Slider)).value,
+        greaterThan(pausedProgress),
+      );
+      expectCanonicalFrame(tester, replayData, const Duration(seconds: 1200));
+      await tester.tap(find.byIcon(Icons.pause_rounded));
+      await tester.pump();
+
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.005);
       await tester.pump();
       final gapMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(gapMap.markers, isEmpty);
       expect(find.text('GPS verisi yok · mesafe sabit'), findsOneWidget);
       expect(hud(tester, 'speed'), '—');
       expect(hud(tester, 'distance'), '0.10 km');
-      expect(hud(tester, 'elapsed'), '00:01');
+      expect(hud(tester, 'elapsed'), '00:06');
       final fullSegments =
           gapMap.polylines
               .where(
@@ -279,15 +375,15 @@ void main() {
               .toList()
             ..sort((a, b) => a.polylineId.value.compareTo(b.polylineId.value));
       expect(fullSegments, hasLength(2));
-      expect(fullSegments.map((line) => line.points.length), [2, 3]);
+      expect(fullSegments.map((line) => line.points.length), [2, 239]);
       expect(fullSegments[0].points.map((point) => point.longitude), [
         closeTo(29, 1e-9),
         closeTo(29.001, 1e-9),
       ]);
-      expect(fullSegments[1].points.map((point) => point.longitude), [
+      expect(fullSegments[1].points.take(3).map((point) => point.longitude), [
         closeTo(29.002, 1e-9),
         closeTo(29.003, 1e-9),
-        closeTo(29.004, 1e-9),
+        closeTo(29.0041, 1e-9),
       ]);
       expect(
         gapMap.polylines
@@ -299,7 +395,7 @@ void main() {
         ['replay_visited_segment_0'],
       );
 
-      tester.widget<Slider>(find.byType(Slider)).onChanged!(.75);
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.0125);
       await tester.pump();
       final afterGap = tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(afterGap.markers, hasLength(1));
@@ -332,7 +428,7 @@ void main() {
         closeTo(29.003, 1e-9),
       ]);
 
-      tester.widget<Slider>(find.byType(Slider)).onChanged!(.125);
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.0020833333);
       await tester.pump();
       final backward = tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(
@@ -353,7 +449,7 @@ void main() {
         closeTo(29.0005, 1e-9),
       );
 
-      tester.widget<Slider>(find.byType(Slider)).onChanged!(.75);
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.0125);
       await tester.pump();
       final seekForward = tester.widget<GoogleMap>(find.byType(GoogleMap));
       expect(
@@ -369,6 +465,14 @@ void main() {
             .map((line) => line.polylineId.value),
         ['replay_visited_segment_0', 'replay_visited_segment_1'],
       );
+
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(1);
+      await tester.pump();
+      expect(find.text('Sürüş tekrarı tamamlandı'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.replay_rounded));
+      await tester.pump();
+      expect(find.text('Sürüş tekrarı tamamlandı'), findsNothing);
+      expect(tester.widget<Slider>(find.byType(Slider)).value, lessThan(1));
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await Hive.close();

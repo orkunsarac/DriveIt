@@ -51,11 +51,11 @@ void main() {
     await root.delete(recursive: true);
   });
 
-  DriveSession fixture() => DriveSession(
+  DriveSession fixture({int durationSeconds = 60}) => DriveSession(
     id: 'owner-replay',
     date: DateTime.utc(2026),
     distance: 500,
-    durationSeconds: 60,
+    durationSeconds: durationSeconds,
     averageSpeed: 80,
     maxSpeed: 120,
     mapImagePath: '',
@@ -65,15 +65,19 @@ void main() {
     ),
   );
 
-  Future<DriveSession> seedCanonical() async {
-    final drive = fixture();
+  Future<DriveSession> seedCanonical({int? durationSeconds}) async {
+    final totalSeconds = durationSeconds ?? 3;
+    final sampleCount = durationSeconds == null ? 4 : 121;
+    final drive = fixture(durationSeconds: durationSeconds ?? 60);
     final base = DateTime.utc(2026);
-    final points = List.generate(
-      4,
-      (i) => CanonicalTelemetryPoint(
+    final points = List.generate(sampleCount, (i) {
+      final elapsedSeconds = sampleCount == 1
+          ? 0
+          : (totalSeconds * i / (sampleCount - 1)).round();
+      return CanonicalTelemetryPoint(
         latitude: 41,
         longitude: 29 + i / 1000,
-        timestamp: base.add(Duration(seconds: i)),
+        timestamp: base.add(Duration(seconds: elapsedSeconds)),
         speedMps: i == 2 ? 0 : 12,
         headingDegrees: 90,
         altitudeMeters: 0,
@@ -82,8 +86,8 @@ void main() {
         accelerationMps2: 0,
         speedSource: i == 2 ? 'unavailable' : 'native',
         breakBefore: i == 2,
-      ),
-    );
+      );
+    });
     await runtime.lease.put('drives', drive.id, drive);
     await runtime.lease.put(
       'drive_telemetry',
@@ -133,6 +137,46 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets('canonical preview label reflects adaptive and selected speed', (
+    tester,
+  ) async {
+    final drive = (await tester.runAsync(
+      () => seedCanonical(durationSeconds: 1200),
+    ))!;
+    final platform = _ReplayMaps();
+    final oldPlatform = maps.GoogleMapsFlutterPlatform.instance;
+    maps.GoogleMapsFlutterPlatform.instance = platform;
+    addTearDown(() => maps.GoogleMapsFlutterPlatform.instance = oldPlatform);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DriveReplayScreen(drive: drive, ownerLease: runtime.lease),
+      ),
+    );
+    expect(
+      find.textContaining('GPS 00:00 · Önizleme (1×, efektif 40×)'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('00:00 / 00:30'), findsOneWidget);
+
+    tester
+        .widget<PopupMenuButton<double>>(find.byType(PopupMenuButton<double>))
+        .onSelected!(5);
+    await tester.pump();
+    expect(find.textContaining('Önizleme (5×, efektif 200×)'), findsOneWidget);
+
+    await tester.tap(find.text('Başla!'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text('03:20'), findsOneWidget);
+    expect(find.textContaining('00:01 / 00:06'), findsOneWidget);
+    expect(
+      tester.widget<Slider>(find.byType(Slider)).value,
+      closeTo(1 / 6, 1e-9),
+    );
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('owner A to B revocation hides cached replay screen', (
     tester,

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 
 import '../../models/drive_session.dart';
@@ -5,6 +7,9 @@ import 'replay_interpolator.dart';
 import 'replay_telemetry_adapter.dart';
 
 class DriveReplayController extends ChangeNotifier {
+  static const Duration canonicalPreviewTarget = Duration(seconds: 30);
+  static const double _minimumBasePlaybackMultiplier = 10;
+
   final DriveSession drive;
   final ReplayTelemetryData? telemetry;
   late final List<ReplayPoint> timeline;
@@ -26,13 +31,23 @@ class DriveReplayController extends ChangeNotifier {
   bool get isPlaying => _isPlaying;
   bool get isComplete => _isComplete;
   double get displayPlaybackSpeed => _displayPlaybackSpeed;
-  double get effectivePlaybackMultiplier => switch (_displayPlaybackSpeed) {
-    1 => 10,
-    2 => 20,
-    5 => 50,
-    10 => 100,
-    _ => 10,
-  };
+  double get basePlaybackMultiplier {
+    if (!isCanonical || totalDuration <= Duration.zero) {
+      return _minimumBasePlaybackMultiplier;
+    }
+    final durationMicros = totalDuration.inMicroseconds.toDouble();
+    final targetMicros = canonicalPreviewTarget.inMicroseconds.toDouble();
+    final previewMultiplier = durationMicros / targetMicros;
+    if (!previewMultiplier.isFinite) {
+      return _minimumBasePlaybackMultiplier;
+    }
+    return math
+        .max(_minimumBasePlaybackMultiplier, previewMultiplier)
+        .toDouble();
+  }
+
+  double get effectivePlaybackMultiplier =>
+      basePlaybackMultiplier * _displayPlaybackSpeed;
   ReplayFrame get frame => _frame;
   Duration get currentTime => _frame.elapsed;
   Duration get totalDuration => isCanonical
@@ -43,11 +58,32 @@ class DriveReplayController extends ChangeNotifier {
       ? ReplayInterpolator.frameAtTelemetry(telemetry!, elapsed)
       : ReplayInterpolator.frameAt(timeline, elapsed);
 
-  /// The timeline is presented on the 1x preview axis (10x real playback).
+  /// The preview axis is distinct from recorded GPS time. Canonical drives
+  /// target 30 seconds at the base rate, without ever slowing below the
+  /// existing 10x baseline. Legacy drives retain their fixed 10x baseline.
   Duration get basePreviewDuration =>
-      Duration(microseconds: (totalDuration.inMicroseconds / 10).round());
+      _durationOnPreviewAxis(totalDuration.inMicroseconds);
   Duration get previewTime =>
-      Duration(microseconds: (currentTime.inMicroseconds / 10).round());
+      _durationOnPreviewAxis(currentTime.inMicroseconds);
+  Duration get selectedPreviewDuration => _durationAtMultiplier(
+    totalDuration.inMicroseconds,
+    effectivePlaybackMultiplier,
+  );
+  Duration get selectedPreviewTime => _durationAtMultiplier(
+    currentTime.inMicroseconds,
+    effectivePlaybackMultiplier,
+  );
+
+  Duration _durationOnPreviewAxis(int recordedMicros) {
+    return _durationAtMultiplier(recordedMicros, basePlaybackMultiplier);
+  }
+
+  Duration _durationAtMultiplier(int recordedMicros, double multiplier) {
+    if (recordedMicros <= 0) return Duration.zero;
+    final scaled = (recordedMicros / multiplier).round();
+    return Duration(microseconds: scaled.clamp(1, recordedMicros).toInt());
+  }
+
   double get progress {
     final total = totalDuration.inMicroseconds;
     return total <= 0
@@ -88,18 +124,35 @@ class DriveReplayController extends ChangeNotifier {
 
   void advance(Duration realDelta) {
     if (!_isPlaying || !canReplay || realDelta <= Duration.zero) return;
-    final playbackDelta = Duration(
-      microseconds: (realDelta.inMicroseconds * effectivePlaybackMultiplier)
-          .round(),
-    );
-    final next = _frame.elapsed + playbackDelta;
-    if (next >= totalDuration) {
-      _frame = _frameAt(totalDuration);
-      _isPlaying = false;
-      _isComplete = true;
-    } else {
-      _frame = _frameAt(next);
+    final totalMicros = totalDuration.inMicroseconds;
+    final currentMicros = _frame.elapsed.inMicroseconds;
+    final remainingMicros = totalMicros - currentMicros;
+    if (remainingMicros <= 0) {
+      _completeAtEnd();
+      return;
     }
+
+    final scaledMicros =
+        realDelta.inMicroseconds.toDouble() * effectivePlaybackMultiplier;
+    if (!scaledMicros.isFinite || scaledMicros >= remainingMicros.toDouble()) {
+      _completeAtEnd();
+      return;
+    }
+    final deltaMicros = scaledMicros.round();
+    if (deltaMicros <= 0) return;
+    final nextMicros = currentMicros + deltaMicros;
+    if (nextMicros >= totalMicros) {
+      _completeAtEnd();
+    } else {
+      _frame = _frameAt(Duration(microseconds: nextMicros));
+      notifyListeners();
+    }
+  }
+
+  void _completeAtEnd() {
+    _frame = _frameAt(totalDuration);
+    _isPlaying = false;
+    _isComplete = true;
     notifyListeners();
   }
 }

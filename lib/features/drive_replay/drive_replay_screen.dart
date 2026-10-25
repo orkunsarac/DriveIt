@@ -880,7 +880,11 @@ class _ReplayControls extends StatelessWidget {
           ],
         ),
         Text(
-          '${replay.isCanonical ? 'GPS ${_formatDuration(replay.currentTime)} · ' : ''}Önizleme (1×, efektif 10×): ${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
+          '${replay.isCanonical ? 'GPS ${_formatDuration(replay.currentTime)} · ' : ''}'
+          'Önizleme (${_formatMultiplier(replay.displayPlaybackSpeed)}×, '
+          'efektif ${_formatMultiplier(replay.effectivePlaybackMultiplier)}×): '
+          '${_formatDuration(replay.isCanonical ? replay.selectedPreviewTime : replay.previewTime)} / '
+          '${_formatDuration(replay.isCanonical ? replay.selectedPreviewDuration : replay.basePreviewDuration)}',
           style: const TextStyle(color: Color(0xff91a4c2), fontSize: 11),
         ),
       ],
@@ -1008,3 +1012,7 @@ String _formatDuration(Duration value) {
   final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
   return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
 }
+
+String _formatMultiplier(double value) => value == value.roundToDouble()
+    ? value.toStringAsFixed(0)
+    : value.toStringAsFixed(1);

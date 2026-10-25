@@ -27,9 +27,11 @@ class HomeScreen extends StatefulWidget {
     super.key,
     this.ownerLease,
     this.groupDriveAvailable = false,
+    this.installationOnboardingCompleted = false,
   });
   final LocalOwnerLease? ownerLease;
   final bool groupDriveAvailable;
+  final bool installationOnboardingCompleted;
 
   static const blue = Color(0xff248fff);
   static const textFont = 'Noto Sans';
@@ -166,13 +168,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadHomeTourState() async {
     if (widget.ownerLease != null) {
-      return; // No global onboarding preference read.
+      if (!widget.installationOnboardingCompleted) return;
+      try {
+        final profile = OwnerProfileStore(widget.ownerLease!);
+        if (!profile.homeTourCompleted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_current) setState(() => _showHomeTour = true);
+          });
+        }
+      } catch (_) {
+        // The tour is optional; never block Home on storage I/O.
+      }
+      return;
     }
     if (!Hive.isBoxOpen(ProfileStorageService.boxName)) return;
     try {
       final profile = await ProfileStorageService.open();
       if (!mounted) return;
-      if (profile.onboardingCompleted && !profile.homeTourCompleted) {
+      if ((widget.installationOnboardingCompleted ||
+              profile.onboardingCompleted) &&
+          !profile.homeTourCompleted) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) setState(() => _showHomeTour = true);
         });

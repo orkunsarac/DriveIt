@@ -33,6 +33,7 @@ class OwnerPersonalNavigator extends StatefulWidget {
     this.deviceArchiveSnapshot,
     this.deviceArchiveLoader,
     this.initialRoute = '/',
+    this.installationOnboardingCompleted = false,
     this.navigatorKey,
     this.groupDriveServiceForTesting,
     this.groupDriveService,
@@ -40,6 +41,7 @@ class OwnerPersonalNavigator extends StatefulWidget {
   }) : assert(deviceArchive == null || deviceArchiveSnapshot == null);
   final LocalOwnerLifecycle runtime;
   final String initialRoute;
+  final bool installationOnboardingCompleted;
   final GlobalKey<NavigatorState>? navigatorKey;
   final Widget legacyChild;
 
@@ -212,6 +214,8 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
         child: HomeScreen(
           ownerLease: lease,
           groupDriveAvailable: _groupDriveService != null,
+          installationOnboardingCompleted:
+              widget.installationOnboardingCompleted,
         ),
       ),
       if (_groupDriveService != null)

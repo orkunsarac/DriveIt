@@ -11,6 +11,7 @@ import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/services/local_source_bundle.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
 import 'package:driveit_project/widgets/local_owner_view.dart';
+import 'package:driveit_project/features/onboarding/widgets/home_tour_overlay.dart';
 import 'package:driveit_project/widgets/neon_route_preview.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,11 +40,15 @@ Future<void> _home(
   WidgetTester tester, {
   LocalOwnerLease? lease,
   String? expectedGreeting,
+  bool installationOnboardingCompleted = false,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
       key: UniqueKey(),
-      home: HomeScreen(ownerLease: lease),
+      home: HomeScreen(
+        ownerLease: lease,
+        installationOnboardingCompleted: installationOnboardingCompleted,
+      ),
     ),
   );
   await tester.pump();
@@ -236,6 +241,29 @@ void main() {
       );
       try {
         await tester.runAsync(runtime.start);
+        await _home(
+          tester,
+          lease: runtime.lease,
+          installationOnboardingCompleted: true,
+        );
+        final tour = tester.widget<HomeTourOverlay>(
+          find.byType(HomeTourOverlay),
+        );
+        expect(tour.steps.map((step) => step.title), [
+          'Sürüşe Başla',
+          'Sürüşlerim',
+          'Benim Dünyam',
+          'Kariyerim',
+        ]);
+        await tester.runAsync(
+          () => runtime.lease.put('profile', 'home_tour_completed', true),
+        );
+        await _home(
+          tester,
+          lease: runtime.lease,
+          installationOnboardingCompleted: true,
+        );
+        expect(find.byType(HomeTourOverlay), findsNothing);
         await tester.runAsync(
           () => runtime.lease.put('profile', 'display_name', 'Misafir Ada'),
         );

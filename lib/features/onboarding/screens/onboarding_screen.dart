@@ -9,7 +9,18 @@ import 'ready_onboarding_page.dart';
 import 'welcome_onboarding_page.dart';
 
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key});
+  const OnboardingScreen({
+    super.key,
+    this.installCompletionWriter,
+    this.profileReadyLoader,
+    this.onEnterApp,
+    this.loadLocalProfile = true,
+  });
+
+  final Future<void> Function()? installCompletionWriter;
+  final Future<bool> Function()? profileReadyLoader;
+  final VoidCallback? onEnterApp;
+  final bool loadLocalProfile;
 
   static const previewRoute = '/onboarding-preview';
 
@@ -85,8 +96,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               FeaturesOnboardingPage(onContinue: _showNextPage),
               PermissionsOnboardingPage(onContinue: _showNextPage),
               LegalSafetyOnboardingPage(onContinue: _showNextPage),
-              ProfileOnboardingPage(onContinue: _showNextPage),
-              const ReadyOnboardingPage(),
+              ProfileOnboardingPage(
+                onContinue: _showNextPage,
+                loadLocalProfile: widget.loadLocalProfile,
+              ),
+              ReadyOnboardingPage(
+                completionWriter: widget.installCompletionWriter,
+                profileReadyLoader: widget.profileReadyLoader,
+                onEnterApp: widget.onEnterApp,
+              ),
             ],
           ),
         ),

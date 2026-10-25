@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../screens/home_screen.dart';
 import '../../../services/profile_storage_service.dart';
+import '../../../services/install_onboarding_store.dart';
 import '../widgets/onboarding_primary_button.dart';
 import '../widgets/onboarding_progress_indicator.dart';
 
@@ -63,6 +64,9 @@ class _ReadyOnboardingPageState extends State<ReadyOnboardingPage> {
       } else {
         final profile = await _loadProfile();
         await profile.markOnboardingCompleted();
+        await InstallOnboardingStore.open().then(
+          (store) => store.markCompleted(),
+        );
       }
       if (!mounted) return;
       if (widget.onEnterApp != null) {

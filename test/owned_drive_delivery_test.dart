@@ -76,7 +76,6 @@ class DeliveryFixture {
   Future<void> boot({
     bool application = false,
     Future<LocalOwnerAuth> Function()? restoreAuth,
-    Future<bool> Function()? confirmGuest,
     DeviceArchiveAuthorizer? archiveAuthorizer,
     Future<Set<String>> Function()? unfinishedArchiveDrives,
     void Function(Widget)? mountApplication,
@@ -159,7 +158,6 @@ class DeliveryFixture {
         controlled: dependencies,
         archiveSource: SavedDriveArchiveSource(box),
         unfinishedArchiveDrives: unfinishedArchiveDrives ?? () async => {},
-        confirmGuest: confirmGuest ?? () async => true,
         archiveAuthorizer: archiveAuthorizer,
         mountApplication: mountApplication ?? runApp,
       ))!;
@@ -500,20 +498,14 @@ void main() {
     },
   );
 
-  testWidgets('explicit guest choice and root guest A B A isolation', (
+  testWidgets('null Auth starts isolated guest owner without a second prompt', (
     tester,
   ) async {
     await tester.runAsync(f.closeRuntime);
     f.auth.emit(null);
     final before = f.storesOpened;
-    await tester.runAsync(() async {
-      await expectLater(
-        f.boot(application: true, confirmGuest: () async => false),
-        throwsStateError,
-      );
-    });
-    expect(f.storesOpened, before);
     await tester.runAsync(() => f.boot(application: true));
+    expect(f.storesOpened, before + 1);
     await tester.pump();
     expect(find.textContaining('Misafir sürüşleri bu cihazda'), findsOneWidget);
     late DriveSession guest;

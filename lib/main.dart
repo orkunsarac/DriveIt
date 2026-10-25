@@ -6,7 +6,6 @@ import 'services/device_drive_archive.dart';
 import 'services/android_device_archive_authorizer.dart';
 import 'services/local_owner_lifecycle.dart';
 import 'widgets/owner_personal_navigator.dart';
-import 'features/account/widgets/driveit_account_section.dart';
 
 import 'services/foreground_service.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -36,6 +35,7 @@ import 'features/my_world/repositories/world_source_snapshot_repository.dart';
 import 'features/group_drive/group_drive_service.dart';
 import 'features/group_drive/group_gps_source.dart';
 import 'services/production_owner_runtime_factory.dart';
+import 'services/install_onboarding_store.dart';
 
 void main() async {
   await startDriveIt();
@@ -48,7 +48,6 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
   ControlledOwnershipDependencies? controlled,
   SavedDriveArchiveSource? archiveSource,
   Future<Set<String>> Function()? unfinishedArchiveDrives,
-  Future<bool> Function()? confirmGuest,
   DeviceArchiveAuthorizer? archiveAuthorizer,
   void Function(Widget) mountApplication = runApp,
   Future<void> Function()? legacyBootstrap,
@@ -73,7 +72,6 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     }
     return _startProductionOwnerRuntime(
       gate: gate,
-      confirmGuest: confirmGuest,
       mountApplication: mountApplication,
       legacyBootstrap: legacyBootstrap ?? _legacyBootstrap,
     );
@@ -94,12 +92,9 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
       controlled.writerFence == null) {
     throw StateError('Owner application dependencies incomplete');
   }
-  // Restore the SDK/session before opening ANY personal store. Failure never
-  // resolves to a guest. The explicit choice is required only for a null session.
+  // Restore Auth before opening any personal store. A missing session is the
+  // guest owner selected on onboarding page five (or an existing guest install).
   final auth = await controlled.restoreAuth();
-  if (auth.userId == null && !await (confirmGuest ?? _confirmGuest)()) {
-    throw StateError('Explicit guest choice required');
-  }
   LocalOwnerLifecycle.ownerFor(auth.userId);
   if ((await unfinishedArchiveDrives()).isNotEmpty) {
     throw StateError('Legacy GPS recovery required before owner activation');
@@ -181,7 +176,6 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
 
 Future<ControlledOwnershipRuntime?> _startProductionOwnerRuntime({
   required LocalOwnershipGate gate,
-  required Future<bool> Function()? confirmGuest,
   required void Function(Widget) mountApplication,
   required Future<void> Function() legacyBootstrap,
 }) async {
@@ -198,12 +192,30 @@ Future<ControlledOwnershipRuntime?> _startProductionOwnerRuntime({
     return null;
   }
 
-  final auth = composition.auth;
-  if (auth.userId == null && !await (confirmGuest ?? _confirmGuest)()) {
-    // The prompt stays mounted. No owner store or GPS session is opened until
-    // an explicit Guest choice is made.
+  final onboardingStore = await InstallOnboardingStore.open();
+  if (!onboardingStore.isCompleted) {
+    mountApplication(
+      DriveItApp(
+        initialScreen: OnboardingScreen(
+          loadLocalProfile: false,
+          installCompletionWriter: onboardingStore.markCompleted,
+          profileReadyLoader: () async => false,
+          onEnterApp: () {
+            unawaited(
+              _startProductionOwnerRuntime(
+                gate: gate,
+                mountApplication: mountApplication,
+                legacyBootstrap: legacyBootstrap,
+              ),
+            );
+          },
+        ),
+      ),
+    );
     return null;
   }
+
+  final auth = composition.auth;
   if (auth.userId != null) {
     LocalOwnerLifecycle.ownerFor(auth.userId); // Validate the actual Auth UUID.
   }
@@ -222,6 +234,7 @@ Future<ControlledOwnershipRuntime?> _startProductionOwnerRuntime({
     mountApplication(
       DriveItApp(
         ownerRuntime: runtime,
+        installationOnboardingCompleted: true,
         ownerInitialRoute:
             recovery.canStartNewDrive &&
                 runtime.owner.lease.pendingDriveFinalizations().isEmpty
@@ -269,44 +282,6 @@ Future<ControlledOwnershipRuntime?> _startProductionOwnerRuntime({
   }
 }
 
-Future<bool> _confirmGuest() {
-  final choice = Completer<bool>();
-  runApp(
-    MaterialApp(
-      home: Scaffold(
-        body: SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.all(24),
-            children: [
-              const Text(
-                'Misafir sürüşleri bu cihazda ayrı tutulur. Hesaba giriş yapmak '
-                'bu kayıtları otomatik aktarmaz.',
-              ),
-              if (!SupabaseConfig.isConfigured)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 12),
-                  child: Text(
-                    'Çevrimiçi hesap girişi bu kurulumda yapılandırılmamış. '
-                    'Yerel Misafir olarak devam edebilirsin; bu kimlik bir '
-                    'DriveIt hesabı değildir.',
-                  ),
-                ),
-              const DriveItAccountSection(),
-              FilledButton(
-                onPressed: () {
-                  if (!choice.isCompleted) choice.complete(true);
-                },
-                child: const Text('Devam Et / Misafir Olarak Kullan'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-  return choice.future;
-}
-
 Future<void> _legacyBootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations(const [
@@ -347,15 +322,19 @@ Future<void> _legacyBootstrap() async {
 
   await ForegroundService.init();
   final recovery = await ForegroundService.isDriveActive();
-  final profile = await ProfileStorageService.open();
+  await ProfileStorageService.open();
+  final onboardingStore = await InstallOnboardingStore.open();
   await SupabaseBootstrap.initializeIfConfigured();
   SupabaseAccountService.instance.startIdentitySync();
-  final onboardingCompleted = profile.onboardingCompleted;
+  final onboardingCompleted = onboardingStore.isCompleted;
   runApp(
     DriveItApp(
-      recoveryStatus: onboardingCompleted ? recovery : null,
-      initialScreen: onboardingCompleted
-          ? const HomeScreen()
+      recoveryStatus: recovery,
+      initialScreen: onboardingCompleted || !recovery.canStartNewDrive
+          ? HomeScreen(
+              installationOnboardingCompleted:
+                  onboardingCompleted && recovery.canStartNewDrive,
+            )
           : const OnboardingScreen(),
     ),
   );
@@ -376,11 +355,13 @@ class DriveItApp extends StatefulWidget {
   deviceArchiveLoader;
   final Widget initialScreen;
   final bool resumeDrive;
+  final bool installationOnboardingCompleted;
   final DriveRecoveryStatus? recoveryStatus;
   const DriveItApp({
     super.key,
     this.initialScreen = const HomeScreen(),
     this.resumeDrive = false,
+    this.installationOnboardingCompleted = false,
     this.recoveryStatus,
     this.ownerRuntime,
     this.ownerInitialRoute = '/',
@@ -470,6 +451,8 @@ class _DriveItAppState extends State<DriveItApp> {
               archive: widget.deviceArchiveSnapshot,
               archiveLoader: widget.deviceArchiveLoader,
               initialRoute: widget.ownerInitialRoute,
+              installationOnboardingCompleted:
+                  widget.installationOnboardingCompleted,
             ),
     );
   }
@@ -482,10 +465,12 @@ class _OwnedApplicationHome extends StatefulWidget {
     this.archive,
     this.archiveLoader,
     this.initialRoute = '/',
+    required this.installationOnboardingCompleted,
   });
   final ControlledOwnershipRuntime runtime;
   final FakeGroupDriveService? groupDriveServiceForTesting;
   final String initialRoute;
+  final bool installationOnboardingCompleted;
   final DeviceDriveArchiveSnapshot? archive;
   final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
   archiveLoader;
@@ -594,6 +579,8 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
                   : '/',
               deviceArchiveSnapshot: widget.archive,
               deviceArchiveLoader: widget.archiveLoader,
+              installationOnboardingCompleted:
+                  widget.installationOnboardingCompleted,
               groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
               groupDriveService: widget.runtime.dependencies.groupDriveService,
               groupGpsSourceFactory:

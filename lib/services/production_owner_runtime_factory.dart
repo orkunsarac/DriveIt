@@ -25,8 +25,8 @@ import 'legacy_drive_transfer_source.dart';
 import 'android_device_archive_authorizer.dart';
 import '../features/group_drive/supabase_group_drive_service.dart';
 
-/// No Auth UID is fabricated when cloud Auth isn't configured. The caller must
-/// obtain the user's explicit Guest choice before mounting the owner runtime.
+/// No Auth UID is fabricated when cloud Auth isn't configured. A null session
+/// resolves to the device's isolated Guest owner after onboarding completes.
 class UnavailableCloudOwnerAuth implements LocalOwnerAuth {
   const UnavailableCloudOwnerAuth();
 
@@ -66,6 +66,7 @@ abstract final class ProductionOwnerRuntimeFactory {
   static const accountDeletionEnabled =
       accountSyncEnabled &&
       bool.fromEnvironment('DRIVEIT_ACCOUNT_DELETE_ENABLED');
+
   /// Keep disabled until M4 migration/Realtime security is deployed and accepted.
   static const accountGroupDriveEnabled =
       bool.fromEnvironment('DRIVEIT_GROUP_DRIVE_ENABLED');
@@ -145,7 +146,8 @@ abstract final class ProductionOwnerRuntimeFactory {
       // History exposes the existing consent-preserving manual retry instead.
       automaticCloudDeletionRetry: false,
       cloudDeletionEnabled: accountDeletionEnabled,
-      groupDriveService: accountGroupDriveEnabled && hasCloudAuth &&
+      groupDriveService: accountGroupDriveEnabled &&
+              hasCloudAuth &&
               SupabaseConfig.url ==
                   'https://viqngnjfgknpxtoapzcg.supabase.co'
           ? SupabaseGroupDriveService(Supabase.instance.client)

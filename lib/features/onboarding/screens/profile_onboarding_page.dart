@@ -10,6 +10,7 @@ class ProfileOnboardingPage extends StatefulWidget {
     super.key,
     required this.onContinue,
     this.profileLoader,
+    this.loadLocalProfile = true,
     // Retained as a source-compatible test seam. Cloud account creation does
     // not write into the local profile store.
     this.saveProfile,
@@ -17,6 +18,7 @@ class ProfileOnboardingPage extends StatefulWidget {
 
   final VoidCallback onContinue;
   final Future<ProfileStorageService> Function()? profileLoader;
+  final bool loadLocalProfile;
   final Future<void> Function(String displayName, String username)? saveProfile;
 
   @override
@@ -32,7 +34,11 @@ class _ProfileOnboardingPageState extends State<ProfileOnboardingPage> {
   @override
   void initState() {
     super.initState();
-    _loadLocalProfile();
+    if (widget.loadLocalProfile) {
+      _loadLocalProfile();
+    } else {
+      _loadingProfile = false;
+    }
   }
 
   Future<void> _loadLocalProfile() async {

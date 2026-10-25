@@ -397,6 +397,33 @@ void main() {
     },
   );
 
+  testWidgets('owner onboarding does not load legacy profile fields', (
+    tester,
+  ) async {
+    var loaded = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ProfileOnboardingPage(
+            onContinue: () {},
+            loadLocalProfile: false,
+            profileLoader: () async {
+              loaded = true;
+              return ProfileStorageService(_MemoryBox());
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loaded, isFalse);
+    expect(find.text('Hesap Oluştur'), findsOneWidget);
+    expect(find.text('Giriş Yap'), findsOneWidget);
+    expect(find.text('Şimdilik Geç'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('account entry remains controlled when Supabase is unavailable', (
     tester,
   ) async {

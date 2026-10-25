@@ -174,7 +174,7 @@ Future<String> _recordGuestThroughUi(
   await tester.tap(find.text('SÜRÜŞÜ BİTİR'));
   for (
     var i = 0;
-    i < 50 && find.text('🏁 Sürüş Tamamlandı').evaluate().isEmpty;
+    i < 50 && find.text('Sürüş Kaydedildi').evaluate().isEmpty;
     i++
   ) {
     await tester.runAsync(
@@ -182,7 +182,6 @@ Future<String> _recordGuestThroughUi(
     );
     await tester.pump();
   }
-  await tester.tap(find.text('Sürüşü Kaydet'));
   for (
     var i = 0;
     i < 200 && runtime.owner.lease.drives().length == beforeCount;
@@ -298,7 +297,6 @@ void main() {
     await legacyBox.flush();
     final legacyBytes = await File(legacyBox.path!).readAsBytes();
     final matcher = _RuntimeMatcher()..hold = Completer<void>();
-    var guestChoices = 0;
     late ControlledOwnershipRuntime runtime;
     Future<void> boot() async {
       final gate = LocalOwnershipGate.synthetic();
@@ -324,10 +322,6 @@ void main() {
         ),
         archiveSource: SavedDriveArchiveSource(legacyBox),
         unfinishedArchiveDrives: () async => {},
-        confirmGuest: () async {
-          guestChoices++;
-          return true;
-        },
         archiveAuthorizer: DeliveryArchiveAuthorizer(),
       ))!;
       ForegroundService.installOwnedStartCallbackForTesting(
@@ -347,7 +341,6 @@ void main() {
       if (releaseAcceptance) {
         debugPrint('DRIVEIT_RELEASE_STAGE:first_test_frame_pumped');
       }
-      expect(guestChoices, 1);
       expect(runtime.owner.lease.owner.userId, null);
       expect(
         find.textContaining('Misafir sürüşleri bu cihazda'),
@@ -447,7 +440,7 @@ void main() {
       await tester.tap(find.text('SÜRÜŞÜ BİTİR'));
       for (
         var i = 0;
-        i < 50 && find.text('🏁 Sürüş Tamamlandı').evaluate().isEmpty;
+        i < 50 && find.text('Sürüş Kaydedildi').evaluate().isEmpty;
         i++
       ) {
         await tester.runAsync(
@@ -455,8 +448,7 @@ void main() {
         );
         await tester.pump();
       }
-      expect(find.text('🏁 Sürüş Tamamlandı'), findsOneWidget);
-      await tester.tap(find.text('Sürüşü Kaydet'));
+      expect(find.text('Sürüş Kaydedildi'), findsOneWidget);
       for (
         var i = 0;
         i < 300 &&

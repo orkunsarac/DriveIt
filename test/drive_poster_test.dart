@@ -1121,7 +1121,7 @@ void main() {
     expect(find.text('Poster oluşturmak için sürüş seçin'), findsOneWidget);
   });
 
-  testWidgets('post-drive prompt opens exact drive at background step', (
+  testWidgets('direct editor opens exact drive at background step', (
     tester,
   ) async {
     final drive = sampleDrive();
@@ -1130,7 +1130,11 @@ void main() {
         home: Builder(
           builder: (context) => Scaffold(
             body: TextButton(
-              onPressed: () => offerDrivePoster(context, drive),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => PosterEditorScreen(drive: drive),
+                ),
+              ),
               child: const Text('Saved'),
             ),
           ),
@@ -1138,8 +1142,6 @@ void main() {
       ),
     );
     await tester.tap(find.text('Saved'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Poster Oluştur'));
     await tester.pumpAndSettle();
     final editor = tester.widget<PosterEditorScreen>(
       find.byType(PosterEditorScreen),

@@ -3,7 +3,9 @@ import '../services/foreground_service.dart';
 import '../models/route_point.dart';
 import '../models/drive_telemetry_sample.dart';
 import '../models/canonical_telemetry_point.dart';
-import '../widgets/drive_summary_dialog.dart';
+import '../models/drive_session.dart';
+import '../services/drive_storage_service.dart';
+import 'drive_completion_screen.dart';
 import '../services/drive_telemetry_analyzer.dart';
 import '../theme/drive_map_visuals.dart';
 import 'dart:async';
@@ -74,6 +76,10 @@ class _MapScreenState extends State<MapScreen> {
   int _lastGpsSequence = 0;
   bool _syncBusy = false;
   bool _stopping = false;
+  bool _finishRequested = false;
+  DriveSession? _pendingDrive;
+  DriveSession? _verifiedDrive;
+  Map<String, dynamic> _saveMetadata = const {};
   String? _gpsWarning;
   bool _gpsWaiting = false;
   GpsFailure? _recoveryFailure;
@@ -338,6 +344,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<bool> _handleBack() async {
+    if (_stopping) return false;
     if (_recoveryFailure != null) return true; // Leaving never stops service.
     if (isCountingDown) return false;
     if (!isDriving) return true;
@@ -649,27 +656,30 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> stopDriving() async {
-    if (_stopping) return;
-    _stopping = true;
+    if (_stopping || _verifiedDrive != null) return;
+    _finishRequested = true;
+    setState(() => _stopping = true);
     try {
       await _stopDrivingSession();
     } catch (error) {
-      _warnGps(error, GpsErrorCode.serviceStop);
+      final code = _pendingDrive == null
+          ? GpsErrorCode.serviceStop
+          : GpsErrorCode.recovery;
+      _warnGps(error, code);
       if (mounted) {
-        setState(
-          () => _recoveryFailure = GpsFailure.from(
-            error,
-            GpsErrorCode.serviceStop,
-          ),
-        );
+        setState(() => _recoveryFailure = GpsFailure.from(error, code));
       }
     } finally {
-      _stopping = false;
+      if (mounted) setState(() => _stopping = false);
     }
   }
 
   Future<void> _stopDrivingSession() async {
     _requireOwner();
+    if (_pendingDrive != null) {
+      await _saveStoppedDrive();
+      return;
+    }
     // Capture foreground points before stopping; service shutdown persistence
     // is asynchronous and must not race with the final session snapshot.
     final routeBeforeStop = routeService.getRouteForSave();
@@ -687,9 +697,7 @@ class _MapScreenState extends State<MapScreen> {
 
     await positionStream?.cancel();
 
-    setState(() {
-      isDriving = false;
-    });
+    if (mounted) setState(() => isDriving = false);
     widget.onRecordingChanged?.call(false);
 
     _gpsStoppedAt = (await ForegroundService.activeSession())?.stoppedAt;
@@ -715,8 +723,6 @@ class _MapScreenState extends State<MapScreen> {
     stoppedSeconds = timing.stationaryMicros ~/ 1000000;
     stopCount = timing.stopCount;
 
-    if (!mounted) return;
-
     final projection = DriveRouteProjection(_canonicalTelemetry);
     final route = projection.route;
     if (route.isEmpty && routeBeforeStop.isNotEmpty) {
@@ -728,32 +734,70 @@ class _MapScreenState extends State<MapScreen> {
 
     final metrics = const DriveTelemetryAnalyzer().analyze(_telemetrySamples);
 
-    await DriveSummaryDialog.show(
-      context,
-      totalDistance: projection.distanceMeters,
-      driveDuration: driveDuration,
+    final sessionId = _gpsSessionId;
+    if (sessionId == null || session == null) {
+      throw GpsFailure(GpsErrorCode.recovery);
+    }
+    _pendingDrive = DriveSession(
+      id: sessionId,
+      date: session.startedAt,
+      distance: projection.distanceMeters,
+      durationSeconds: driveDuration.inSeconds,
       averageSpeed: averageSpeed,
       maxSpeed: maxSpeed,
       mapImagePath: "",
       route: route,
       stopCount: stopCount,
       stoppedSeconds: stoppedSeconds,
-      metrics: metrics,
-      telemetry: _canonicalTelemetry,
-      driveSessionId: _gpsSessionId,
-      acquisitionMetadata: {
-        'sessionId': _gpsSessionId,
-        'reliabilityPolicyVersion': 1,
-        'startedAtMicros': session?.startedAt.microsecondsSinceEpoch,
-        'stopRequestedAtMicros': session?.stoppedAt?.microsecondsSinceEpoch,
-        'finalSequence': _lastGpsSequence,
-        'events': events,
-      },
-      onSaved: _gpsSessionId == null
-          ? null
-          : (id) => ForegroundService.acknowledgeSaved(_gpsSessionId!, id),
-      ownerLease: widget.ownerLease,
+      hardBrakeCount: metrics.hardBrakeCount,
+      hardAccelerationCount: metrics.hardAccelerationCount,
+      sharpTurnCount: metrics.sharpTurnCount,
+      maxAccelerationG: metrics.maxAccelerationG,
+      maxBrakingG: metrics.maxBrakingG,
+      maxCorneringSpeed: metrics.maxCorneringSpeed,
+      cornerCount: metrics.cornerCount,
+      maxAltitude: metrics.maxAltitude,
+      altitudeGain: metrics.altitudeGain,
+      altitudeLoss: metrics.altitudeLoss,
+      bestZeroToHundredSeconds: metrics.bestZeroToHundredSeconds,
+      bestSixtyToHundredSeconds: metrics.bestSixtyToHundredSeconds,
     );
+    _saveMetadata = {
+      'sessionId': sessionId,
+      'reliabilityPolicyVersion': 1,
+      'startedAtMicros': session.startedAt.microsecondsSinceEpoch,
+      'stopRequestedAtMicros': session.stoppedAt?.microsecondsSinceEpoch,
+      'finalSequence': _lastGpsSequence,
+      'events': events,
+    };
+    await _saveStoppedDrive();
+  }
+
+  Future<void> _saveStoppedDrive() async {
+    _requireOwner();
+    // Keep this exact draft/identity for retries, including after partial Hive
+    // writes. The existing transfer owns durable intent and read-back checks.
+    final drive = _pendingDrive!;
+    await DriveStorageService.saveDrive(
+      drive,
+      telemetry: _canonicalTelemetry,
+      acquisitionMetadata: _saveMetadata,
+    );
+    _requireOwner();
+    await ForegroundService.acknowledgeSaved(drive.id, drive.id);
+    if (await (await ForegroundService.journal).lifecycle(drive.id) !=
+        'VERIFIED') {
+      throw GpsFailure(GpsErrorCode.recovery);
+    }
+    _requireOwner();
+    final saved = widget.ownerLease == null
+        ? DriveStorageService.getDrive(drive.id)
+        : widget.ownerLease!.requireDrive(drive.id);
+    if (saved == null) throw GpsFailure(GpsErrorCode.recovery);
+    _verifiedDrive = saved;
+    if (mounted) {
+      setState(() => _recoveryFailure = null);
+    }
   }
 
   static const CameraPosition initialPosition = CameraPosition(
@@ -789,6 +833,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _restoreSession() async {
+    final finish = widget.finishOnOpen || _finishRequested;
     if (!mounted) return;
     setState(() {
       _recovering = true;
@@ -818,7 +863,7 @@ class _MapScreenState extends State<MapScreen> {
       }
       if (status.requiresDecision &&
           !widget.resumeIfServiceStopped &&
-          !widget.finishOnOpen) {
+          !finish) {
         throw GpsFailure(GpsErrorCode.recovery);
       }
       elapsedTimer?.cancel();
@@ -847,7 +892,7 @@ class _MapScreenState extends State<MapScreen> {
             .inSeconds;
       });
       widget.onRecordingChanged?.call(true);
-      if (!widget.finishOnOpen) await ForegroundService.resumeRecording();
+      if (!finish) await ForegroundService.resumeRecording();
       elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && isDriving) {
           setState(
@@ -857,7 +902,7 @@ class _MapScreenState extends State<MapScreen> {
           );
         }
       });
-      if (session.state == 'recording' && !widget.finishOnOpen) {
+      if (session.state == 'recording' && !finish) {
         positionStream =
             Geolocator.getPositionStream(
               locationSettings: AndroidSettings(
@@ -886,7 +931,7 @@ class _MapScreenState extends State<MapScreen> {
         if (mounted && isDriving) await _syncGps();
       });
       if (mounted) setState(() => _recovering = false);
-      if (widget.finishOnOpen && mounted) await stopDriving();
+      if (finish && mounted) await stopDriving();
     } catch (error) {
       final failure = GpsFailure.from(error, GpsErrorCode.recovery);
       failure.report('restore');
@@ -913,15 +958,27 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final verified = _verifiedDrive;
+    if (verified != null) {
+      return DriveCompletionScreen(
+        driveId: verified.id,
+        ownerLease: widget.ownerLease,
+      );
+    }
     if (_recovering) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
     if (_recoveryFailure != null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Sürüş kurtarma')),
+        appBar: AppBar(
+          title: Text(
+            _finishRequested ? 'Sürüş kaydı doğrulanamadı' : 'Sürüş kurtarma',
+          ),
+        ),
         body: GpsRecoveryNotice(
           failure: _recoveryFailure!,
-          onRetry: _restoreSession,
+          onRetry: _pendingDrive == null ? _restoreSession : stopDriving,
+          busy: _stopping,
           onLeave: () => Navigator.maybePop(context),
         ),
       );
@@ -1173,14 +1230,22 @@ class _MapScreenState extends State<MapScreen> {
           width: double.infinity,
           height: 62,
           child: ElevatedButton.icon(
-            onPressed: isDriving ? stopDriving : startDriving,
+            onPressed: _stopping
+                ? null
+                : isDriving
+                ? stopDriving
+                : startDriving,
             icon: Icon(
               isDriving ? Icons.stop : Icons.play_arrow,
               color: Colors.black,
               size: 26,
             ),
             label: Text(
-              isDriving ? 'SÜRÜŞÜ BİTİR' : 'SÜRÜŞE BAŞLA',
+              _stopping
+                  ? 'KAYDEDİLİYOR…'
+                  : isDriving
+                  ? 'SÜRÜŞÜ BİTİR'
+                  : 'SÜRÜŞE BAŞLA',
               style: const TextStyle(
                 color: Colors.black,
                 fontSize: 18,

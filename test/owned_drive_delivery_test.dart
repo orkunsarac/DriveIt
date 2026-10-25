@@ -1372,19 +1372,16 @@ void main() {
         });
         for (
           var i = 0;
-          i < 30 && find.text('🏁 Sürüş Tamamlandı').evaluate().isEmpty;
+          i < 150 && find.text('Sürüş Kaydedildi').evaluate().isEmpty;
           i++
         ) {
           await tester.runAsync(() => ForegroundService.inspectRecovery());
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
           await tester.pump();
         }
-        expect(find.text('🏁 Sürüş Tamamlandı'), findsOneWidget);
-        await tester.runAsync(() async {
-          await tester.tap(find.text('Sürüşü Kaydet').first);
-          final active = await f.runtime.gps.journal.active();
-          if (active != null) await f.runtime.gps.requireBinding(active.id);
-          await f.runtime.owner.withOwnerOperation((_) async {});
-        });
+        expect(find.text('Sürüş Kaydedildi'), findsOneWidget);
         for (
           var i = 0;
           i < 100 && f.runtime.owner.lease.drives().isEmpty;

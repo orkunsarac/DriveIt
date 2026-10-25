@@ -571,34 +571,45 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
               ),
             ),
           Expanded(
-            child: OwnerPersonalNavigator(
-              runtime: owner,
-              navigatorKey: _personalNavKey,
-              initialRoute: owner.epoch == _initialEpoch
-                  ? widget.initialRoute
-                  : '/',
-              deviceArchiveSnapshot: widget.archive,
-              deviceArchiveLoader: widget.archiveLoader,
-              installationOnboardingCompleted:
-                  widget.installationOnboardingCompleted,
-              groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
-              groupDriveService: widget.runtime.dependencies.groupDriveService,
-              groupGpsSourceFactory:
-                  (widget.groupDriveServiceForTesting != null ||
-                          widget.runtime.dependencies.groupDriveService !=
-                              null) &&
-                      Platform.isAndroid
-                  ? () => widget.groupDriveServiceForTesting == null
-                        ? ForegroundGroupGpsSource()
-                        : AndroidGroupGpsSource(
-                            diagnostics:
-                                widget.groupDriveServiceForTesting == null
-                                ? null
-                                : (event) =>
-                                      debugPrint('A55_GROUP_GPS_DIAG:$event'),
-                          )
-                  : null,
-              legacyChild: const SizedBox.shrink(),
+            child: NavigatorPopHandler<Object?>(
+              onPopWithResult: (_) {
+                final navigator = _personalNavKey.currentState;
+                // maybePop preserves MapScreen's recording guard and the
+                // completion screen's Home action. Never force-pop a recorder.
+                if (navigator != null) {
+                  unawaited(navigator.maybePop());
+                }
+              },
+              child: OwnerPersonalNavigator(
+                runtime: owner,
+                navigatorKey: _personalNavKey,
+                initialRoute: owner.epoch == _initialEpoch
+                    ? widget.initialRoute
+                    : '/',
+                deviceArchiveSnapshot: widget.archive,
+                deviceArchiveLoader: widget.archiveLoader,
+                installationOnboardingCompleted:
+                    widget.installationOnboardingCompleted,
+                groupDriveServiceForTesting: widget.groupDriveServiceForTesting,
+                groupDriveService:
+                    widget.runtime.dependencies.groupDriveService,
+                groupGpsSourceFactory:
+                    (widget.groupDriveServiceForTesting != null ||
+                            widget.runtime.dependencies.groupDriveService !=
+                                null) &&
+                        Platform.isAndroid
+                    ? () => widget.groupDriveServiceForTesting == null
+                          ? ForegroundGroupGpsSource()
+                          : AndroidGroupGpsSource(
+                              diagnostics:
+                                  widget.groupDriveServiceForTesting == null
+                                  ? null
+                                  : (event) =>
+                                        debugPrint('A55_GROUP_GPS_DIAG:$event'),
+                            )
+                    : null,
+                legacyChild: const SizedBox.shrink(),
+              ),
             ),
           ),
         ],

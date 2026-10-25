@@ -267,55 +267,6 @@ String _fallbackEndpoint(DriveSession drive, bool start) {
   return value == '—' ? (start ? 'Başlangıç' : 'Bitiş') : value;
 }
 
-Future<void> offerDrivePoster(
-  BuildContext context,
-  DriveSession drive, {
-  LocalOwnerLease? ownerLease,
-}) async {
-  ownerLease?.requireDrive(drive.id);
-  final create = await showModalBottomSheet<bool>(
-    context: context,
-    backgroundColor: const Color(0xff091b30),
-    builder: (sheetContext) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.auto_awesome, color: posterBlue, size: 32),
-            const SizedBox(height: 16),
-            const Text(
-              'Bu sürüş için poster oluşturmak ister misiniz?',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: () => Navigator.pop(sheetContext, true),
-              child: const Text('Poster Oluştur'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(sheetContext, false),
-              child: const Text('Daha Sonra'),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-  if (create == true &&
-      context.mounted &&
-      (ownerLease == null || ownerLease.isCurrent)) {
-    await Navigator.push(
-      context,
-      MaterialPageRoute<void>(
-        builder: (_) =>
-            PosterEditorScreen(drive: drive, ownerLease: ownerLease),
-      ),
-    );
-  }
-}
-
 enum _PosterEditorStage { background, preview }
 
 class PosterEditorScreen extends StatefulWidget {

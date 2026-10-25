@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../../config/local_ownership_gate.dart';
 import '../../models/drive_session.dart';
+import '../../services/drive_telemetry_storage_service.dart';
 import '../../theme/drive_map_visuals.dart';
 import 'drive_replay_controller.dart';
 import 'replay_interpolator.dart';
+import 'replay_telemetry_adapter.dart';
 import '../../services/local_owner_lifecycle.dart';
 import '../../widgets/local_owner_view.dart';
 
@@ -36,7 +39,10 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   bool _hasStartedReplay = false;
   late final DriveSession _drive;
   late final LocalOwnerLease? _mountedOwner;
+  late final ReplayTelemetryData? _telemetry;
+  late final bool _ownerUnavailable;
   bool get _ownerValid =>
+      !_ownerUnavailable &&
       identical(widget.ownerLease, _mountedOwner) &&
       _mountedOwner?.isCurrent != false;
   int _activePointers = 0;
@@ -46,8 +52,29 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   void initState() {
     super.initState();
     _mountedOwner = widget.ownerLease;
-    _drive = widget.ownerLease?.requireDrive(widget.drive.id) ?? widget.drive;
-    _replay = DriveReplayController(_drive)..addListener(_onReplayChanged);
+    _ownerUnavailable =
+        LocalOwnershipGate.production.enabled && widget.ownerLease == null;
+    if (widget.ownerLease case final lease?) {
+      _drive = lease.requireDrive(widget.drive.id);
+      final record = lease.telemetry(_drive.id);
+      _telemetry = record == null
+          ? null
+          : ReplayTelemetryAdapter.build(_drive, record);
+    } else {
+      _drive = widget.drive;
+      final record = _ownerUnavailable
+          ? null
+          : DriveTelemetryStorageService.get(_drive.id);
+      _telemetry = record == null
+          ? null
+          : ReplayTelemetryAdapter.build(_drive, record);
+    }
+    _replay = DriveReplayController(
+      _drive,
+      telemetry: _telemetry?.source == ReplayTelemetrySource.canonical
+          ? _telemetry
+          : null,
+    )..addListener(_onReplayChanged);
     _ticker = createTicker(_onTick)..start();
     widget.ownerLease?.changes.addListener(_ownerChanged);
     _loadNavigationIcon();
@@ -97,10 +124,13 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     }
     _lastCameraUpdate = now;
     final frame = _replay.frame;
+    if (frame.isGap || frame.latitude == null || frame.longitude == null) {
+      return;
+    }
     await _animateCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
-          target: LatLng(frame.latitude, frame.longitude),
+          target: LatLng(frame.latitude!, frame.longitude!),
           zoom: switch (_cameraMode) {
             ReplayCameraMode.close => 17.8,
             ReplayCameraMode.medium => 16.3,
@@ -121,7 +151,21 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
 
   Future<void> _showEntireRoute() async {
     final controller = _mapController;
-    final points = _replay.timeline;
+    if (_replay.frame.isGap) return;
+    final points = _canonicalSamples == null
+        ? _replay.timeline
+        : _canonicalSamples!
+              .map(
+                (sample) => ReplayPoint(
+                  latitude: sample.latitude,
+                  longitude: sample.longitude,
+                  elapsed: sample.elapsed ?? Duration.zero,
+                  distanceMeters: sample.cumulativeDistanceMeters,
+                  speedKmh: sample.speedKmh ?? 0,
+                  heading: 0,
+                ),
+              )
+              .toList(growable: false);
     if (controller == null || points.length < 2) return;
     var minLat = points.first.latitude;
     var maxLat = points.first.latitude;
@@ -142,6 +186,132 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
         62,
       ),
     );
+  }
+
+  List<ReplayTelemetrySample>? get _canonicalSamples =>
+      _replay.isCanonical ? _replay.telemetry!.samples : null;
+
+  Set<Polyline> _routePolylines(ReplayFrame frame, {required bool visited}) {
+    final samples = _canonicalSamples;
+    if (samples == null) {
+      final groups = <int, List<({int index, ReplayPoint point})>>{};
+      for (var i = 0; i < _replay.timeline.length; i++) {
+        final point = _replay.timeline[i];
+        groups.putIfAbsent(point.routeSegmentId, () => []).add((
+          index: i,
+          point: point,
+        ));
+      }
+      final result = <Polyline>{};
+      for (final entry in groups.entries) {
+        if (visited && entry.key > frame.routeSegmentId) continue;
+        final points = visited && entry.key == frame.routeSegmentId
+            ? entry.value
+                  .where((value) => value.index <= frame.segmentIndex)
+                  .map((value) => value.point)
+                  .toList()
+            : entry.value.map((value) => value.point).toList();
+        final coordinates = points
+            .map((point) => LatLng(point.latitude, point.longitude))
+            .toList();
+        if (visited &&
+            entry.key == frame.routeSegmentId &&
+            !frame.isGap &&
+            frame.latitude != null &&
+            frame.longitude != null) {
+          final position = LatLng(frame.latitude!, frame.longitude!);
+          if (coordinates.isEmpty || coordinates.last != position) {
+            coordinates.add(position);
+          }
+        }
+        if (visited && coordinates.length == 1) {
+          coordinates.add(coordinates.single);
+        }
+        if (coordinates.length < 2) continue;
+        final single = groups.length == 1;
+        result.add(
+          Polyline(
+            polylineId: PolylineId(
+              single
+                  ? (visited ? 'replay_visited_route' : 'replay_full_route')
+                  : 'replay_${visited ? 'visited' : 'full'}_segment_${entry.key}',
+            ),
+            points: coordinates,
+            color: visited
+                ? DriveMapVisuals.activeRouteColor
+                : DriveMapVisuals.pendingRouteColor,
+            width: DriveMapVisuals.activeRouteWidth,
+            jointType: JointType.round,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+          ),
+        );
+      }
+      return result;
+    }
+    final groups = <int, List<ReplayTelemetrySample>>{};
+    for (final sample in samples) {
+      groups.putIfAbsent(sample.segmentId, () => []).add(sample);
+    }
+    final result = <Polyline>{};
+    for (final entry in groups.entries) {
+      var points = entry.value;
+      if (visited) {
+        if (entry.key > frame.routeSegmentId) continue;
+        points = points
+            .where((p) => (p.elapsed ?? Duration.zero) <= frame.elapsed)
+            .toList();
+        final framePositionAlreadyPresent =
+            points.isNotEmpty &&
+            points.last.latitude == frame.latitude &&
+            points.last.longitude == frame.longitude;
+        if (entry.key == frame.routeSegmentId &&
+            !frame.isGap &&
+            frame.latitude != null &&
+            frame.longitude != null &&
+            !framePositionAlreadyPresent) {
+          points = [
+            ...points,
+            ReplayTelemetrySample(
+              sourceIndex: frame.segmentIndex,
+              segmentId: frame.routeSegmentId,
+              latitude: frame.latitude!,
+              longitude: frame.longitude!,
+              timestamp: null,
+              elapsed: frame.elapsed,
+              speedKmh: frame.speedKmh,
+              speedSource: ReplaySpeedSource.unavailable,
+              recordedSpeedSource: null,
+              distanceIncrementMeters: null,
+              cumulativeDistanceMeters: frame.distanceMeters,
+              breakBefore: false,
+              gapDuration: null,
+              boundaryReasons: const [],
+            ),
+          ];
+        }
+      }
+      final coordinates = points
+          .map((p) => LatLng(p.latitude, p.longitude))
+          .toList(growable: false);
+      if (coordinates.length < 2) continue;
+      result.add(
+        Polyline(
+          polylineId: PolylineId(
+            'replay_${visited ? 'visited' : 'full'}_segment_${entry.key}',
+          ),
+          points: coordinates,
+          color: visited
+              ? DriveMapVisuals.activeRouteColor
+              : DriveMapVisuals.pendingRouteColor,
+          width: DriveMapVisuals.activeRouteWidth,
+          jointType: JointType.round,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+        ),
+      );
+    }
+    return result;
   }
 
   void _changeCameraMode(ReplayCameraMode mode) {
@@ -192,6 +362,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   void _ownerChanged() {
     if (widget.ownerLease?.isCurrent == false && mounted) {
       _ticker.stop();
+      _replay.pause();
       setState(() {});
     }
   }
@@ -204,9 +375,13 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     if (!_replay.canReplay) {
       return _UnavailableReplay(onBack: () => Navigator.of(context).pop());
     }
-    final fullRoute = _replay.timeline
-        .map((point) => LatLng(point.latitude, point.longitude))
-        .toList(growable: false);
+    final fullRoute = _canonicalSamples == null
+        ? _replay.timeline
+              .map((point) => LatLng(point.latitude, point.longitude))
+              .toList(growable: false)
+        : _canonicalSamples!
+              .map((sample) => LatLng(sample.latitude, sample.longitude))
+              .toList(growable: false);
 
     return Scaffold(
       backgroundColor: DriveMapVisuals.background,
@@ -216,10 +391,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
             animation: _replay,
             builder: (context, _) {
               final frame = _replay.frame;
-              final visited = <LatLng>[
-                ...fullRoute.take(frame.segmentIndex + 1),
-                LatLng(frame.latitude, frame.longitude),
-              ];
               return Listener(
                 onPointerDown: (_) => _activePointers++,
                 onPointerUp: (_) =>
@@ -241,30 +412,17 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                   tiltGesturesEnabled: true,
                   onCameraMoveStarted: _onCameraMoveStarted,
                   polylines: {
-                    Polyline(
-                      polylineId: const PolylineId('replay_full_route'),
-                      points: fullRoute,
-                      color: DriveMapVisuals.pendingRouteColor,
-                      width: DriveMapVisuals.activeRouteWidth,
-                      jointType: JointType.round,
-                      startCap: Cap.roundCap,
-                      endCap: Cap.roundCap,
-                    ),
-                    Polyline(
-                      polylineId: const PolylineId('replay_visited_route'),
-                      points: visited,
-                      color: DriveMapVisuals.activeRouteColor,
-                      width: DriveMapVisuals.activeRouteWidth,
-                      jointType: JointType.round,
-                      startCap: Cap.roundCap,
-                      endCap: Cap.roundCap,
-                    ),
+                    ..._routePolylines(frame, visited: false),
+                    ..._routePolylines(frame, visited: true),
                   },
                   markers: {
-                    if (_navigationIcon != null)
+                    if (_navigationIcon != null &&
+                        !frame.isGap &&
+                        frame.latitude != null &&
+                        frame.longitude != null)
                       Marker(
                         markerId: const MarkerId('driveit_replay_vehicle'),
-                        position: LatLng(frame.latitude, frame.longitude),
+                        position: LatLng(frame.latitude!, frame.longitude!),
                         icon: _navigationIcon!,
                         anchor: const Offset(.5, .72),
                         flat: true,
@@ -273,7 +431,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                   },
                   onMapCreated: (controller) {
                     _mapController = controller;
-                    if (_cameraMode != ReplayCameraMode.free) {
+                    if (_cameraMode != ReplayCameraMode.free && !frame.isGap) {
                       unawaited(_followCamera(force: true));
                     }
                   },
@@ -335,6 +493,7 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                       final frame = _replay.frame;
                       return _TelemetryHud(
                         frame: frame,
+                        canonical: _replay.isCanonical,
                         hasSpeedEstimate:
                             _drive.averageSpeed.isFinite &&
                             _drive.averageSpeed >= 0,
@@ -423,13 +582,22 @@ class _ReplayHeader extends StatelessWidget {
 
 class _TelemetryHud extends StatelessWidget {
   final ReplayFrame frame;
+  final bool canonical;
   final bool hasSpeedEstimate;
-  const _TelemetryHud({required this.frame, required this.hasSpeedEstimate});
+  const _TelemetryHud({
+    required this.frame,
+    required this.canonical,
+    required this.hasSpeedEstimate,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final speed = frame.speedKmh;
     final hasSpeed =
-        hasSpeedEstimate && frame.speedKmh.isFinite && frame.speedKmh >= 0;
+        speed != null &&
+        speed.isFinite &&
+        speed >= 0 &&
+        (canonical || hasSpeedEstimate);
     final hasDistance =
         frame.distanceMeters.isFinite && frame.distanceMeters >= 0;
     return _GlassCard(
@@ -441,15 +609,25 @@ class _TelemetryHud extends StatelessWidget {
             children: [
               _HudValue(
                 key: const Key('replay_hud_speed'),
-                label: 'TAHMİNİ HIZ',
-                value: hasSpeed ? frame.speedKmh.toStringAsFixed(0) : '—',
+                label: !hasSpeed
+                    ? 'HIZ VERİSİ YOK'
+                    : switch (frame.speedKind) {
+                        ReplayFrameSpeedKind.nativeCanonical ||
+                        ReplayFrameSpeedKind.interpolatedNative =>
+                          'GPS KAYNAKLI HIZ',
+                        ReplayFrameSpeedKind.geometryEstimate ||
+                        ReplayFrameSpeedKind.interpolatedGeometryEstimate =>
+                          'TAHMİNİ HIZ',
+                        _ => 'TAHMİNİ HIZ',
+                      },
+                value: hasSpeed ? speed.toStringAsFixed(0) : '—',
                 unit: hasSpeed ? 'km/h' : null,
                 color: const Color(0xff4e9fff),
               ),
               const _HudDivider(),
               _HudValue(
                 key: const Key('replay_hud_distance'),
-                label: 'ROTA MESAFESİ',
+                label: canonical ? 'KAYITLI GPS MESAFESİ' : 'ROTA MESAFESİ',
                 value: hasDistance
                     ? (frame.distanceMeters / 1000).toStringAsFixed(2)
                     : '—',
@@ -459,15 +637,23 @@ class _TelemetryHud extends StatelessWidget {
               const _HudDivider(),
               _HudValue(
                 key: const Key('replay_hud_elapsed'),
-                label: 'TAHMİNİ SÜRE',
+                label: canonical ? 'GPS SÜRESİ' : 'TAHMİNİ SÜRE',
                 value: _formatDuration(frame.elapsed),
                 color: const Color(0xffa66eff),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          const Text(
-            'Rota ve sürüş özetinden tahmin edilir; GPS ölçümü değildir.',
+          Text(
+            frame.isGap
+                ? 'GPS verisi yok · mesafe sabit'
+                : canonical
+                ? frame.speedKind == ReplayFrameSpeedKind.interpolatedNative ||
+                          frame.speedKind ==
+                              ReplayFrameSpeedKind.interpolatedGeometryEstimate
+                      ? 'Ara hız örnekler arasında interpolasyonla hesaplanır.'
+                      : 'GPS zamanı ve güvenilir aralıkların kaydı gösterilir.'
+                : 'Rota ve sürüş özetinden tahmin edilir; GPS ölçümü değildir.',
             textAlign: TextAlign.center,
             style: TextStyle(color: Color(0xff91a4c2), fontSize: 10),
           ),
@@ -694,7 +880,7 @@ class _ReplayControls extends StatelessWidget {
           ],
         ),
         Text(
-          'Önizleme (1×): ${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
+          '${replay.isCanonical ? 'GPS ${_formatDuration(replay.currentTime)} · ' : ''}Önizleme (1×, efektif 10×): ${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
           style: const TextStyle(color: Color(0xff91a4c2), fontSize: 11),
         ),
       ],

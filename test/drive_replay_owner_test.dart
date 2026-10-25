@@ -1,0 +1,164 @@
+import 'dart:io';
+
+import 'package:driveit_project/config/local_ownership_gate.dart';
+import 'package:driveit_project/features/drive_replay/drive_replay_screen.dart';
+import 'package:driveit_project/models/canonical_telemetry_point.dart';
+import 'package:driveit_project/models/drive_session.dart';
+import 'package:driveit_project/models/route_point.dart';
+import 'package:driveit_project/services/local_owner_lifecycle.dart';
+import 'package:driveit_project/services/owner_scoped_local_store.dart';
+import 'package:driveit_project/theme/drive_map_visuals.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart'
+    as maps;
+
+import 'local_owner_integration_test.dart' show TestAuth, a, b;
+
+class _ReplayMaps extends maps.GoogleMapsFlutterPlatform {
+  @override
+  Widget buildViewWithConfiguration(
+    int creationId,
+    dynamic onPlatformViewCreated, {
+    required maps.MapWidgetConfiguration widgetConfiguration,
+    maps.MapConfiguration mapConfiguration = const maps.MapConfiguration(),
+    maps.MapObjects mapObjects = const maps.MapObjects(),
+  }) => const SizedBox(key: Key('replay_owner_fake_map'));
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory root;
+  late TestAuth auth;
+  late LocalOwnerLifecycle runtime;
+  setUp(() async {
+    root = await Directory.systemTemp.createTemp('driveit_replay_owner_');
+    auth = TestAuth()..userId = a;
+    runtime = LocalOwnerLifecycle(
+      gate: LocalOwnershipGate.synthetic(),
+      auth: auth,
+      openStore: (owner) =>
+          OwnerScopedLocalStore.open(root: root.path, owner: owner),
+      driveInProgress: () async => false,
+    );
+    await runtime.start();
+  });
+  tearDown(() async {
+    await runtime.close();
+    runtime.dispose();
+    await auth.events.close();
+    await root.delete(recursive: true);
+  });
+
+  DriveSession fixture() => DriveSession(
+    id: 'owner-replay',
+    date: DateTime.utc(2026),
+    distance: 500,
+    durationSeconds: 60,
+    averageSpeed: 80,
+    maxSpeed: 120,
+    mapImagePath: '',
+    route: List.generate(
+      4,
+      (i) => RoutePoint(latitude: 41, longitude: 29 + i / 1000),
+    ),
+  );
+
+  Future<DriveSession> seedCanonical() async {
+    final drive = fixture();
+    final base = DateTime.utc(2026);
+    final points = List.generate(
+      4,
+      (i) => CanonicalTelemetryPoint(
+        latitude: 41,
+        longitude: 29 + i / 1000,
+        timestamp: base.add(Duration(seconds: i)),
+        speedMps: i == 2 ? 0 : 12,
+        headingDegrees: 90,
+        altitudeMeters: 0,
+        accuracyMeters: 3,
+        distanceFromPreviousMeters: i == 0 ? 0 : 100,
+        accelerationMps2: 0,
+        speedSource: i == 2 ? 'unavailable' : 'native',
+        breakBefore: i == 2,
+      ),
+    );
+    await runtime.lease.put('drives', drive.id, drive);
+    await runtime.lease.put(
+      'drive_telemetry',
+      drive.id,
+      DriveTelemetryRecord(
+        driveSessionId: drive.id,
+        dataVersion: DriveTelemetryRecord.currentDataVersion,
+        createdAt: base,
+        points: points,
+      ),
+    );
+    return drive;
+  }
+
+  testWidgets(
+    'canonical HUD uses GPS labels and a break is rendered as a gap',
+    (tester) async {
+      final drive = (await tester.runAsync(seedCanonical))!;
+      final platform = _ReplayMaps();
+      final oldPlatform = maps.GoogleMapsFlutterPlatform.instance;
+      maps.GoogleMapsFlutterPlatform.instance = platform;
+      addTearDown(() => maps.GoogleMapsFlutterPlatform.instance = oldPlatform);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DriveReplayScreen(drive: drive, ownerLease: runtime.lease),
+        ),
+      );
+      await tester.runAsync(DriveMapVisuals.createNavigationArrow);
+      await tester.pump();
+      expect(find.text('GPS KAYNAKLI HIZ'), findsOneWidget);
+      expect(find.text('GPS SÜRESİ'), findsOneWidget);
+      final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(map.markers, hasLength(1));
+      expect(map.polylines, hasLength(2));
+      final slider = tester.widget<Slider>(find.byType(Slider));
+      slider.onChanged!(.5);
+      await tester.pump();
+      final gapMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(gapMap.markers, isEmpty);
+      expect(gapMap.polylines.map((line) => line.points.length).toList(), [
+        2,
+        2,
+        2,
+      ]);
+      expect(find.textContaining('GPS verisi yok'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('owner A to B revocation hides cached replay screen', (
+    tester,
+  ) async {
+    final drive = (await tester.runAsync(seedCanonical))!;
+    final platform = _ReplayMaps();
+    final oldPlatform = maps.GoogleMapsFlutterPlatform.instance;
+    maps.GoogleMapsFlutterPlatform.instance = platform;
+    addTearDown(() => maps.GoogleMapsFlutterPlatform.instance = oldPlatform);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DriveReplayScreen(drive: drive, ownerLease: runtime.lease),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(() async {
+      auth.emit(b);
+      await runtime.settled;
+    });
+    await tester.pump();
+    expect(
+      find.text('Kişisel veri erişimi hazır değil. Veriler korunuyor.'),
+      findsOneWidget,
+    );
+    expect(find.text('GPS KAYNAKLI HIZ'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+}

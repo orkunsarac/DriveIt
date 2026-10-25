@@ -1,6 +1,16 @@
 import 'dart:math' as math;
 
 import '../../models/drive_session.dart';
+import 'replay_telemetry_adapter.dart';
+
+enum ReplayFrameSpeedKind {
+  nativeCanonical,
+  geometryEstimate,
+  interpolatedNative,
+  interpolatedGeometryEstimate,
+  legacyEstimate,
+  unavailable,
+}
 
 class ReplayPoint {
   final double latitude;
@@ -9,6 +19,7 @@ class ReplayPoint {
   final double distanceMeters;
   final double speedKmh;
   final double heading;
+  final int routeSegmentId;
 
   const ReplayPoint({
     required this.latitude,
@@ -17,17 +28,21 @@ class ReplayPoint {
     required this.distanceMeters,
     required this.speedKmh,
     required this.heading,
+    this.routeSegmentId = 0,
   });
 }
 
 class ReplayFrame {
-  final double latitude;
-  final double longitude;
+  final double? latitude;
+  final double? longitude;
   final Duration elapsed;
   final double distanceMeters;
-  final double speedKmh;
+  final double? speedKmh;
   final double heading;
   final int segmentIndex;
+  final int routeSegmentId;
+  final bool isGap;
+  final ReplayFrameSpeedKind speedKind;
 
   const ReplayFrame({
     required this.latitude,
@@ -37,6 +52,9 @@ class ReplayFrame {
     required this.speedKmh,
     required this.heading,
     required this.segmentIndex,
+    this.routeSegmentId = 0,
+    this.isGap = false,
+    this.speedKind = ReplayFrameSpeedKind.legacyEstimate,
   });
 }
 
@@ -44,10 +62,12 @@ class ReplayInterpolator {
   const ReplayInterpolator._();
 
   static List<ReplayPoint> buildTimeline(DriveSession drive) {
-    final coordinates = <({double latitude, double longitude})>[];
+    final coordinates = <({double latitude, double longitude, int segment})>[];
+    var segment = 0;
     for (final point in drive.route) {
+      if (point.breakBefore && coordinates.isNotEmpty) segment++;
       if (!_validCoordinate(point.latitude, point.longitude)) continue;
-      if (coordinates.isNotEmpty) {
+      if (coordinates.isNotEmpty && coordinates.last.segment == segment) {
         final previous = coordinates.last;
         if (_distanceMeters(
               previous.latitude,
@@ -59,7 +79,11 @@ class ReplayInterpolator {
           continue;
         }
       }
-      coordinates.add((latitude: point.latitude, longitude: point.longitude));
+      coordinates.add((
+        latitude: point.latitude,
+        longitude: point.longitude,
+        segment: segment,
+      ));
     }
     if (coordinates.isEmpty) return const [];
 
@@ -67,19 +91,30 @@ class ReplayInterpolator {
     for (var index = 1; index < coordinates.length; index++) {
       cumulative.add(
         cumulative.last +
-            _distanceMeters(
-              coordinates[index - 1].latitude,
-              coordinates[index - 1].longitude,
-              coordinates[index].latitude,
-              coordinates[index].longitude,
-            ),
+            (coordinates[index - 1].segment == coordinates[index].segment
+                ? _distanceMeters(
+                    coordinates[index - 1].latitude,
+                    coordinates[index - 1].longitude,
+                    coordinates[index].latitude,
+                    coordinates[index].longitude,
+                  )
+                : 0),
       );
     }
     final routeDistance = cumulative.last;
     final totalMilliseconds = math.max(0, drive.durationSeconds) * 1000;
-    final fallbackStep = coordinates.length <= 1
+    final edgeProgress = <int>[0];
+    for (var index = 1; index < coordinates.length; index++) {
+      edgeProgress.add(
+        edgeProgress.last +
+            (coordinates[index - 1].segment == coordinates[index].segment
+                ? 1
+                : 0),
+      );
+    }
+    final fallbackStep = edgeProgress.last == 0
         ? 0.0
-        : totalMilliseconds / (coordinates.length - 1);
+        : totalMilliseconds / edgeProgress.last;
     final safeAverage = drive.averageSpeed.isFinite
         ? math.max(0.0, drive.averageSpeed)
         : 0.0;
@@ -90,15 +125,18 @@ class ReplayInterpolator {
     return List.generate(coordinates.length, (index) {
       final ratio = routeDistance > 0
           ? cumulative[index] / routeDistance
-          : (coordinates.length <= 1 ? 0.0 : index / (coordinates.length - 1));
-      final heading = index + 1 < coordinates.length
+          : (fallbackStep == 0 ? 0.0 : edgeProgress[index] / edgeProgress.last);
+      final heading =
+          index + 1 < coordinates.length &&
+              coordinates[index + 1].segment == coordinates[index].segment
           ? bearing(
               coordinates[index].latitude,
               coordinates[index].longitude,
               coordinates[index + 1].latitude,
               coordinates[index + 1].longitude,
             )
-          : index > 0
+          : index > 0 &&
+                coordinates[index - 1].segment == coordinates[index].segment
           ? bearing(
               coordinates[index - 1].latitude,
               coordinates[index - 1].longitude,
@@ -123,6 +161,7 @@ class ReplayInterpolator {
         distanceMeters: cumulative[index],
         speedKmh: estimatedSpeed,
         heading: heading,
+        routeSegmentId: coordinates[index].segment,
       );
     });
   }
@@ -174,6 +213,147 @@ class ReplayInterpolator {
       speedKmh: _lerp(start.speedKmh, finish.speedKmh, fraction),
       heading: interpolateHeading(start.heading, finish.heading, fraction),
       segmentIndex: low,
+      routeSegmentId: start.routeSegmentId,
+    );
+  }
+
+  /// Evaluate canonical samples on recorded GPS elapsed time. Segment changes
+  /// are temporal gaps: no location, speed, or distance interpolation crosses
+  /// them, while the elapsed GPS clock continues.
+  static ReplayFrame frameAtTelemetry(
+    ReplayTelemetryData data,
+    Duration elapsed,
+  ) {
+    final samples = data.samples;
+    if (samples.isEmpty) {
+      return ReplayFrame(
+        latitude: null,
+        longitude: null,
+        elapsed: Duration.zero,
+        distanceMeters: 0,
+        speedKmh: null,
+        heading: 0,
+        segmentIndex: 0,
+        isGap: true,
+        speedKind: ReplayFrameSpeedKind.unavailable,
+      );
+    }
+    Duration timeAt(int index) => samples[index].elapsed ?? Duration.zero;
+    ReplayFrame atSample(int index) {
+      final sample = samples[index];
+      final kind = switch (sample.speedSource) {
+        ReplaySpeedSource.nativeCanonical =>
+          ReplayFrameSpeedKind.nativeCanonical,
+        ReplaySpeedSource.geometryEstimate =>
+          ReplayFrameSpeedKind.geometryEstimate,
+        ReplaySpeedSource.unavailable => ReplayFrameSpeedKind.unavailable,
+      };
+      final heading =
+          index + 1 < samples.length &&
+              samples[index + 1].segmentId == sample.segmentId
+          ? bearing(
+              sample.latitude,
+              sample.longitude,
+              samples[index + 1].latitude,
+              samples[index + 1].longitude,
+            )
+          : index > 0 && samples[index - 1].segmentId == sample.segmentId
+          ? bearing(
+              samples[index - 1].latitude,
+              samples[index - 1].longitude,
+              sample.latitude,
+              sample.longitude,
+            )
+          : 0.0;
+      return ReplayFrame(
+        latitude: sample.latitude,
+        longitude: sample.longitude,
+        elapsed: timeAt(index),
+        distanceMeters: sample.cumulativeDistanceMeters,
+        speedKmh: sample.speedKmh,
+        heading: heading,
+        segmentIndex: sample.sourceIndex,
+        routeSegmentId: sample.segmentId,
+        speedKind: kind,
+      );
+    }
+
+    final target = elapsed < Duration.zero ? Duration.zero : elapsed;
+    if (target <= timeAt(0)) return atSample(0);
+    if (target >= timeAt(samples.length - 1)) {
+      return atSample(samples.length - 1);
+    }
+    var low = 0;
+    var high = samples.length - 1;
+    while (low + 1 < high) {
+      final middle = (low + high) >> 1;
+      if (timeAt(middle) <= target) {
+        low = middle;
+      } else {
+        high = middle;
+      }
+    }
+    if (target == timeAt(low)) return atSample(low);
+    if (target == timeAt(high)) return atSample(high);
+    final start = samples[low];
+    final finish = samples[high];
+    if (start.segmentId != finish.segmentId || finish.breakBefore) {
+      return ReplayFrame(
+        latitude: null,
+        longitude: null,
+        elapsed: target,
+        distanceMeters: start.cumulativeDistanceMeters,
+        speedKmh: null,
+        heading: 0,
+        segmentIndex: start.sourceIndex,
+        routeSegmentId: start.segmentId,
+        isGap: true,
+        speedKind: ReplayFrameSpeedKind.unavailable,
+      );
+    }
+    final span = timeAt(high).inMicroseconds - timeAt(low).inMicroseconds;
+    if (span <= 0) return atSample(low);
+    final fraction =
+        ((target.inMicroseconds - timeAt(low).inMicroseconds) / span).clamp(
+          0.0,
+          1.0,
+        );
+    final sameSpeedSource = start.speedSource == finish.speedSource;
+    final speed =
+        start.speedKmh != null && finish.speedKmh != null && sameSpeedSource
+        ? _lerp(start.speedKmh!, finish.speedKmh!, fraction)
+        : null;
+    final speedKind = speed == null
+        ? ReplayFrameSpeedKind.unavailable
+        : switch (start.speedSource) {
+            ReplaySpeedSource.nativeCanonical =>
+              ReplayFrameSpeedKind.interpolatedNative,
+            ReplaySpeedSource.geometryEstimate =>
+              ReplayFrameSpeedKind.interpolatedGeometryEstimate,
+            ReplaySpeedSource.unavailable => ReplayFrameSpeedKind.unavailable,
+          };
+    final distance = finish.distanceIncrementMeters != null
+        ? _lerp(
+            start.cumulativeDistanceMeters,
+            finish.cumulativeDistanceMeters,
+            fraction,
+          )
+        : start.cumulativeDistanceMeters;
+    return ReplayFrame(
+      latitude: _lerp(start.latitude, finish.latitude, fraction),
+      longitude: _lerp(start.longitude, finish.longitude, fraction),
+      elapsed: target,
+      distanceMeters: distance,
+      speedKmh: speed,
+      heading: bearing(
+        start.latitude,
+        start.longitude,
+        finish.latitude,
+        finish.longitude,
+      ),
+      segmentIndex: start.sourceIndex,
+      routeSegmentId: start.segmentId,
+      speedKind: speedKind,
     );
   }
 
@@ -212,6 +392,7 @@ class ReplayInterpolator {
     speedKmh: point.speedKmh,
     heading: point.heading,
     segmentIndex: index,
+    routeSegmentId: point.routeSegmentId,
   );
 
   static bool _validCoordinate(double latitude, double longitude) =>

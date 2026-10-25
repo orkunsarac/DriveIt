@@ -98,7 +98,7 @@ void expectFrame(WidgetTester tester, DriveSession drive, int seconds) {
   final minutes = (seconds ~/ 60).toString().padLeft(2, '0');
   final remainder = (seconds % 60).toString().padLeft(2, '0');
   expect(hud(tester, 'elapsed'), '$minutes:$remainder');
-  expect(hud(tester, 'speed'), '${frame.speedKmh.toStringAsFixed(0)} km/h');
+  expect(hud(tester, 'speed'), '${frame.speedKmh!.toStringAsFixed(0)} km/h');
   expect(
     hud(tester, 'distance'),
     '${(frame.distanceMeters / 1000).toStringAsFixed(2)} km',
@@ -106,8 +106,8 @@ void expectFrame(WidgetTester tester, DriveSession drive, int seconds) {
   final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
   final marker = map.markers.single;
   expect(marker.markerId.value, 'driveit_replay_vehicle');
-  expect(marker.position.latitude, closeTo(frame.latitude, 1e-9));
-  expect(marker.position.longitude, closeTo(frame.longitude, 1e-9));
+  expect(marker.position.latitude, closeTo(frame.latitude!, 1e-9));
+  expect(marker.position.longitude, closeTo(frame.longitude!, 1e-9));
   final trail = map.polylines.singleWhere(
     (p) => p.polylineId.value == 'replay_visited_route',
   );
@@ -236,10 +236,48 @@ void main() {
       expectFrame(tester, drive, 50);
       expect(find.text('TAHMİNİ HIZ'), findsOneWidget);
       expect(find.text('TAHMİNİ SÜRE'), findsOneWidget);
-      expect(find.text('Önizleme (1×): 00:05 / 00:10'), findsOneWidget);
+      expect(
+        find.textContaining('Önizleme (1×, efektif 10×): 00:05 / 00:10'),
+        findsOneWidget,
+      );
       expect(find.textContaining('GPS ölçümü değildir'), findsOneWidget);
       expect(find.text('ANLIK HIZ'), findsNothing);
       expect(tester.takeException(), null);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'legacy breakBefore draws separate route segments without a bridge',
+    (tester) async {
+      final route = [
+        RoutePoint(latitude: 41, longitude: 29),
+        RoutePoint(latitude: 41, longitude: 29.001),
+        RoutePoint(latitude: 41.01, longitude: 29.01, breakBefore: true),
+        RoutePoint(latitude: 41.011, longitude: 29.011),
+      ];
+      await mountReplay(tester, replayDrive(route: route));
+      final initial = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      final full = initial.polylines
+          .where(
+            (line) => line.polylineId.value.startsWith('replay_full_segment_'),
+          )
+          .toList();
+      expect(full, hasLength(2));
+      expect(full.every((line) => line.points.length == 2), isTrue);
+      await seek(tester, .5);
+      final map = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(map.markers.single.position.latitude, closeTo(41.01, .001));
+      expect(
+        map.polylines
+            .where(
+              (line) =>
+                  line.polylineId.value.startsWith('replay_full_segment_'),
+            )
+            .every((line) => line.points.length == 2),
+        isTrue,
+      );
+      expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );

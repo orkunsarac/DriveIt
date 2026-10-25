@@ -1,4 +1,5 @@
 import 'package:driveit_project/features/drive_replay/replay_telemetry_adapter.dart';
+import 'package:driveit_project/features/drive_replay/replay_interpolator.dart';
 import 'package:driveit_project/models/canonical_telemetry_point.dart';
 import 'package:driveit_project/models/drive_session.dart';
 import 'package:driveit_project/models/route_point.dart';
@@ -138,6 +139,94 @@ void main() {
     expect(data.samples.first.distanceIncrementMeters, isNull);
     expect(data.samples.last.cumulativeDistanceMeters, 30);
     expect(data.samples.map((p) => p.segmentId), [0, 0, 0]);
+  });
+
+  test(
+    'canonical frame preserves stationary time and interpolates one segment',
+    () {
+      final data = adapt([
+        point(0, latitude: 41, speed: 10),
+        point(5, latitude: 41, speed: 10),
+        point(10, latitude: 41.001, speed: 20),
+      ]);
+      final stopped = ReplayInterpolator.frameAtTelemetry(
+        data,
+        const Duration(seconds: 3),
+      );
+      expect(stopped.latitude, 41);
+      expect(stopped.elapsed, const Duration(seconds: 3));
+      expect(stopped.speedKmh, closeTo(36, 0.001));
+      expect(stopped.speedKind, ReplayFrameSpeedKind.interpolatedNative);
+      expect(stopped.distanceMeters, closeTo(6, 0.001));
+    },
+  );
+
+  test(
+    'canonical frame reports a gap without interpolated position or distance',
+    () {
+      final data = adapt([
+        point(0, latitude: 41),
+        point(2, latitude: 41.001, boundary: true),
+        point(4, latitude: 41.002),
+      ]);
+      final frame = ReplayInterpolator.frameAtTelemetry(
+        data,
+        const Duration(seconds: 1),
+      );
+      expect(frame.isGap, isTrue);
+      expect(frame.latitude, isNull);
+      expect(frame.longitude, isNull);
+      expect(frame.speedKmh, isNull);
+      expect(frame.distanceMeters, 0);
+      expect(frame.elapsed, const Duration(seconds: 1));
+    },
+  );
+
+  test('mixed or missing sample speed is not interpolated', () {
+    final data = adapt([
+      point(0, source: 'native'),
+      point(1, source: 'geometry_estimate'),
+      point(2, source: 'unavailable'),
+      point(3, source: 'native'),
+    ]);
+    for (final second in [0.5, 1.5, 2.5]) {
+      final frame = ReplayInterpolator.frameAtTelemetry(
+        data,
+        Duration(milliseconds: (second * 1000).round()),
+      );
+      expect(frame.speedKmh, isNull);
+      expect(frame.speedKind, ReplayFrameSpeedKind.unavailable);
+    }
+  });
+
+  test(
+    'exact interior sample keeps its own speed source across a source change',
+    () {
+      final data = adapt([
+        point(0, source: 'native'),
+        point(1, source: 'geometry_estimate'),
+        point(2, source: 'native'),
+      ]);
+      final frame = ReplayInterpolator.frameAtTelemetry(
+        data,
+        const Duration(seconds: 1),
+      );
+      expect(frame.speedKmh, 36);
+      expect(frame.speedKind, ReplayFrameSpeedKind.geometryEstimate);
+    },
+  );
+
+  test('canonical one-sample and zero-duration frame stays deterministic', () {
+    final data = adapt([point(0)]);
+    final atStart = ReplayInterpolator.frameAtTelemetry(data, Duration.zero);
+    final later = ReplayInterpolator.frameAtTelemetry(
+      data,
+      const Duration(seconds: 5),
+    );
+    expect(atStart.latitude, 41);
+    expect(later.latitude, 41);
+    expect(later.elapsed, Duration.zero);
+    expect(later.speedKmh, 36);
   });
 
   test('native canonical and geometry estimated speed remain distinct', () {

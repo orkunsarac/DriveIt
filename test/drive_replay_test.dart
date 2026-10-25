@@ -1,6 +1,8 @@
 import 'package:driveit_project/features/drive_replay/drive_replay_controller.dart';
 import 'package:driveit_project/features/drive_replay/replay_interpolator.dart';
+import 'package:driveit_project/features/drive_replay/replay_telemetry_adapter.dart';
 import 'package:driveit_project/models/drive_session.dart';
+import 'package:driveit_project/models/canonical_telemetry_point.dart';
 import 'package:driveit_project/models/route_point.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -111,7 +113,7 @@ void main() {
       ..advance(const Duration(milliseconds: 100));
 
     expect(fast.currentTime, normal.currentTime);
-    expect(fast.frame.speedKmh, closeTo(normal.frame.speedKmh, 0.000001));
+    expect(fast.frame.speedKmh, closeTo(normal.frame.speedKmh!, 0.000001));
     normal.dispose();
     fast.dispose();
   });
@@ -171,5 +173,96 @@ void main() {
     expect(single.isPlaying, isFalse);
     empty.dispose();
     single.dispose();
+  });
+
+  test(
+    'canonical controller uses GPS duration and shared frame for all controls',
+    () {
+      final session = drive(durationSeconds: 900);
+      final base = DateTime.utc(2026);
+      CanonicalTelemetryPoint sample(int seconds, double longitude) =>
+          CanonicalTelemetryPoint(
+            latitude: 41,
+            longitude: longitude,
+            timestamp: base.add(Duration(seconds: seconds)),
+            speedMps: 10,
+            headingDegrees: 90,
+            altitudeMeters: 0,
+            accuracyMeters: 3,
+            distanceFromPreviousMeters: seconds == 0 ? 0 : 10,
+            accelerationMps2: 0,
+            speedSource: 'native',
+          );
+      final telemetry = ReplayTelemetryAdapter.build(
+        session,
+        DriveTelemetryRecord(
+          driveSessionId: session.id,
+          dataVersion: DriveTelemetryRecord.currentDataVersion,
+          createdAt: base,
+          points: [
+            sample(0, 29),
+            sample(5, 29.001),
+            sample(10, 29.002),
+            sample(15, 29.003),
+            sample(20, 29.004),
+          ],
+        ),
+      );
+      final controller = DriveReplayController(session, telemetry: telemetry);
+      expect(controller.canReplay, isTrue);
+      expect(controller.totalDuration, const Duration(seconds: 20));
+      expect(controller.frame.speedKmh, 36);
+      controller.setDisplayPlaybackSpeed(5);
+      controller.play();
+      controller.advance(const Duration(milliseconds: 100));
+      expect(controller.currentTime, const Duration(seconds: 5));
+      expect(controller.frame.speedKmh, 36);
+      controller.pause();
+      final paused = controller.frame;
+      controller.advance(const Duration(seconds: 5));
+      expect(controller.frame, same(paused));
+      controller.seek(.5);
+      expect(controller.currentTime, const Duration(seconds: 10));
+      expect(controller.frame.latitude, closeTo(41, .000001));
+      controller.seek(1);
+      expect(controller.isComplete, isTrue);
+      controller.play();
+      expect(controller.currentTime, Duration.zero);
+      controller.dispose();
+    },
+  );
+
+  test('canonical replay with unavailable speed keeps null in the frame', () {
+    final session = drive();
+    final base = DateTime.utc(2026);
+    final points = [0, 2]
+        .map(
+          (second) => CanonicalTelemetryPoint(
+            latitude: 41,
+            longitude: 29 + second / 1000,
+            timestamp: base.add(Duration(seconds: second)),
+            speedMps: 0,
+            headingDegrees: 0,
+            altitudeMeters: 0,
+            accuracyMeters: 3,
+            distanceFromPreviousMeters: 10,
+            accelerationMps2: 0,
+            speedSource: 'unavailable',
+          ),
+        )
+        .toList();
+    final telemetry = ReplayTelemetryAdapter.build(
+      session,
+      DriveTelemetryRecord(
+        driveSessionId: session.id,
+        dataVersion: DriveTelemetryRecord.currentDataVersion,
+        createdAt: base,
+        points: points,
+      ),
+    );
+    final controller = DriveReplayController(session, telemetry: telemetry);
+    controller.seek(.5);
+    expect(controller.frame.speedKmh, isNull);
+    controller.dispose();
   });
 }

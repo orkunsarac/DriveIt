@@ -4,7 +4,8 @@ import 'package:driveit_project/main.dart';
 void main() {
   testWidgets('DriveIt home renders', (tester) async {
     await tester.pumpWidget(const DriveItApp());
-    expect(find.text('Merhaba, Orkun'), findsOneWidget);
+    expect(find.text('Merhaba'), findsOneWidget);
+    expect(find.text('Merhaba, Orkun'), findsNothing);
     expect(find.text('Dünya'), findsOneWidget);
   });
 }

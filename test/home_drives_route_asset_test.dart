@@ -35,7 +35,11 @@ DriveSession _drive(int index) => DriveSession(
   ],
 );
 
-Future<void> _home(WidgetTester tester, {LocalOwnerLease? lease}) async {
+Future<void> _home(
+  WidgetTester tester, {
+  LocalOwnerLease? lease,
+  String? expectedGreeting,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
       key: UniqueKey(),
@@ -47,6 +51,9 @@ Future<void> _home(WidgetTester tester, {LocalOwnerLease? lease}) async {
   expect(image.image, const AssetImage(_asset));
   expect(image.fit, BoxFit.contain);
   expect(image.excludeFromSemantics, isTrue);
+  if (expectedGreeting != null) {
+    expect(find.text('Merhaba, $expectedGreeting'), findsOneWidget);
+  }
   expect(
     tester
         .getSize(
@@ -229,7 +236,14 @@ void main() {
       );
       try {
         await tester.runAsync(runtime.start);
-        await _home(tester, lease: runtime.lease);
+        await tester.runAsync(
+          () => runtime.lease.put('profile', 'display_name', 'Misafir Ada'),
+        );
+        await _home(
+          tester,
+          lease: runtime.lease,
+          expectedGreeting: 'Misafir Ada',
+        );
         expect(find.text('Toplam Sürüş 0'), findsOneWidget);
         for (var i = 0; i < 2; i++) {
           final drive = _drive(i);

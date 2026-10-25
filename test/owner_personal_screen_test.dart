@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:driveit_project/config/local_ownership_gate.dart';
@@ -347,6 +348,98 @@ void main() {
       await tester.runAsync(() => switchTo(b));
       await tester.pump();
       expect(find.textContaining('Scoped Home A'), findsNothing);
+    },
+  );
+  testWidgets(
+    'new Guest uses an empty name and default avatar until its profile is saved',
+    (tester) async {
+      await tester.runAsync(() => switchTo(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: runtime,
+            legacyChild: const SizedBox.shrink(),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Merhaba'), findsOneWidget);
+      expect(find.text('Merhaba, Orkun'), findsNothing);
+      expect(find.text('OS'), findsNothing);
+      final avatar = tester.widget<CircleAvatar>(
+        find.byKey(const Key('home_profile_avatar')),
+      );
+      expect(avatar.backgroundImage, isNull);
+      expect(avatar.child, isA<Icon>());
+      expect((avatar.child! as Icon).icon, Icons.person_outline);
+
+      await tester.tap(find.byKey(const Key('home_profile_settings')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(ProfileSettingsScreen), findsOneWidget);
+      expect(find.text('İsim Belirle'), findsOneWidget);
+      await tester.runAsync(() async {
+        await OwnerProfileStore(runtime.lease).saveName('Misafir Ada');
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+
+      await tester.pageBack();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Merhaba, Misafir Ada'), findsOneWidget);
+      expect(find.text('Merhaba, Orkun'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+  testWidgets(
+    'account profile is not carried into the separate Guest profile on logout',
+    (tester) async {
+      final avatarBytes = await tester.runAsync(() async {
+        final recorder = ui.PictureRecorder();
+        ui.Canvas(recorder).drawColor(Colors.blue, ui.BlendMode.src);
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(16, 16);
+        final bytes = (await image.toByteData(
+          format: ui.ImageByteFormat.png,
+        ))!.buffer.asUint8List();
+        image.dispose();
+        picture.dispose();
+        return bytes;
+      });
+      await tester.runAsync(() async {
+        final profile = OwnerProfileStore(runtime.lease);
+        await profile.saveName('Hesap A');
+        await profile.savePhoto(avatarBytes!);
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OwnerPersonalNavigator(
+            runtime: runtime,
+            legacyChild: const SizedBox.shrink(),
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Merhaba, Hesap A'), findsOneWidget);
+      expect(
+        tester
+            .widget<CircleAvatar>(find.byKey(const Key('home_profile_avatar')))
+            .backgroundImage,
+        isA<MemoryImage>(),
+      );
+
+      await tester.runAsync(() => switchTo(null));
+      await tester.pump();
+      expect(find.text('Merhaba'), findsOneWidget);
+      expect(find.text('Merhaba, Hesap A'), findsNothing);
+      expect(find.text('OS'), findsNothing);
+      expect(
+        tester
+            .widget<CircleAvatar>(find.byKey(const Key('home_profile_avatar')))
+            .backgroundImage,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
     },
   );
   testWidgets(

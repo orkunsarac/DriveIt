@@ -190,6 +190,12 @@ class SupabaseAccountService extends ChangeNotifier
       if (state.session == null) {
         _clearCloudIdentity();
       } else {
+        // Auth changes can arrive before the replacement profile request
+        // completes. Drop the previous account's name immediately so no
+        // screen can briefly render it under the new identity.
+        if (_profile?.id != state.session!.user.id) {
+          _clearCloudIdentity();
+        }
         unawaited(_refreshProfileQuietly());
       }
     });
@@ -228,6 +234,7 @@ class SupabaseAccountService extends ChangeNotifier
 
   void _clearCloudIdentity() {
     _profileRequest++;
+    _profileLoadFuture = null;
     _profile = null;
     _profileLoaded = false;
     _profileLoading = false;
@@ -489,7 +496,10 @@ class SupabaseAccountService extends ChangeNotifier
           .select('id, username, display_name, avatar_url')
           .eq('id', user.id)
           .maybeSingle();
-      if (request != _profileRequest) return _profile;
+      if (request != _profileRequest ||
+          _client?.auth.currentUser?.id != user.id) {
+        return _profile;
+      }
       if (row == null) {
         _setProfileFailure(
           'Hesap profili bulunamadı. Biraz sonra yeniden deneyebilirsin.',

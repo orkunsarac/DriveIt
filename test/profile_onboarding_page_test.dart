@@ -215,6 +215,45 @@ void main() {
         ),
         isNull,
       );
+      // Identity changes resolve only from the profile supplied for the
+      // active account; a pending/failed fetch must never expose the prior
+      // account's cached name or fall back to the local profile.
+      const accountB = DriveItAccountProfile(
+        id: 'account-b',
+        email: null,
+        username: 'hesap_b',
+        displayName: 'Hesap B',
+      );
+      expect(
+        DriveItEffectiveProfile.displayName(
+          localName: 'Yerel Misafir',
+          hasSession: true,
+          cloudProfile: accountB,
+          cloudProfileLoaded: true,
+          cloudProfileFailed: false,
+        ),
+        'Hesap B',
+      );
+      expect(
+        DriveItEffectiveProfile.displayName(
+          localName: 'Yerel Misafir',
+          hasSession: true,
+          cloudProfile: cloudProfile,
+          cloudProfileLoaded: false,
+          cloudProfileFailed: false,
+        ),
+        isNull,
+      );
+      expect(
+        DriveItEffectiveProfile.displayName(
+          localName: 'Yerel Misafir',
+          hasSession: false,
+          cloudProfile: cloudProfile,
+          cloudProfileLoaded: true,
+          cloudProfileFailed: false,
+        ),
+        'Yerel Misafir',
+      );
     },
   );
 

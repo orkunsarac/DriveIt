@@ -242,7 +242,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(ProfileSettingsScreen), findsNothing);
-    expect(find.text('Merhaba, Orkun'), findsOneWidget);
+    expect(find.text('Merhaba'), findsOneWidget);
     expect(find.text('Dünya'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });

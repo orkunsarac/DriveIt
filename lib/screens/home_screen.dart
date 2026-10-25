@@ -41,7 +41,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const blue = HomeScreen.blue;
   static const textFont = HomeScreen.textFont;
-  String? _profileName = 'Orkun';
+  String? _profileName;
   String? _localProfileName;
   Uint8List? _profilePhoto;
   final _accountIdentity = SupabaseAccountService.instance;
@@ -76,9 +76,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _mountedOwner = widget.ownerLease;
+    _accountIdentity.addListener(_onAccountIdentityChanged);
     if (widget.ownerLease == null) {
       if (_accountIdentity.hasSession) _profileName = null;
-      _accountIdentity.addListener(_onAccountIdentityChanged);
     } else {
       _profileName = null;
       widget.ownerLease!.changes.addListener(_onOwnerChanged);
@@ -101,13 +101,20 @@ class _HomeScreenState extends State<HomeScreen> {
         _profilePhoto = null;
         _localProfileName = null;
       });
+      _loadProfile();
     }
   }
 
   void _onAccountIdentityChanged() {
     if (!mounted) return;
     setState(() {
-      _profileName = _resolvedProfileName();
+      if (!_ownerMatchesActiveIdentity) {
+        _profileName = null;
+        _localProfileName = null;
+        _profilePhoto = null;
+      } else {
+        _profileName = _resolvedProfileName();
+      }
     });
   }
 
@@ -118,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
       final profile = OwnerProfileStore(lease);
       setState(() {
         _localProfileName = profile.name;
-        _profileName = profile.name;
+        _profileName = _resolvedProfileName();
         _profilePhoto = profile.photo;
       });
       return;
@@ -141,12 +148,21 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String? _resolvedProfileName() {
+    if (!_ownerMatchesActiveIdentity) return null;
     final effective = _accountIdentity.effectiveDisplayName(
       localName: _localProfileName,
     );
-    if (effective != null || _accountIdentity.hasSession) return effective;
-    return 'Orkun';
+    return effective;
   }
+
+  bool get _ownerMatchesActiveIdentity {
+    final lease = widget.ownerLease;
+    if (lease == null || !_accountIdentity.isAvailable) return true;
+    return lease.owner.userId == _accountIdentity.currentUser?.id;
+  }
+
+  Uint8List? get _visibleProfilePhoto =>
+      _ownerMatchesActiveIdentity ? _profilePhoto : null;
 
   Future<void> _loadHomeTourState() async {
     if (widget.ownerLease != null) {
@@ -394,19 +410,17 @@ class _HomeScreenState extends State<HomeScreen> {
               border: Border.all(color: const Color(0xff248fff), width: 1),
             ),
             child: CircleAvatar(
+              key: const Key('home_profile_avatar'),
               radius: 20.5,
               backgroundColor: const Color(0xff56d8de),
-              backgroundImage: _profilePhoto == null
+              backgroundImage: _visibleProfilePhoto == null
                   ? null
-                  : MemoryImage(_profilePhoto!),
-              child: _profilePhoto == null
-                  ? const Text(
-                      'OS',
-                      style: TextStyle(
-                        color: Colors.black,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                      ),
+                  : MemoryImage(_visibleProfilePhoto!),
+              child: _visibleProfilePhoto == null
+                  ? const Icon(
+                      Icons.person_outline,
+                      color: Colors.black,
+                      size: 26,
                     )
                   : null,
             ),

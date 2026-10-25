@@ -31,10 +31,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
   BitmapDescriptor? _navigationIcon;
   Duration? _lastTick;
   Duration _lastRenderedTick = Duration.zero;
-  late ReplayFrame _hudFrame;
-  Duration? _lastHudUpdate;
-  final Stopwatch _uiStopwatch = Stopwatch();
-  Duration _hudElapsed = Duration.zero;
   DateTime _lastCameraUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   ReplayCameraMode _cameraMode = ReplayCameraMode.overview;
   bool _hasStartedReplay = false;
@@ -52,7 +48,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
     _mountedOwner = widget.ownerLease;
     _drive = widget.ownerLease?.requireDrive(widget.drive.id) ?? widget.drive;
     _replay = DriveReplayController(_drive)..addListener(_onReplayChanged);
-    _hudFrame = _replay.frame;
     _ticker = createTicker(_onTick)..start();
     widget.ownerLease?.changes.addListener(_ownerChanged);
     _loadNavigationIcon();
@@ -81,21 +76,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
 
   void _onReplayChanged() {
     if (!mounted) return;
-    if (_replay.isPlaying) {
-      if (!_uiStopwatch.isRunning) _uiStopwatch.start();
-    } else if (_uiStopwatch.isRunning) {
-      _uiStopwatch.stop();
-    }
-    final wallElapsed = _uiStopwatch.elapsed;
-    if (_lastHudUpdate == null ||
-        wallElapsed - (_lastHudUpdate ?? Duration.zero) >=
-            const Duration(seconds: 1) ||
-        _replay.isComplete) {
-      _hudFrame = _replay.frame;
-      _hudElapsed = wallElapsed;
-      _lastHudUpdate = wallElapsed;
-      setState(() {});
-    }
     if (_replay.isPlaying && _cameraMode != ReplayCameraMode.free) {
       _followCamera();
     }
@@ -349,10 +329,17 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                 children: [
                   _ReplayHeader(onBack: () => Navigator.of(context).pop()),
                   const SizedBox(height: 10),
-                  _TelemetryHud(
-                    speedKmh: _hudFrame.speedKmh,
-                    distanceKm: _hudFrame.distanceMeters / 1000,
-                    elapsed: _hudElapsed,
+                  AnimatedBuilder(
+                    animation: _replay,
+                    builder: (_, _) {
+                      final frame = _replay.frame;
+                      return _TelemetryHud(
+                        frame: frame,
+                        hasSpeedEstimate:
+                            _drive.averageSpeed.isFinite &&
+                            _drive.averageSpeed >= 0,
+                      );
+                    },
                   ),
                   const Spacer(),
                   AnimatedBuilder(
@@ -373,8 +360,6 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                       replay: _replay,
                       onSeek: (value) {
                         _replay.seek(value);
-                        _hudFrame = _replay.frame;
-                        if (mounted) setState(() {});
                         if (_cameraMode != ReplayCameraMode.free) {
                           unawaited(_followCamera(force: true));
                         }
@@ -437,42 +422,59 @@ class _ReplayHeader extends StatelessWidget {
 }
 
 class _TelemetryHud extends StatelessWidget {
-  final double speedKmh;
-  final double distanceKm;
-  final Duration elapsed;
-  const _TelemetryHud({
-    required this.speedKmh,
-    required this.distanceKm,
-    required this.elapsed,
-  });
+  final ReplayFrame frame;
+  final bool hasSpeedEstimate;
+  const _TelemetryHud({required this.frame, required this.hasSpeedEstimate});
 
   @override
-  Widget build(BuildContext context) => _GlassCard(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-    child: Row(
-      children: [
-        _HudValue(
-          label: 'ANLIK HIZ',
-          value: speedKmh.toStringAsFixed(0),
-          unit: 'km/h',
-          color: const Color(0xff4e9fff),
-        ),
-        const _HudDivider(),
-        _HudValue(
-          label: 'GİDİLEN MESAFE',
-          value: distanceKm.toStringAsFixed(2),
-          unit: 'km',
-          color: const Color(0xff4be0ca),
-        ),
-        const _HudDivider(),
-        _HudValue(
-          label: 'GEÇEN SÜRE',
-          value: _formatDuration(elapsed),
-          color: const Color(0xffa66eff),
-        ),
-      ],
-    ),
-  );
+  Widget build(BuildContext context) {
+    final hasSpeed =
+        hasSpeedEstimate && frame.speedKmh.isFinite && frame.speedKmh >= 0;
+    final hasDistance =
+        frame.distanceMeters.isFinite && frame.distanceMeters >= 0;
+    return _GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              _HudValue(
+                key: const Key('replay_hud_speed'),
+                label: 'TAHMİNİ HIZ',
+                value: hasSpeed ? frame.speedKmh.toStringAsFixed(0) : '—',
+                unit: hasSpeed ? 'km/h' : null,
+                color: const Color(0xff4e9fff),
+              ),
+              const _HudDivider(),
+              _HudValue(
+                key: const Key('replay_hud_distance'),
+                label: 'ROTA MESAFESİ',
+                value: hasDistance
+                    ? (frame.distanceMeters / 1000).toStringAsFixed(2)
+                    : '—',
+                unit: hasDistance ? 'km' : null,
+                color: const Color(0xff4be0ca),
+              ),
+              const _HudDivider(),
+              _HudValue(
+                key: const Key('replay_hud_elapsed'),
+                label: 'TAHMİNİ SÜRE',
+                value: _formatDuration(frame.elapsed),
+                color: const Color(0xffa66eff),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Rota ve sürüş özetinden tahmin edilir; GPS ölçümü değildir.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Color(0xff91a4c2), fontSize: 10),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _HudValue extends StatelessWidget {
@@ -481,6 +483,7 @@ class _HudValue extends StatelessWidget {
   final String? unit;
   final Color color;
   const _HudValue({
+    super.key,
     required this.label,
     required this.value,
     this.unit,
@@ -691,7 +694,7 @@ class _ReplayControls extends StatelessWidget {
           ],
         ),
         Text(
-          '${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
+          'Önizleme (1×): ${_formatDuration(replay.previewTime)} / ${_formatDuration(replay.basePreviewDuration)}',
           style: const TextStyle(color: Color(0xff91a4c2), fontSize: 11),
         ),
       ],

@@ -89,6 +89,76 @@ class ReplayTelemetryData {
        diagnostics = List.unmodifiable(diagnostics);
 }
 
+/// A replay-only speed peak tied to an accepted, timestamped GPS sample.
+/// This value is derived from an immutable adapter snapshot and never persisted.
+class ReplayMaximumSpeedEvent {
+  final int sourceIndex;
+  final int segmentId;
+  final double latitude;
+  final double longitude;
+  final DateTime timestamp;
+  final Duration elapsed;
+  final double speedKmh;
+  final ReplaySpeedSource speedSource;
+  final List<ReplayTelemetryIssue> quality;
+
+  ReplayMaximumSpeedEvent({
+    required this.sourceIndex,
+    required this.segmentId,
+    required this.latitude,
+    required this.longitude,
+    required this.timestamp,
+    required this.elapsed,
+    required this.speedKmh,
+    required this.speedSource,
+    required List<ReplayTelemetryIssue> quality,
+  }) : quality = List.unmodifiable(quality);
+
+  bool get isEstimated => speedSource == ReplaySpeedSource.geometryEstimate;
+}
+
+/// Resolves native peaks before estimated peaks. Ties retain the earliest
+/// accepted sample in recording order, making the result deterministic.
+ReplayMaximumSpeedEvent? replayMaximumSpeedEvent(ReplayTelemetryData data) {
+  if (data.source != ReplayTelemetrySource.canonical) return null;
+
+  ReplayMaximumSpeedEvent? maximumFor(ReplaySpeedSource source) {
+    ReplayMaximumSpeedEvent? maximum;
+    for (final sample in data.samples) {
+      final speed = sample.speedKmh;
+      final time = sample.timestamp;
+      final elapsed = sample.elapsed;
+      if (sample.speedSource != source ||
+          sample.breakBefore ||
+          sample.boundaryReasons.isNotEmpty ||
+          speed == null ||
+          !speed.isFinite ||
+          speed <= 0 ||
+          time == null ||
+          elapsed == null) {
+        continue;
+      }
+      if (maximum == null || speed > maximum.speedKmh) {
+        maximum = ReplayMaximumSpeedEvent(
+          sourceIndex: sample.sourceIndex,
+          segmentId: sample.segmentId,
+          latitude: sample.latitude,
+          longitude: sample.longitude,
+          timestamp: time,
+          elapsed: elapsed,
+          speedKmh: speed,
+          speedSource: source,
+          quality: sample.boundaryReasons,
+        );
+      }
+    }
+    return maximum;
+  }
+
+  return maximumFor(ReplaySpeedSource.nativeCanonical) ??
+      maximumFor(ReplaySpeedSource.geometryEstimate);
+}
+
 /// Pure conversion only. The caller MUST supply a drive and record read through
 /// the same currently authorized owner lease and discard results on revocation.
 /// The models contain no owner ID, so ownership cannot be verified here.

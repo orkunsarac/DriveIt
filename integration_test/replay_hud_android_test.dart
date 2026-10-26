@@ -242,7 +242,7 @@ void main() {
           latitude: 41,
           longitude: longitude,
           timestamp: base.add(Duration(seconds: i * 5)),
-          speedMps: i == 3 ? 8 : 12,
+          speedMps: i == 30 ? 30 : (i == 3 ? 8 : 6),
           headingDegrees: 90,
           altitudeMeters: 0,
           accuracyMeters: 3,
@@ -309,8 +309,8 @@ void main() {
       for (final (speed, effective) in [
         (1.0, 40.0),
         (2.0, 80.0),
+        (3.0, 120.0),
         (5.0, 200.0),
-        (10.0, 400.0),
       ]) {
         speedControl.onSelected!(speed);
         await tester.pump();
@@ -329,8 +329,11 @@ void main() {
       speedControl.onSelected!(5);
       await tester.pump();
       await tester.tap(find.text('Başla!'));
+      await tester.pump(const Duration(milliseconds: 250));
+      // Pause refreshes the throttled HUD from the exact current ReplayFrame
+      // before comparing it with the live map objects.
+      await tester.tap(find.byIcon(Icons.pause_rounded));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
       expectCanonicalFrame(tester, replayData, const Duration(seconds: 1200));
       final pausedHud = [
         hud(tester, 'speed'),
@@ -338,8 +341,6 @@ void main() {
         hud(tester, 'elapsed'),
       ];
       final pausedProgress = tester.widget<Slider>(find.byType(Slider)).value;
-      await tester.tap(find.byIcon(Icons.pause_rounded));
-      await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect([
         hud(tester, 'speed'),
@@ -349,14 +350,14 @@ void main() {
       expect(tester.widget<Slider>(find.byType(Slider)).value, pausedProgress);
       await tester.tap(find.byIcon(Icons.play_arrow_rounded));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 250));
       expect(
         tester.widget<Slider>(find.byType(Slider)).value,
         greaterThan(pausedProgress),
       );
-      expectCanonicalFrame(tester, replayData, const Duration(seconds: 1200));
       await tester.tap(find.byIcon(Icons.pause_rounded));
       await tester.pump();
+      expectCanonicalFrame(tester, replayData, const Duration(seconds: 1200));
 
       tester.widget<Slider>(find.byType(Slider)).onChanged!(.005);
       await tester.pump();
@@ -466,6 +467,34 @@ void main() {
         ['replay_visited_segment_0', 'replay_visited_segment_1'],
       );
 
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.2);
+      await tester.pump();
+      var peakMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      final peakMarker = peakMap.markers.singleWhere(
+        (marker) => marker.markerId.value == 'driveit_replay_max_speed',
+      );
+      expect(peakMarker.position.longitude, closeTo(29.0327, 1e-9));
+      expect(peakMarker.infoWindow.title, 'MAKS HIZ · 108 km/sa');
+
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.1);
+      await tester.pump();
+      peakMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(
+        peakMap.markers.where(
+          (marker) => marker.markerId.value == 'driveit_replay_max_speed',
+        ),
+        isEmpty,
+      );
+      tester.widget<Slider>(find.byType(Slider)).onChanged!(.2);
+      await tester.pump();
+      peakMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(
+        peakMap.markers.where(
+          (marker) => marker.markerId.value == 'driveit_replay_max_speed',
+        ),
+        hasLength(1),
+      );
+
       tester.widget<Slider>(find.byType(Slider)).onChanged!(1);
       await tester.pump();
       expect(find.text('Sürüş tekrarı tamamlandı'), findsOneWidget);
@@ -473,6 +502,15 @@ void main() {
       await tester.pump();
       expect(find.text('Sürüş tekrarı tamamlandı'), findsNothing);
       expect(tester.widget<Slider>(find.byType(Slider)).value, lessThan(1));
+      expect(
+        tester
+            .widget<GoogleMap>(find.byType(GoogleMap))
+            .markers
+            .where(
+              (marker) => marker.markerId.value == 'driveit_replay_max_speed',
+            ),
+        isEmpty,
+      );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
       await Hive.close();

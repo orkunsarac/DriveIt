@@ -449,4 +449,57 @@ void main() {
       expect(legacy.samples, hasLength(2));
     },
   );
+
+  test('maximum replay event prefers native speed and keeps first equal peak', () {
+    final data = adapt([
+      point(0, speed: 5, source: 'native'),
+      point(1, speed: 30, source: 'geometry_estimate'),
+      point(2, speed: 10, source: 'native'),
+      point(3, speed: 10, source: 'native'),
+    ]);
+
+    final event = replayMaximumSpeedEvent(data)!;
+    expect(event.sourceIndex, 2);
+    expect(event.segmentId, 0);
+    expect(event.timestamp, epoch.add(const Duration(seconds: 2)));
+    expect(event.elapsed, const Duration(seconds: 2));
+    expect(event.speedKmh, 36);
+    expect(event.speedSource, ReplaySpeedSource.nativeCanonical);
+    expect(event.isEstimated, isFalse);
+  });
+
+  test('geometry peak is used only when there is no valid native peak', () {
+    final data = adapt([
+      point(0, source: 'unavailable'),
+      point(1, speed: 14, source: 'geometry_estimate'),
+      point(2, speed: 12, source: 'geometry_estimate'),
+    ]);
+
+    final event = replayMaximumSpeedEvent(data)!;
+    expect(event.sourceIndex, 1);
+    expect(event.speedKmh, 50.4);
+    expect(event.speedSource, ReplaySpeedSource.geometryEstimate);
+    expect(event.isEstimated, isTrue);
+  });
+
+  test('maximum event excludes gaps, invalid points, unknown and zero speeds', () {
+    final data = adapt([
+      point(0, speed: 0),
+      point(1, speed: 80, boundary: true),
+      point(2, speed: 90, latitude: 91),
+      point(3, speed: double.nan),
+      point(4, speed: 20, source: 'future'),
+      point(5, speed: 8),
+      point(6, speed: 10),
+    ]);
+
+    final event = replayMaximumSpeedEvent(data)!;
+    expect(event.sourceIndex, 6);
+    expect(event.speedKmh, 36);
+  });
+
+  test('legacy replay has no timestamped maximum speed location', () {
+    final data = ReplayTelemetryAdapter.build(drive(), null);
+    expect(replayMaximumSpeedEvent(data), isNull);
+  });
 }

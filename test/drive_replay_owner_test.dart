@@ -78,7 +78,7 @@ void main() {
         latitude: 41,
         longitude: 29 + i / 1000,
         timestamp: base.add(Duration(seconds: elapsedSeconds)),
-        speedMps: i == 2 ? 0 : 12,
+        speedMps: i == 2 ? 0 : (i == 3 ? 12 : 4),
         headingDegrees: 90,
         altitudeMeters: 0,
         accuracyMeters: 3,
@@ -165,9 +165,25 @@ void main() {
     await tester.pump();
     expect(find.textContaining('Önizleme (5×, efektif 200×)'), findsOneWidget);
 
-    await tester.tap(find.text('Başla!'));
+    tester
+        .widget<InkWell>(
+          find.ancestor(
+            of: find.text('Başla!'),
+            matching: find.byType(InkWell),
+          ).first,
+        )
+        .onTap!();
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
+    tester
+        .widget<IconButton>(
+          find.ancestor(
+            of: find.byIcon(Icons.pause_rounded),
+            matching: find.byType(IconButton),
+          ).first,
+        )
+        .onPressed!();
+    await tester.pump();
     expect(find.text('03:20'), findsOneWidget);
     expect(find.textContaining('00:01 / 00:06'), findsOneWidget);
     expect(

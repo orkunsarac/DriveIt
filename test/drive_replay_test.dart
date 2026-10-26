@@ -120,10 +120,12 @@ void main() {
     expect(controller.effectivePlaybackMultiplier, 10);
     controller.setDisplayPlaybackSpeed(2);
     expect(controller.effectivePlaybackMultiplier, 20);
+    controller.setDisplayPlaybackSpeed(3);
+    expect(controller.effectivePlaybackMultiplier, 30);
     controller.setDisplayPlaybackSpeed(5);
     expect(controller.effectivePlaybackMultiplier, 50);
     controller.setDisplayPlaybackSpeed(10);
-    expect(controller.effectivePlaybackMultiplier, 100);
+    expect(controller.effectivePlaybackMultiplier, 50);
     controller.dispose();
   });
 
@@ -154,14 +156,14 @@ void main() {
     fast.dispose();
   });
 
-  test('100x effective playback can skip directly to completion safely', () {
+  test('50x effective playback can skip directly to completion safely', () {
     final controller = DriveReplayController(drive());
     controller
-      ..setDisplayPlaybackSpeed(10)
+      ..setDisplayPlaybackSpeed(5)
       ..play()
-      ..advance(const Duration(milliseconds: 100));
+      ..advance(const Duration(milliseconds: 250));
 
-    expect(controller.effectivePlaybackMultiplier, 100);
+    expect(controller.effectivePlaybackMultiplier, 50);
     expect(controller.currentTime, controller.totalDuration);
     expect(controller.isComplete, isTrue);
     expect(controller.isPlaying, isFalse);
@@ -179,6 +181,21 @@ void main() {
     controller.advance(const Duration(milliseconds: 300));
 
     expect(controller.currentTime, pausedAt);
+    controller.dispose();
+  });
+
+  test('changing playback mode preserves the current playhead', () {
+    final controller = DriveReplayController(drive());
+    controller.play();
+    controller.advance(const Duration(milliseconds: 500));
+    final beforeChange = controller.currentTime;
+
+    controller.setDisplayPlaybackSpeed(3);
+    expect(controller.currentTime, beforeChange);
+    expect(controller.effectivePlaybackMultiplier, 30);
+
+    controller.advance(const Duration(milliseconds: 100));
+    expect(controller.currentTime, beforeChange + const Duration(seconds: 3));
     controller.dispose();
   });
 
@@ -351,10 +368,10 @@ void main() {
     final expectedDurations = [
       const Duration(seconds: 30),
       const Duration(seconds: 15),
+      const Duration(seconds: 10),
       const Duration(seconds: 6),
-      const Duration(seconds: 3),
     ];
-    for (final (index, speed) in [1.0, 2.0, 5.0, 10.0].indexed) {
+    for (final (index, speed) in [1.0, 2.0, 3.0, 5.0].indexed) {
       controller.setDisplayPlaybackSpeed(speed);
       expect(controller.effectivePlaybackMultiplier, 40 * speed);
       expect(controller.selectedPreviewDuration, expectedDurations[index]);
@@ -423,8 +440,8 @@ void main() {
     for (final (speed, effective) in [
       (1.0, 10.0),
       (2.0, 20.0),
+      (3.0, 30.0),
       (5.0, 50.0),
-      (10.0, 100.0),
     ]) {
       controller.setDisplayPlaybackSpeed(speed);
       expect(controller.effectivePlaybackMultiplier, effective);

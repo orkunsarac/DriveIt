@@ -12,8 +12,13 @@ class DriveReplayController extends ChangeNotifier {
 
   final DriveSession drive;
   final ReplayTelemetryData? telemetry;
+  late final ReplayMaximumSpeedEvent? maximumSpeedEvent;
   late final List<ReplayPoint> timeline;
   late ReplayFrame _frame;
+
+  /// Changes only on explicit controls or playback completion. The map keeps
+  /// listening to frame notifications; the HUD uses this plus its 250 ms poll.
+  final ValueNotifier<int> hudRevision = ValueNotifier<int>(0);
 
   bool _isPlaying = false;
   bool _isComplete = false;
@@ -21,6 +26,9 @@ class DriveReplayController extends ChangeNotifier {
 
   DriveReplayController(this.drive, {this.telemetry}) {
     timeline = ReplayInterpolator.buildTimeline(drive);
+    maximumSpeedEvent = isCanonical
+        ? replayMaximumSpeedEvent(telemetry!)
+        : null;
     _frame = _frameAt(Duration.zero);
   }
 
@@ -96,18 +104,21 @@ class DriveReplayController extends ChangeNotifier {
     if (_isComplete) seek(0);
     _isPlaying = true;
     _isComplete = false;
+    _refreshHudImmediately();
     notifyListeners();
   }
 
   void pause() {
     if (!_isPlaying) return;
     _isPlaying = false;
+    _refreshHudImmediately();
     notifyListeners();
   }
 
   void setDisplayPlaybackSpeed(double value) {
-    if (!const [1.0, 2.0, 5.0, 10.0].contains(value)) return;
+    if (!const [1.0, 2.0, 3.0, 5.0].contains(value)) return;
     _displayPlaybackSpeed = value;
+    _refreshHudImmediately();
     notifyListeners();
   }
 
@@ -119,6 +130,7 @@ class DriveReplayController extends ChangeNotifier {
     _frame = _frameAt(target);
     _isComplete = clamped >= 1;
     if (_isComplete) _isPlaying = false;
+    _refreshHudImmediately();
     notifyListeners();
   }
 
@@ -153,6 +165,15 @@ class DriveReplayController extends ChangeNotifier {
     _frame = _frameAt(totalDuration);
     _isPlaying = false;
     _isComplete = true;
+    _refreshHudImmediately();
     notifyListeners();
+  }
+
+  void _refreshHudImmediately() => hudRevision.value++;
+
+  @override
+  void dispose() {
+    hudRevision.dispose();
+    super.dispose();
   }
 }

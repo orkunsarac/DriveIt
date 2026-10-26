@@ -81,13 +81,37 @@ Future<void> mountReplay(WidgetTester tester, DriveSession drive) async {
 }
 
 Future<void> step(WidgetTester tester, Duration duration) async {
-  await tester.pump(duration);
+  var remaining = duration;
+  const frameStep = Duration(milliseconds: 16);
+  while (remaining > Duration.zero) {
+    final delta = remaining > frameStep ? frameStep : remaining;
+    await tester.pump(delta);
+    remaining -= delta;
+  }
   await tester.pump();
 }
 
 Future<void> seek(WidgetTester tester, double progress) async {
   tester.widget<Slider>(find.byType(Slider)).onChanged!(progress);
   await tester.pump();
+}
+
+void startReplay(WidgetTester tester) {
+  final button = tester.widget<InkWell>(
+    find
+        .ancestor(of: find.text('Başla!'), matching: find.byType(InkWell))
+        .first,
+  );
+  button.onTap!();
+}
+
+void toggleReplay(WidgetTester tester, IconData icon) {
+  final button = tester.widget<IconButton>(
+    find
+        .ancestor(of: find.byIcon(icon), matching: find.byType(IconButton))
+        .first,
+  );
+  button.onPressed!();
 }
 
 void expectFrame(WidgetTester tester, DriveSession drive, int seconds) {
@@ -114,6 +138,11 @@ void expectFrame(WidgetTester tester, DriveSession drive, int seconds) {
   expect(trail.points.last, marker.position);
 }
 
+int displayedSeconds(WidgetTester tester) {
+  final parts = hud(tester, 'elapsed').split(':').map(int.parse).toList();
+  return parts[0] * 60 + parts[1];
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late maps.GoogleMapsFlutterPlatform oldMaps;
@@ -126,15 +155,36 @@ void main() {
   tearDown(() => maps.GoogleMapsFlutterPlatform.instance = oldMaps);
 
   testWidgets(
-    'playback HUD, marker and trail share the same frame before one wall second',
+    'HUD samples at 250ms while map marker continues animating each frame',
     (tester) async {
       final drive = replayDrive();
       await mountReplay(tester, drive);
       expect(fakeMaps.views, greaterThan(0));
-      await tester.tap(find.text('Başla!'));
+      final initialDistance = hud(tester, 'distance');
+      startReplay(tester);
       await tester.pump();
       await step(tester, const Duration(milliseconds: 100));
-      expectFrame(tester, drive, 1);
+      final movingMap = tester.widget<GoogleMap>(find.byType(GoogleMap));
+      expect(movingMap.markers.single.position.longitude, greaterThan(29));
+      expect(hud(tester, 'elapsed'), '00:00');
+      expect(hud(tester, 'distance'), initialDistance);
+      await step(tester, const Duration(milliseconds: 150));
+      expect(hud(tester, 'elapsed'), isNot('00:00'));
+      expect(hud(tester, 'distance'), isNot(initialDistance));
+
+      toggleReplay(tester, Icons.pause_rounded);
+      await tester.pump();
+      await seek(tester, 0);
+      tester
+          .widget<PopupMenuButton<double>>(find.byType(PopupMenuButton<double>))
+          .onSelected!(5);
+      await tester.pump();
+      toggleReplay(tester, Icons.play_arrow_rounded);
+      await tester.pump();
+      await step(tester, const Duration(milliseconds: 100));
+      expect(hud(tester, 'elapsed'), '00:00');
+      await step(tester, const Duration(milliseconds: 150));
+      expect(hud(tester, 'elapsed'), isNot('00:00'));
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -145,20 +195,39 @@ void main() {
       final drive = replayDrive();
       await mountReplay(tester, drive);
       await seek(tester, .2);
-      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      toggleReplay(tester, Icons.play_arrow_rounded);
       await tester.pump();
       await step(tester, const Duration(milliseconds: 100));
-      expectFrame(tester, drive, 21);
-      await tester.tap(find.byIcon(Icons.pause_rounded));
+      toggleReplay(tester, Icons.pause_rounded);
       await tester.pump();
+      final pausedAt = displayedSeconds(tester);
+      expect(pausedAt, inInclusiveRange(20, 21));
       final paused = hudValues(tester);
+      final pausedMarker = tester
+          .widget<GoogleMap>(find.byType(GoogleMap))
+          .markers
+          .single
+          .position;
       await step(tester, const Duration(seconds: 2));
       expect(hudValues(tester), paused);
-      expectFrame(tester, drive, 21);
-      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      expect(
+        tester
+            .widget<GoogleMap>(find.byType(GoogleMap))
+            .markers
+            .single
+            .position,
+        pausedMarker,
+      );
+      toggleReplay(tester, Icons.play_arrow_rounded);
       await tester.pump();
       await step(tester, const Duration(milliseconds: 100));
-      expectFrame(tester, drive, 22);
+      toggleReplay(tester, Icons.pause_rounded);
+      await tester.pump();
+      final resumedAt = displayedSeconds(tester);
+      expect(resumedAt, greaterThan(pausedAt));
+      final resumedValues = hudValues(tester);
+      await step(tester, const Duration(seconds: 1));
+      expect(hudValues(tester), resumedValues);
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -184,19 +253,30 @@ void main() {
       final drive = replayDrive();
       await mountReplay(tester, drive);
       await seek(tester, .2);
-      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      toggleReplay(tester, Icons.play_arrow_rounded);
       await tester.pump();
       await step(tester, const Duration(milliseconds: 500));
-      expectFrame(tester, drive, 25);
+      final normalAt = displayedSeconds(tester);
+      expect(normalAt, inInclusiveRange(24, 25));
       final normal = hudValues(tester);
+      toggleReplay(tester, Icons.pause_rounded);
+      await tester.pump();
       await seek(tester, .2);
+      final seekedValues = hudValues(tester);
       tester
           .widget<PopupMenuButton<double>>(find.byType(PopupMenuButton<double>))
           .onSelected!(5);
       await tester.pump();
+      expect(hudValues(tester), seekedValues);
+      expect(hud(tester, 'elapsed'), '00:20');
+      toggleReplay(tester, Icons.play_arrow_rounded);
+      await tester.pump();
       await step(tester, const Duration(milliseconds: 100));
-      expectFrame(tester, drive, 25);
-      expect(hudValues(tester), normal);
+      toggleReplay(tester, Icons.pause_rounded);
+      await tester.pump();
+      final acceleratedAt = displayedSeconds(tester);
+      expect(acceleratedAt, inInclusiveRange(24, 25));
+      expect(hudValues(tester)['speed'], isNot(normal['speed']));
       await seek(tester, .6);
       expectFrame(tester, drive, 60);
       await seek(tester, .1);
@@ -211,18 +291,36 @@ void main() {
       final drive = replayDrive();
       await mountReplay(tester, drive);
       await seek(tester, .95);
-      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      toggleReplay(tester, Icons.play_arrow_rounded);
       await tester.pump();
       await step(tester, const Duration(seconds: 1));
       expectFrame(tester, drive, 100);
       expect(find.text('Sürüş tekrarı tamamlandı'), findsOneWidget);
       await step(tester, const Duration(seconds: 2));
       expectFrame(tester, drive, 100);
-      await tester.tap(find.byIcon(Icons.replay_rounded));
+      toggleReplay(tester, Icons.replay_rounded);
       await tester.pump();
-      expectFrame(tester, drive, 0);
       await step(tester, const Duration(milliseconds: 100));
-      expectFrame(tester, drive, 1);
+      toggleReplay(tester, Icons.pause_rounded);
+      await tester.pump();
+      expect(hud(tester, 'elapsed'), '00:00');
+      await step(tester, const Duration(milliseconds: 100));
+      final restarted = hudValues(tester);
+      final restartedMarker = tester
+          .widget<GoogleMap>(find.byType(GoogleMap))
+          .markers
+          .single
+          .position;
+      await step(tester, const Duration(seconds: 1));
+      expect(hudValues(tester), restarted);
+      expect(
+        tester
+            .widget<GoogleMap>(find.byType(GoogleMap))
+            .markers
+            .single
+            .position,
+        restartedMarker,
+      );
       await tester.pumpWidget(const SizedBox());
     },
   );
@@ -236,8 +334,19 @@ void main() {
       expectFrame(tester, drive, 50);
       expect(find.text('TAHMİNİ HIZ'), findsOneWidget);
       expect(find.text('TAHMİNİ SÜRE'), findsOneWidget);
+      final menu = tester.widget<PopupMenuButton<double>>(
+        find.byType(PopupMenuButton<double>),
+      );
+      final labels = menu
+          .itemBuilder(tester.element(find.byType(PopupMenuButton<double>)))
+          .whereType<PopupMenuItem<double>>()
+          .map((item) => (item.child! as Text).data)
+          .toList();
+      expect(labels, ['1×', '2×', '3×', '5×']);
+      menu.onSelected!(3);
+      await tester.pump();
       expect(
-        find.textContaining('Önizleme (1×, efektif 10×): 00:05 / 00:10'),
+        find.textContaining('Önizleme (3×, efektif 30×): 00:01 / 00:03'),
         findsOneWidget,
       );
       expect(find.textContaining('GPS ölçümü değildir'), findsOneWidget);

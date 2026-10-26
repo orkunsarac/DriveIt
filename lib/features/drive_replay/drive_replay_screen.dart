@@ -428,6 +428,25 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                         flat: true,
                         rotation: frame.heading,
                       ),
+                    if (_replay.maximumSpeedEvent case final peak?
+                        when frame.elapsed >= peak.elapsed)
+                      Marker(
+                        markerId: const MarkerId('driveit_replay_max_speed'),
+                        position: LatLng(peak.latitude, peak.longitude),
+                        icon: BitmapDescriptor.defaultMarkerWithHue(
+                          BitmapDescriptor.hueOrange,
+                        ),
+                        anchor: const Offset(.5, 1),
+                        zIndexInt: 2,
+                        infoWindow: InfoWindow(
+                          title:
+                              '${peak.isEstimated ? 'TAHMİNİ MAKS HIZ' : 'MAKS HIZ'} · '
+                              '${peak.speedKmh.toStringAsFixed(0)} km/sa',
+                          snippet: peak.isEstimated
+                              ? 'Geometrik hız tahmini'
+                              : 'GPS kaynaklı hız',
+                        ),
+                      ),
                   },
                   onMapCreated: (controller) {
                     _mapController = controller;
@@ -487,18 +506,11 @@ class _DriveReplayScreenState extends State<DriveReplayScreen>
                 children: [
                   _ReplayHeader(onBack: () => Navigator.of(context).pop()),
                   const SizedBox(height: 10),
-                  AnimatedBuilder(
-                    animation: _replay,
-                    builder: (_, _) {
-                      final frame = _replay.frame;
-                      return _TelemetryHud(
-                        frame: frame,
-                        canonical: _replay.isCanonical,
-                        hasSpeedEstimate:
-                            _drive.averageSpeed.isFinite &&
-                            _drive.averageSpeed >= 0,
-                      );
-                    },
+                  _ThrottledTelemetryHud(
+                    replay: _replay,
+                    hasSpeedEstimate:
+                        _drive.averageSpeed.isFinite &&
+                        _drive.averageSpeed >= 0,
                   ),
                   const Spacer(),
                   AnimatedBuilder(
@@ -661,6 +673,79 @@ class _TelemetryHud extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ThrottledTelemetryHud extends StatefulWidget {
+  final DriveReplayController replay;
+  final bool hasSpeedEstimate;
+
+  const _ThrottledTelemetryHud({
+    required this.replay,
+    required this.hasSpeedEstimate,
+  });
+
+  @override
+  State<_ThrottledTelemetryHud> createState() =>
+      _ThrottledTelemetryHudState();
+}
+
+class _ThrottledTelemetryHudState extends State<_ThrottledTelemetryHud> {
+  static const refreshInterval = Duration(milliseconds: 250);
+  late ReplayFrame _snapshot;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _snapshot = widget.replay.frame;
+    widget.replay.hudRevision.addListener(_refreshImmediately);
+    _timer = Timer.periodic(refreshInterval, (_) => _refreshFromReplay());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThrottledTelemetryHud oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.replay, widget.replay)) {
+      oldWidget.replay.hudRevision.removeListener(_refreshImmediately);
+      widget.replay.hudRevision.addListener(_refreshImmediately);
+      _snapshot = widget.replay.frame;
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    widget.replay.hudRevision.removeListener(_refreshImmediately);
+    super.dispose();
+  }
+
+  void _refreshImmediately() => _refreshFromReplay();
+
+  void _refreshFromReplay() {
+    if (!mounted) return;
+    final next = widget.replay.frame;
+    if (_sameFrame(_snapshot, next)) return;
+    setState(() => _snapshot = next);
+  }
+
+  bool _sameFrame(ReplayFrame a, ReplayFrame b) =>
+      a.latitude == b.latitude &&
+      a.longitude == b.longitude &&
+      a.elapsed == b.elapsed &&
+      a.distanceMeters == b.distanceMeters &&
+      a.speedKmh == b.speedKmh &&
+      a.heading == b.heading &&
+      a.segmentIndex == b.segmentIndex &&
+      a.routeSegmentId == b.routeSegmentId &&
+      a.isGap == b.isGap &&
+      a.speedKind == b.speedKind;
+
+  @override
+  Widget build(BuildContext context) => _TelemetryHud(
+    frame: _snapshot,
+    canonical: widget.replay.isCanonical,
+    hasSpeedEstimate: widget.hasSpeedEstimate,
+  );
 }
 
 class _HudValue extends StatelessWidget {
@@ -851,7 +936,7 @@ class _ReplayControls extends StatelessWidget {
               onSelected: replay.setDisplayPlaybackSpeed,
               color: const Color(0xff0a1d36),
               tooltip: 'Oynatma hızı',
-              itemBuilder: (_) => const [1.0, 2.0, 5.0, 10.0]
+              itemBuilder: (_) => const [1.0, 2.0, 3.0, 5.0]
                   .map(
                     (speed) => PopupMenuItem(
                       value: speed,
@@ -883,8 +968,8 @@ class _ReplayControls extends StatelessWidget {
           '${replay.isCanonical ? 'GPS ${_formatDuration(replay.currentTime)} · ' : ''}'
           'Önizleme (${_formatMultiplier(replay.displayPlaybackSpeed)}×, '
           'efektif ${_formatMultiplier(replay.effectivePlaybackMultiplier)}×): '
-          '${_formatDuration(replay.isCanonical ? replay.selectedPreviewTime : replay.previewTime)} / '
-          '${_formatDuration(replay.isCanonical ? replay.selectedPreviewDuration : replay.basePreviewDuration)}',
+          '${_formatDuration(replay.selectedPreviewTime)} / '
+          '${_formatDuration(replay.selectedPreviewDuration)}',
           style: const TextStyle(color: Color(0xff91a4c2), fontSize: 11),
         ),
       ],
@@ -1010,7 +1095,9 @@ String _formatDuration(Duration value) {
   final hours = value.inHours;
   final minutes = value.inMinutes.remainder(60).toString().padLeft(2, '0');
   final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
-  return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  return hours > 0
+      ? '${hours.toString().padLeft(2, '0')}:$minutes:$seconds'
+      : '$minutes:$seconds';
 }
 
 String _formatMultiplier(double value) => value == value.roundToDouble()

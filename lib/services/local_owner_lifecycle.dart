@@ -253,6 +253,9 @@ class LocalOwnerLease implements PosterOperationBoundary {
   String? cloudDeletionErrorCode(String id) =>
       _deletionClient.deletionStatus(id)?['error'] as String?;
   String? get cloudSyncErrorCode => _runtime.syncErrorCode;
+  String? get cloudDownloadErrorCode => _runtime.downloadErrorCode;
+  bool get cloudSyncNeedsHelp =>
+      cloudSyncErrorCode != null || cloudDownloadErrorCode != null;
 
   bool get accountTransferAvailable =>
       isCurrent &&

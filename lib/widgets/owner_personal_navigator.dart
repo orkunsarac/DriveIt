@@ -16,6 +16,7 @@ import '../services/device_drive_archive.dart';
 import '../services/android_device_archive_authorizer.dart';
 import '../screens/owned_drive_screen.dart';
 import '../screens/owner_cloud_sync_screen.dart';
+import '../screens/sync_recovery_help_screen.dart';
 import '../features/group_drive/group_drive_screen.dart';
 import '../features/group_drive/group_drive_service.dart';
 import '../features/group_drive/group_gps_source.dart';
@@ -245,6 +246,7 @@ class _OwnerPersonalNavigatorState extends State<OwnerPersonalNavigator> {
         deviceArchiveLoader: deviceArchiveLoader,
       ),
       '/cloud-sync': (_, lease, _) => OwnerCloudSyncScreen(lease: lease),
+      '/sync-help': (_, lease, _) => SyncRecoveryHelpScreen(lease: lease),
       '/account-transfer': (_, lease, _) =>
           AccountDriveTransferScreen(lease: lease),
       '/world': (_, lease, _) => WorldModeSelectionScreen(

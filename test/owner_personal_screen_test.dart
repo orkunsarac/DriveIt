@@ -13,6 +13,7 @@ import 'package:driveit_project/screens/history_screen.dart';
 import 'package:driveit_project/screens/world_mode_selection_screen.dart';
 import 'package:driveit_project/screens/profile_settings_screen.dart';
 import 'package:driveit_project/screens/owner_cloud_sync_screen.dart';
+import 'package:driveit_project/screens/sync_recovery_help_screen.dart';
 import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/services/supabase_account_service.dart';
@@ -29,6 +30,7 @@ import 'planet_segment_test.dart' show fixture;
 import 'account_drive_transfer_test.dart' show seedTransferGuest;
 import 'package:driveit_project/services/account_drive_transfer.dart';
 import 'package:driveit_project/screens/account_drive_transfer_screen.dart';
+import 'package:driveit_project/services/owner_drive_sync_client.dart';
 
 class _AvailableGuestAccountGateway implements DriveItAccountGateway {
   @override
@@ -47,6 +49,58 @@ class _AvailableGuestAccountGateway implements DriveItAccountGateway {
 class _AcceptDeviceArchiveAuth implements DeviceArchiveAuthorizer {
   @override
   Future<bool> verifyDeviceAccess() async => true;
+}
+
+class _FailingCloudRemote implements OwnerSyncAccountRemoteAdapter {
+  int backendChecks = 0;
+
+  @override
+  Future<void> verifyBackend() async {
+    backendChecks++;
+    throw const OwnerSyncTransportFailure('offline');
+  }
+
+  @override
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  }) async => throw const OwnerSyncTransportFailure('offline');
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _IncompatibleLegacySource implements LegacyTransferSource {
+  final row = LegacyTransferRow(
+    'old-drive',
+    DriveSession(
+      id: 'old-drive',
+      date: DateTime.utc(2020),
+      distance: 100,
+      durationSeconds: 30,
+      averageSpeed: 10,
+      maxSpeed: 10,
+      mapImagePath: '',
+      route: const [],
+    ),
+    'f' * 64,
+  );
+  bool authorizationRead = false;
+
+  @override
+  Future<List<LegacyTransferRow>> read() async {
+    authorizationRead = true;
+    return [row];
+  }
+
+  @override
+  Future<void> remove(LegacyTransferRow expected) async {
+    fail('Incompatible legacy data must not be removed by this test.');
+  }
+
+  @override
+  Future<void> close() async {}
 }
 
 void main() {
@@ -511,7 +565,7 @@ void main() {
       final archiveButton = find.byKey(const Key('profile_device_archive'));
       expect(archiveButton, findsOneWidget);
       expect(
-        find.text('Önceki DriveIt sürüşlerin. Yalnızca bu cihazda saklanır.'),
+        find.text('Önceki sürüş kayıtları • Yalnızca bu cihazda'),
         findsOneWidget,
       );
       await tester.ensureVisible(archiveButton);
@@ -536,10 +590,55 @@ void main() {
       expect(find.byKey(const Key('profile_device_archive')), findsOneWidget);
     },
   );
+  testWidgets('normal Guest and account Profile hide manual cloud controls', (
+    tester,
+  ) async {
+    await tester.runAsync(() => switchTo(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: OwnerPersonalNavigator(
+          runtime: runtime,
+          legacyChild: const SizedBox.shrink(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('home_profile_settings')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('profile_cloud_sync')), findsNothing);
+    expect(find.byKey(const Key('profile_sync_help')), findsNothing);
+    expect(find.byKey(const Key('cloud_download_page')), findsNothing);
+    expect(find.byKey(const Key('cloud_upload_local-drive-1')), findsNothing);
+    await tester.runAsync(() => switchTo(a));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byType(ProfileSettingsScreen), findsNothing);
+    await tester.tap(find.byKey(const Key('home_profile_settings')));
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const Key('profile_cloud_sync')), findsNothing);
+    expect(find.byKey(const Key('profile_sync_help')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
-    'normal Profile cloud route is visible for Guest and account; Guest never syncs',
+    'sync failure shows user help and retries through automatic workers only',
     (tester) async {
-      await tester.runAsync(() => switchTo(null));
+      final remote = _FailingCloudRemote();
+      await tester.runAsync(() async {
+        await runtime.close();
+        runtime.dispose();
+        runtime = LocalOwnerLifecycle(
+          gate: LocalOwnershipGate.synthetic(),
+          auth: auth,
+          openStore: (owner) =>
+              OwnerScopedLocalStore.open(root: root.path, owner: owner),
+          driveInProgress: () async => false,
+          accountSyncAdapter: (_) => remote,
+        );
+        await runtime.start();
+        await runtime.syncSettled;
+      });
+      expect(runtime.lease.cloudSyncNeedsHelp, isTrue);
+      expect(remote.backendChecks, greaterThan(0));
       await tester.pumpWidget(
         MaterialApp(
           home: OwnerPersonalNavigator(
@@ -551,33 +650,73 @@ void main() {
       await tester.pump();
       await tester.tap(find.byKey(const Key('home_profile_settings')));
       await tester.pumpAndSettle();
-      final cloud = find.byKey(const Key('profile_cloud_sync'));
-      await tester.ensureVisible(cloud);
-      await tester.tap(cloud);
+      final help = find.byKey(const Key('profile_sync_help'));
+      expect(help, findsOneWidget);
+      await tester.ensureVisible(help);
+      await tester.tap(help);
       await tester.pumpAndSettle();
-      expect(find.byType(OwnerCloudSyncScreen), findsOneWidget);
-      expect(find.text('Bekleyen hesap sürüşü: 0'), findsOneWidget);
-      expect(
-        tester
-            .widget<OutlinedButton>(
-              find.byKey(const Key('cloud_check_connection')),
-            )
-            .onPressed,
-        isNull,
-      );
-      expect(
-        find.textContaining(
-          'Yüklenebilecek yeni ve doğrulanmış hesap sürüşü yok.',
-        ),
-        findsOneWidget,
-      );
-      await tester.runAsync(() => switchTo(a));
-      await tester.pump(const Duration(milliseconds: 500));
-      // Owner navigation removes the old Guest route, not just its labels.
+      expect(find.byType(SyncRecoveryHelpScreen), findsOneWidget);
       expect(find.byType(OwnerCloudSyncScreen), findsNothing);
-      await tester.tap(find.byKey(const Key('home_profile_settings')));
-      await tester.pump(const Duration(milliseconds: 500));
-      expect(find.byKey(const Key('profile_cloud_sync')), findsOneWidget);
+      expect(find.byKey(const Key('cloud_download_page')), findsNothing);
+      expect(find.textContaining('bu cihazda korunur'), findsOneWidget);
+      expect(find.textContaining('otomatik yeniden dener'), findsOneWidget);
+      expect(find.text('Sürüş eşitlemesi tamamlandı.'), findsNothing);
+      expect(runtime.lease.cloudSyncNeedsHelp, isTrue);
+      expect(find.byKey(const Key('cloud_check_connection')), findsNothing);
+      expect(find.byKey(const Key('cloud_upload_local-drive-1')), findsNothing);
+      expect(find.byType(OwnerCloudSyncScreen), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'legacy-only profile offers inspection without claiming transfer eligibility',
+    (tester) async {
+      await tester.runAsync(() async {
+        await runtime.close();
+        runtime.dispose();
+        final legacy = _IncompatibleLegacySource();
+        runtime = LocalOwnerLifecycle(
+          gate: LocalOwnershipGate.synthetic(),
+          auth: auth,
+          openStore: (owner) =>
+              OwnerScopedLocalStore.open(root: root.path, owner: owner),
+          driveInProgress: () async => false,
+          transferSources: AccountDriveTransferSources(
+            openGuest: () => OwnerScopedLocalStore.open(
+              root: root.path,
+              owner: const GpsOwner.guest(),
+            ),
+            hasLegacy: () async => true,
+            openLegacy: (_) async => legacy,
+            authorizer: _AcceptDeviceArchiveAuth(),
+          ),
+        );
+        await runtime.start();
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ProfileSettingsScreen(
+            ownerLease: runtime.lease,
+            accountGateway: _AvailableGuestAccountGateway(),
+            transferAvailabilityLoader: (_) async => (guest: 0, legacy: true),
+          ),
+          routes: {
+            '/account-transfer': (_) =>
+                AccountDriveTransferScreen(lease: runtime.lease),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump();
+      final inspect = find.byKey(const Key('profile_account_transfer'));
+      expect(inspect, findsOneWidget);
+      expect(find.text('Eski Cihaz Kayıtlarını İncele'), findsOneWidget);
+      expect(find.text('Sürüşleri Hesabıma Aktar'), findsNothing);
+      expect(find.textContaining('uygun Misafir sürüşü hazır'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );

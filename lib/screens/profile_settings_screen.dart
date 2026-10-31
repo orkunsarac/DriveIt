@@ -26,6 +26,7 @@ class ProfileSettingsScreen extends StatefulWidget {
     this.accountGateway,
     this.ownerLease,
     this.deviceArchiveLoader,
+    this.transferAvailabilityLoader,
   });
 
   final MyWorldSettingsStore? worldSettings;
@@ -35,6 +36,8 @@ class ProfileSettingsScreen extends StatefulWidget {
   final LocalOwnerLease? ownerLease;
   final Future<DeviceDriveArchiveAccess> Function(LocalOwnerLease)?
   deviceArchiveLoader;
+  final Future<({int guest, bool legacy})> Function(LocalOwnerLease)?
+  transferAvailabilityLoader;
 
   @override
   State<ProfileSettingsScreen> createState() => _ProfileSettingsScreenState();
@@ -66,7 +69,13 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
   bool _settingBusy = false;
   late bool _showIntro;
   String? _loadError;
-  bool _transferAvailable = false;
+  int _guestTransferCount = 0;
+  bool _legacyArchivePresent = false;
+  bool _transferAvailabilityKnown = false;
+  bool get _showLegacyReview =>
+      _legacyArchivePresent ||
+      (!_transferAvailabilityKnown &&
+          widget.ownerLease?.accountTransferAvailable == true);
 
   @override
   void initState() {
@@ -90,16 +99,23 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
 
   Future<void> _loadTransferAvailability() async {
     final lease = widget.ownerLease;
-    if (lease?.accountTransferAvailable != true) return;
+    if (lease?.accountTransferAvailable != true) {
+      if (_current) setState(() => _transferAvailabilityKnown = true);
+      return;
+    }
     try {
-      final available = await lease!.accountTransferAvailability();
+      final available = widget.transferAvailabilityLoader != null
+          ? await widget.transferAvailabilityLoader!(lease!)
+          : await lease!.accountTransferAvailability();
       if (_current) {
-        setState(
-          () => _transferAvailable = available.guest > 0 || available.legacy,
-        );
+        setState(() {
+          _guestTransferCount = available.guest;
+          _legacyArchivePresent = available.legacy;
+          _transferAvailabilityKnown = true;
+        });
       }
     } catch (_) {
-      /* Active recording or revoked owner: retry after returning. */
+      /* Keep a safe legacy inspection path when eligibility is uncertain. */
     }
   }
 
@@ -545,7 +561,10 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                 ),
                 _section('DRIVEIT HESABI'),
                 DriveItAccountSection(accountGateway: _accountGateway),
-                if (_transferAvailable &&
+                if (_guestTransferCount > 0 || _showLegacyReview) ...[
+                  _section('VERİLERİM'),
+                ],
+                if ((_guestTransferCount > 0 || _showLegacyReview) &&
                     widget.ownerLease?.accountTransferAvailable == true)
                   _card(
                     ListTile(
@@ -554,9 +573,17 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                         Icons.move_to_inbox_outlined,
                         color: _blue,
                       ),
-                      title: const Text('Sürüşleri Hesabıma Aktar'),
-                      subtitle: const Text(
-                        'Bu cihazdaki Misafir ve eski sürüşleri incele',
+                      title: Text(
+                        _guestTransferCount > 0
+                            ? 'Sürüşleri Hesabıma Aktar'
+                            : 'Eski Cihaz Kayıtlarını İncele',
+                      ),
+                      subtitle: Text(
+                        _guestTransferCount > 0
+                            ? '$_guestTransferCount uygun Misafir sürüşü hazır'
+                            : _transferAvailabilityKnown
+                            ? 'Aktarılabilirlik PIN veya biyometri sonrası belirlenir.'
+                            : 'Eski kayıtlar güvenli biçimde kontrol ediliyor.',
                       ),
                       trailing: const Icon(Icons.chevron_right, size: 20),
                       onTap: () async {
@@ -567,42 +594,35 @@ class _ProfileSettingsScreenState extends State<ProfileSettingsScreen> {
                       },
                     ),
                   ),
-                if (widget.ownerLease != null) ...[
-                  _section('BULUT SENKRONİZASYONU'),
+                if (widget.ownerLease?.cloudSyncNeedsHelp == true)
                   _card(
                     ListTile(
-                      key: const Key('profile_cloud_sync'),
-                      leading: const Icon(
-                        Icons.cloud_sync_outlined,
-                        color: _blue,
-                      ),
-                      title: const Text('Bulut Senkronizasyonu'),
-                      subtitle: const Text(
-                        'Hesap sürüşleri • Senkronizasyon durumu',
-                      ),
+                      key: const Key('profile_sync_help'),
+                      leading: const Icon(Icons.sync_problem, color: _blue),
+                      title: const Text('Sürüş eşitlemesine yardım'),
+                      subtitle: const Text('Sürüşler cihazda korunuyor'),
                       trailing: const Icon(Icons.chevron_right, size: 20),
                       onTap: () =>
-                          Navigator.of(context).pushNamed('/cloud-sync'),
+                          Navigator.of(context).pushNamed('/sync-help'),
                     ),
                   ),
-                ],
                 if (widget.ownerLease != null &&
                     widget.deviceArchiveLoader != null) ...[
-                  _section('CİHAZ ARŞİVİ'),
+                  if (_guestTransferCount == 0 && !_showLegacyReview)
+                    _section('VERİLERİM'),
                   _card(
                     ListTile(
                       key: const Key('profile_device_archive'),
                       leading: const Icon(Icons.archive_outlined, color: _blue),
                       title: const Text('Cihaz Arşivi'),
                       subtitle: const Text(
-                        'Önceki DriveIt sürüşlerin. Yalnızca bu cihazda saklanır.',
+                        'Önceki sürüş kayıtları • Yalnızca bu cihazda',
                       ),
                       trailing: const Icon(Icons.chevron_right, size: 20),
                       onTap: _openDeviceArchive,
                     ),
                   ),
                 ],
-                _section('AYARLAR'),
                 _section('DÜNYA'),
                 _card(
                   SwitchListTile.adaptive(

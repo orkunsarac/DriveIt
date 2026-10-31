@@ -1,0 +1,16 @@
+{
+  "environment": "production",
+  "projectName": "DriveIt-PROD",
+  "projectRef": "arwnbogcswisfesayosy",
+  "url": "https://arwnbogcswisfesayosy.supabase.co",
+  "organizationSlug": "kadjorpqgeccngwxxpwg",
+  "region": "eu-central-1",
+  "verifiedOrganizationPlan": "free",
+  "creationExplicitlyApproved": true,
+  "deploymentApproved": false,
+  "migrationsAppliedByCodex": false,
+  "edgeFunctionsDeployedByCodex": false,
+  "groupDriveRequiredDefault": false,
+  "groupDriveGateInstalled": false,
+  "applicationActivationApproved": false
+}

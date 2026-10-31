@@ -1,0 +1,54 @@
+{
+  "functionBodiesMatched": 4,
+  "sourceProject": "viqngnjfgknpxtoapzcg",
+  "archiveSHA256": "BDBDCAC292E9CE2116DB82E33325FDFD2E343BC158896FDE8C69C48E538AB687",
+  "sourceKind": "read_only catalogs + pinned schema-only archive",
+  "categories": [
+    {
+      "category": "functions",
+      "match": true,
+      "sha256": "118DA5A469C4905F7E3E4457BCEC27C0073C9288CCEF99AB08245F51EE705E92"
+    },
+    {
+      "category": "function_acl",
+      "match": true,
+      "sha256": "4CED6CF017703462D6A17FE24551DD6BB849777A72CAC44B8663697AB0261182"
+    },
+    {
+      "category": "columns",
+      "match": true,
+      "sha256": "427EF9C5378BC9E60CE8909CA3BCE0F07A7C31A8472A6A622DBE734DCE30C17B"
+    },
+    {
+      "category": "constraints",
+      "match": true,
+      "sha256": "820FAFA8647E39EDE9ACF9C9B964289CB38C45D35A25CFFB4801B3BC5C075072"
+    },
+    {
+      "category": "indexes",
+      "match": true,
+      "sha256": "34BF90D4809558934072A386F21323BE2D58E8186C12054D7A92199200D20D3B"
+    },
+    {
+      "category": "acl",
+      "match": true,
+      "sha256": "85969387A6E82667FE5E7F4923D2BA35349EFAF0701F6F5AE1199C840C8BD58C"
+    },
+    {
+      "category": "column_acl",
+      "match": true,
+      "sha256": "8407A96C64B113BEF052DD71027A7F18A5A87135252EAB696EF76A432298FCE7"
+    },
+    {
+      "category": "triggers",
+      "match": true,
+      "sha256": "AAF85B186AE84B87C2E91A0C9EA2B60CF92869ED22CB5CDFD54FB20649C78EC5"
+    },
+    {
+      "category": "policies",
+      "match": true,
+      "sha256": "1AE3E9CB2F91DE03E7066CD4E2AA497F84467AE17807AAF33DA493A3499B67AA"
+    }
+  ],
+  "checkedUTC": "2026-10-31T14:32:12.3321237Z"
+}

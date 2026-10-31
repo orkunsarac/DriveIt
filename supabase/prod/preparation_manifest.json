@@ -1,0 +1,305 @@
+{
+  "formatVersion": 1,
+  "deploymentReady": false,
+  "groupDriveDefault": "FALSE",
+  "blockers": [
+    "Actual PROD project ownership, emptiness, Free quota and Auth/SMTP setup require explicit approval and verification.",
+    "Account deletion orchestration, Planet retention policy and two-device product acceptance remain release gates."
+  ],
+  "functions": [
+    "process-world-publish",
+    "planet-trace-detail",
+    "phase8-drive-begin",
+    "phase8-drive-cleanup",
+    "phase8-drive-delete",
+    "phase8-drive-download",
+    "phase8-drive-finalize",
+    "phase8-drive-lease",
+    "phase8-group-publish"
+  ],
+  "files": [
+    {
+      "kind": "migration",
+      "path": "supabase/prod/bootstrap/202609220001_canonical_planet_base.sql",
+      "sha256": "7D5EDE0D3BD86E1EF8D4453BBF7502451A80BE36BE1EA2785C08EDAED2B40C09"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/prod/bootstrap/202609220002_canonical_function_acl.sql",
+      "sha256": "E170BF8B18F1CE1076E1ACEEF1756029241DC2114097CB46952F730314F65FE1"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609230001_world_publish_validation_atomic.sql",
+      "sha256": "9A92AE98384171213E8C9FB0FFF33D17CD1401FFB98D60CF62B2118473EBCCF0"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609300001_world_publishes_service_role_select.sql",
+      "sha256": "A857ADAED88BD87E8416644195F7E2BC29DE70C1630F0BF7DFCBDD7FB3D009CF"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609300002_world_validated_roads_service_role_select.sql",
+      "sha256": "168B8E5E6A719293A588EDFB632B24825B03077BA6F9923861ED840FDE5E70AA"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609300003_active_world_empty_generation.sql",
+      "sha256": "9EF544C6292924D2F19538B3FA0AB6FC41A2CF87681BA88E3AF21EF2BC947904"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609300004_world_validated_road_sections_service_role_select.sql",
+      "sha256": "9CEF4C87A2A6C2524AA1838D675CC61EA421A9BDEA24E5833C48685BF95EB151"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202609300005_world_validated_sections_geojson_read.sql",
+      "sha256": "09786EE49BB7FC13EAD200D0C3EAB8E772DB88175A5458AFCF989E35616E8BAA"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610010001_world_validated_sections_exact_distance_read.sql",
+      "sha256": "D04D5907FD9BEC2B8CE910EA776A517F3982B2B89ADCBDBA29E1F05D093C0AF6"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610060001_active_world_overlap_candidates.sql",
+      "sha256": "B178B4344B4190739DD999E5658E626FC9CB95D1B9D118A74E2A5CEE1F17870E"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610060002_active_world_mutation.sql",
+      "sha256": "0BB628B5958F1EFF675BAEDC5C37D96C1C6F5D31B708CB15FDA574D335EC5546"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610060003_planet_map_read.sql",
+      "sha256": "6B0A637C400FC575E35B73DF024C8FD9493CCE1215F31C664E36BB0F5924DD30"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610060004_planet_clip_set_based.sql",
+      "sha256": "8621CE679EE5A7E251512C11CC96E831C802FC85F0D6178E1233FFDBD0441FA3"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610070001_planet_trace_detail_read.sql",
+      "sha256": "11B2B8FED744FC4CA3AF99C2426A5F5B80721A8C3A5D91C4D88D17FD6A2F503A"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/migrations/202610070002_planet_trace_detail_lookup_index.sql",
+      "sha256": "97077771D6630E2391878EB020B948B07194856FCC8D40B5FDE457F6290962B0"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610120001_phase8_drive_sync.sql",
+      "sha256": "BF7AEAB76A39D075876C0C4CE02546782EBEB2F8374C0D521CD36977F8BFFD11"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610150001_phase8_m1_forward_repair.sql",
+      "sha256": "B1BAF05304E01ABA3D0E04654ED266B5130D2A8C14BB712C59237B591BD61F1C"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610160001_phase8_m2_deletion_fencing.sql",
+      "sha256": "B7817BBDE7307E293237F0C61113DDF693AEA19C72B719B616FA586B6692B1D4"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610160002_phase8_m2_fencing_sqlstate.sql",
+      "sha256": "8EC883826838ACCBA27DA774F03195585224C406297C47689545D03E842D5034"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610160003_phase8_m2_staging_cancellation.sql",
+      "sha256": "6DA520A532EA3C849CF7E6C94EF5C65806F9F82F9E738A7F3913839AF0AD1871"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610160004_phase8_m4_group_drive.sql",
+      "sha256": "D71D7AC1675CF34593085DBF5DB1687FFAD80E9D9E837AFA425B7B5E2BD6F9D3"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610160005_phase8_m4_group_current_row_fix.sql",
+      "sha256": "6B3AF50A657AB5213A56CD82D0D75E8EECCF8672F7B0D3139E55AE810F9912DE"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610170001_phase8_m4_group_lobby.sql",
+      "sha256": "D5B3C19E5F1FA357FAFF8C415885D502296928BFE1EEB686B9DD3E7CDAF583A3"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610170002_phase8_m4_group_rejoin.sql",
+      "sha256": "F03E66116419D5D20880B32F4D0DD54A31A3B43AFEA599CC011213AFF12170D8"
+    },
+    {
+      "kind": "migration",
+      "path": "supabase/phase8-dev/supabase/migrations/202610310001_phase8_m4_server_gate.sql",
+      "sha256": "9512CCE7EDA0D8EA8F5B12A0606FA8D55D29084D91631B0767F0C36E9C1D4D6B"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/planet-trace-detail/detail.ts",
+      "sha256": "C4845B81710FD22D405EBBC36C258316FB1D0694765BBBE1C91297FC25AF4E49"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/planet-trace-detail/index.ts",
+      "sha256": "1D1F82CFC71D8986E6600B7486C739865C9A941C1C1F3CF4FD5EBE39BE976D54"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/planet-trace-detail/score.generated.js",
+      "sha256": "D44D2D11A6BC42F7A5C43D828BDE193D5CBFA63786BCFF317421EBC3F34EC9A3"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/planet-trace-detail/score.manifest.json",
+      "sha256": "D6FDB9A343473C54994378F59246631220D6570177AEA4E27A7CF56F93667C76"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/active_world_empty_planner.ts",
+      "sha256": "FF04A814FC2CE59E55CC4F26F114A84598CCEDD4B08C839D48403B3CC6487847"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/active_world_overlap_stage.ts",
+      "sha256": "FF0788174A379685C5CA492643A652607FAFBA39A439C2E64D4F7DEE0830AC95"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/admin_client.ts",
+      "sha256": "4422A7944D1B45F939E1B5AC6CB143A94DED422D790197154132C300C17432B3"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/index.ts",
+      "sha256": "72FE805CBBE90EE7C0190A8EAE736BC5CE1CC434E77C9F6B8AE805B2686CB9D3"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/source_contract.ts",
+      "sha256": "5CA741DBF1692EFA095D47853CECFB96212C6249F5680D376D5429D99CC17C51"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/validated_section_geojson.ts",
+      "sha256": "76EC674CB4E08A31E50C9AE20FFB218C5E8FA87398165682EF8D130C863C0E54"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/validation_payload.ts",
+      "sha256": "B31D9D3D1DF02F4051DDDD4AB15EBDAEDB0A4425E1843BFF32C949245529323F"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_mutation.ts",
+      "sha256": "B2520ED1EA68EF4ED88ECA5C80EEE57C0CC6F3A17C939FB94E7F5094FC2CB360"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_road_overlap.ts",
+      "sha256": "B0587EBC3CC9348DA6221642C15CE6F2C690C8F881DD0EF9E0AF84452C9FE910"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_scoring_stage.ts",
+      "sha256": "634F6B62C4D1F29CBA988D4702AF18A858B829543DF3946474D867B17A5DE29A"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_scoring.generated.js",
+      "sha256": "6CE74EF082E35FA8589904DC8620A14A4EEC3545C585152AAD3A5E4EBA76D601"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_scoring.manifest.json",
+      "sha256": "BDCB837E93B564694F5CE4BAE99ED91BE33D7C01477C4DE7F448F823233D065F"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_scoring.ts",
+      "sha256": "201CECA82E22209AB070A859BA7AFB1B78EEA8D8ECFA493D8A863DFB71A1B3D4"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/process-world-publish/world_validation.ts",
+      "sha256": "4CC9C3F2372797BA8602F4215B19AE0D6A794E252068299720BAE2CD1DB9E88B"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/_shared/common.ts",
+      "sha256": "C4A65AA1EF186B3A463D759D19B880A47E5FE49E4DAD75F185B73EE0CF1225AF"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-begin/index.ts",
+      "sha256": "BFCBDEE921CF2996B550FAC1250AFA27D55166EC7C9058387A51C0E4A54BB6BC"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-cleanup/index.ts",
+      "sha256": "84E141B931A26A1B919E9562C6C4C5B906E1969AA07F84151A6074AC1EF5274F"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-delete/index.ts",
+      "sha256": "D20236C5FEB1A9E34C01873E9B44064070C99D6C8BE64F5F971265E8A94717DD"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-download/index.ts",
+      "sha256": "F36DA2EA6FB3D46C23AB4F9138EB6C2552E27D5DDACCD89826651D6EFB288A26"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-finalize/index.ts",
+      "sha256": "4F0F6C0D27411D2ED2F3178B612AC6CA75A0370CA090377EE8447096B7224F04"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-drive-lease/index.ts",
+      "sha256": "DF9F78EFE5525BD78D2453993DCA03538C21067B130BD1B8F509878896890883"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/phase8-dev/supabase/functions/phase8-group-publish/index.ts",
+      "sha256": "040FEC01D38F18FF91689EC70E1EFEE671F43F93B7E0FBB28A50224A4DE9C08F"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/bootstrap/storage_buckets.json",
+      "sha256": "0EDD8C9EB00B41BAAA0E67CEE3CAB690E54D65F6EA1D8F0122E48F99B80A9B15"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/canonical_provenance.json",
+      "sha256": "A18A23C2AC977E91AD4F049E03890F480B613A0E82961B53B16B72CAB20C0BA6"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/schema_metadata.sql",
+      "sha256": "6B27136F801FBE1EBBE37690C259350C95EE8E7EE7C042838FC677CC1082E46C"
+    }
+  ],
+  "canonicalSchemaVerified": true,
+  "localMigrationChainVerified": true,
+  "localAcceptance": {
+    "migrationVersions": 25,
+    "canonicalMetadataCategories": 9,
+    "sqlPassed": 185,
+    "integrationPassed": 1,
+    "targetGuardPassed": 8,
+    "physicalIsolationPassed": 8,
+    "gate": "FALSE",
+    "syntheticRowsRemaining": 0
+  },
+  "hashMode": "utf8-lf"
+}

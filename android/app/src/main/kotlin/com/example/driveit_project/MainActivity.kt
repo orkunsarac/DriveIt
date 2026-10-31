@@ -15,10 +15,13 @@ class MainActivity : FlutterFragmentActivity() {
     private var posterBridge: PosterBridge? = null
     private var localImportStorageBridge: LocalImportStorageBridge? = null
     private var archiveSecurityChannel: MethodChannel? = null
+    private var connectivityEvents: ConnectivityEvents? = null
     private var archiveActivityResumed = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        connectivityEvents?.close()
+        connectivityEvents = ConnectivityEvents(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "driveit/group_invite")
             .setMethodCallHandler { call, result ->
                 val link = call.argument<String>("link")
@@ -164,6 +167,8 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        connectivityEvents?.close()
+        connectivityEvents = null
         posterBridge?.close()
         localImportStorageBridge?.close()
         archiveSecurityChannel?.setMethodCallHandler(null)

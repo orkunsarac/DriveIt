@@ -49,6 +49,15 @@ abstract interface class LocalOwnerAuth {
 
 enum LocalOwnerState { disabled, preparing, ready, blocked, failed, closed }
 
+enum OwnerDownloadSyncState {
+  idle,
+  pending,
+  running,
+  complete,
+  waiting,
+  conflict,
+}
+
 class _OwnerOperationTicket {
   bool active = true;
 }
@@ -499,26 +508,63 @@ class LocalOwnerLease implements PosterOperationBoundary {
 
   /// Explicit one-page download. Existing local data is never overwritten.
   Future<OwnerSyncDownloadResult> downloadManualCloudPage() =>
-      _manualSync(() async {
-        final remote = _manualRemote();
-        final client = OwnerDriveSyncClient(
-          store: _store,
-          requireCurrent: requireCurrent,
-        );
-        await remote.verifyBackend();
-        requireCurrent();
-        final page = await client.fetchDownloadPage(remote, limit: 1);
-        final result = await run(
-          () => client.applyDownloadPage(
-            page,
-            limit: 1,
-            preserveExistingDrives: true,
-          ),
-        );
-        requireCurrent();
-        _runtime._personalChanged(this);
-        return result;
-      });
+      _manualSync(() => _downloadCloudPage(limit: 1));
+
+  /// Bounded automatic pass. Each committed page has a durable cursor; callers
+  /// may schedule another pass only when the server proves more pages exist.
+  Future<List<OwnerSyncDownloadResult>> downloadAutomaticCloudPages({
+    int pageSize = 20,
+    int maxPages = 4,
+  }) => _manualSync(() async {
+    final results = <OwnerSyncDownloadResult>[];
+    for (var i = 0; i < maxPages; i++) {
+      requireCurrent();
+      final result = await _downloadCloudPage(
+        limit: pageSize,
+        restartCompletedSnapshot: true,
+      );
+      results.add(result);
+      if (!result.hasMore) break;
+    }
+    return results;
+  });
+
+  Future<OwnerSyncDownloadResult> _downloadCloudPage({
+    required int limit,
+    bool restartCompletedSnapshot = false,
+  }) => (() async {
+    void requireDownloadOwner() {
+      requireCurrent();
+      if (_runtime.auth.userId != owner.userId) {
+        throw StateError('Authenticated owner changed');
+      }
+    }
+
+    requireDownloadOwner();
+    final remote = _manualRemote();
+    final client = OwnerDriveSyncClient(
+      store: _store,
+      requireCurrent: requireDownloadOwner,
+    );
+    await remote.verifyBackend();
+    requireDownloadOwner();
+    final page = await client.fetchDownloadPage(
+      remote,
+      limit: limit,
+      restartCompletedSnapshot: restartCompletedSnapshot,
+    );
+    final result = await run(
+      () => client.applyDownloadPage(
+        page,
+        limit: limit,
+        preserveExistingDrives: true,
+        restartCompletedSnapshot: restartCompletedSnapshot,
+      ),
+    );
+    requireDownloadOwner();
+    _runtime._personalChanged(this);
+    return result;
+  })();
 
   Future<void> preparePublication(String id, Iterable<PlanetSegment> segments) {
     final frozen = List<PlanetSegment>.unmodifiable(segments);
@@ -1165,6 +1211,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     this.syncRemoteForTesting,
     this.accountSyncAdapter,
     this.automaticAccountSync = true,
+    this.automaticAccountDownload = true,
     this.automaticCloudDeletionRetry = true,
     this.cloudDeletionEnabled = false,
     this.transferSources,
@@ -1187,6 +1234,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   final OwnerSyncAccountRemoteAdapter Function(LocalOwnerLease)?
   accountSyncAdapter;
   final bool automaticAccountSync;
+  final bool automaticAccountDownload;
   final bool automaticCloudDeletionRetry;
   final bool cloudDeletionEnabled;
   final AccountDriveTransferSources? transferSources;
@@ -1218,9 +1266,13 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   Future<void> get syncSettled async {
     while (true) {
       final work = _syncWork;
+      final download = _downloadWork;
       await work;
+      if (download != null) await download;
       await _deletionWork;
-      if (identical(work, _syncWork)) return;
+      if (identical(work, _syncWork) && identical(download, _downloadWork)) {
+        return;
+      }
     }
   }
 
@@ -1229,6 +1281,126 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   Future<void> _syncWork = Future<void>.value();
   final Set<int> _scheduledSyncEpochs = {};
   final Set<int> _syncRescheduleEpochs = {};
+  Future<void>? _downloadWork;
+  final Set<int> _scheduledDownloadEpochs = {};
+  final Set<int> _downloadRescheduleEpochs = {};
+  String? _downloadErrorCode;
+  String? get downloadErrorCode => _downloadErrorCode;
+
+  OwnerDownloadSyncState _downloadState = OwnerDownloadSyncState.idle;
+  OwnerDownloadSyncState get downloadState => _downloadState;
+
+  /// Bounded pages per scheduler pass; network waits never hold the owner
+  /// write barrier. Manual and automatic downloads share the same guard.
+  void scheduleOwnerDownload(LocalOwnerLease captured) {
+    if (_closed ||
+        !captured.isCurrent ||
+        captured.owner.kind != GpsOwnerKind.account ||
+        auth.userId != captured.owner.userId ||
+        !automaticAccountSync ||
+        !automaticAccountDownload ||
+        accountSyncAdapter == null ||
+        _networkValidated == false ||
+        !_scheduledDownloadEpochs.add(captured.epoch)) {
+      return;
+    }
+    _downloadState = OwnerDownloadSyncState.pending;
+    _downloadWork = (() async {
+      try {
+        _downloadState = OwnerDownloadSyncState.running;
+        final pages = await captured.downloadAutomaticCloudPages();
+        captured.requireCurrent();
+        if (auth.userId != captured.owner.userId) {
+          throw StateError('Authenticated owner changed');
+        }
+        final more = pages.isNotEmpty && pages.last.hasMore;
+        _downloadErrorCode = more ? 'owner_download_pending' : null;
+        _downloadState = more
+            ? OwnerDownloadSyncState.pending
+            : OwnerDownloadSyncState.complete;
+        if (more) _downloadRescheduleEpochs.add(captured.epoch);
+      } on OwnerSyncConflict catch (_) {
+        if (captured.isCurrent) {
+          _downloadErrorCode = 'owner_download_conflict';
+          _downloadState = OwnerDownloadSyncState.conflict;
+        }
+      } catch (_) {
+        if (captured.isCurrent) {
+          _downloadErrorCode = 'owner_download_pending';
+          _downloadState = OwnerDownloadSyncState.waiting;
+        }
+      } finally {
+        _scheduledDownloadEpochs.remove(captured.epoch);
+        final rerun = _downloadRescheduleEpochs.remove(captured.epoch);
+        if (rerun && captured.isCurrent) scheduleOwnerDownload(captured);
+        if (captured.isCurrent) notifyListeners();
+      }
+    })();
+  }
+
+  bool? _networkValidated;
+  bool _applicationActive = true;
+  Timer? _connectivityDebounce;
+  DateTime? _lastConnectivityRetryAt;
+
+  /// Network validation is only a retry hint; the backend still verifies access.
+  void onConnectivityChanged(bool validated) {
+    if (_closed) return;
+    final previous = _networkValidated;
+    _networkValidated = validated;
+    if (!validated) {
+      _connectivityDebounce?.cancel();
+      return;
+    }
+    if ((previous != false && !(previous == null && _syncErrorCode != null)) ||
+        !_applicationActive) {
+      return;
+    }
+    final captured = _lease;
+    if (captured == null ||
+        !captured.isCurrent ||
+        captured.owner.kind != GpsOwnerKind.account ||
+        !automaticAccountSync ||
+        accountSyncAdapter == null) {
+      return;
+    }
+    _connectivityDebounce?.cancel();
+    const debounce = Duration(milliseconds: 500);
+    const cooldown = Duration(seconds: 5);
+    final elapsed = _lastConnectivityRetryAt == null
+        ? cooldown
+        : DateTime.now().difference(_lastConnectivityRetryAt!);
+    final remaining = cooldown - elapsed;
+    final delay = remaining > debounce ? remaining : debounce;
+    _connectivityDebounce = Timer(delay, () {
+      if (_closed ||
+          !_applicationActive ||
+          _networkValidated != true ||
+          !captured.isCurrent ||
+          auth.userId != captured.owner.userId) {
+        return;
+      }
+      final client = OwnerDriveSyncClient(
+        store: captured._store,
+        requireCurrent: captured.requireCurrent,
+      );
+      final hasUploads = client.automaticPendingKeys().isNotEmpty;
+      if (hasUploads || automaticAccountDownload) {
+        _lastConnectivityRetryAt = DateTime.now();
+        if (hasUploads) {
+          scheduleOwnerSync(captured);
+        }
+        if (automaticAccountDownload) {
+          scheduleOwnerDownload(captured);
+        }
+      }
+    });
+  }
+
+  void onApplicationInactive() {
+    _applicationActive = false;
+    _connectivityDebounce?.cancel();
+  }
 
   /// Reconcile under the local write barrier, then perform bounded network
   /// work outside it. Account/epoch guards remain active across every await.
@@ -1258,6 +1430,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
                   ? accountSyncAdapter?.call(captured)
                   : null;
               if (accountRemote != null) {
+                if (_networkValidated == false) return;
                 final worker = OwnerDriveSyncWorker(client: client);
                 final pending = client.automaticPendingKeys().take(4).toList();
                 if (pending.isEmpty) {
@@ -1266,12 +1439,20 @@ class LocalOwnerLifecycle extends ChangeNotifier {
                 }
                 await accountRemote.verifyBackend();
                 captured.requireCurrent();
+                if (_networkValidated == false) return;
                 final result = await worker.runStagedOnce(
                   accountRemote,
                   limit: 4,
                   automaticOnly: true,
                 );
                 captured.requireCurrent();
+                // Continue bounded passes only after a fully successful pass
+                // made progress. Failures wait for a later external trigger.
+                if (result.acknowledged > 0 &&
+                    result.notAcknowledged == 0 &&
+                    client.automaticPendingKeys().isNotEmpty) {
+                  _syncRescheduleEpochs.add(captured.epoch);
+                }
                 if (captured.isCurrent) {
                   _syncErrorCode = result.notAcknowledged == 0
                       ? null
@@ -1310,12 +1491,14 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   /// Lifecycle hook for a resumed application. Each call is one bounded
   /// attempt; retryable rows are not spun on while offline.
   void onOwnerResumed() {
+    _applicationActive = true;
     final current = _lease;
     if ((syncRemoteForTesting != null ||
             (automaticAccountSync && accountSyncAdapter != null)) &&
         current != null &&
         current.isCurrent) {
       scheduleOwnerSync(current);
+      scheduleOwnerDownload(current);
     }
     if (current != null) _scheduleDeletionRetry(current);
   }
@@ -1443,6 +1626,9 @@ class LocalOwnerLifecycle extends ChangeNotifier {
 
   void _invalidate(LocalOwnerState next, [String? code]) {
     _lease?.stopCloudDriveLease();
+    _downloadErrorCode = null;
+    _downloadState = OwnerDownloadSyncState.idle;
+    _downloadRescheduleEpochs.clear();
     _epoch++;
     _lease = null;
     _state = next;
@@ -1560,6 +1746,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
       // Startup repairs only records explicitly marked automatic at their
       // original account-owned finalization. Older rows remain untouched.
       scheduleOwnerSync(_lease!);
+      scheduleOwnerDownload(_lease!);
       _scheduleDeletionRetry(_lease!);
     } catch (_) {
       if (!_closed && epoch == requestEpoch) {
@@ -1592,6 +1779,7 @@ class LocalOwnerLifecycle extends ChangeNotifier {
   Future<void> close() async {
     if (_closed) return;
     _closed = true;
+    _connectivityDebounce?.cancel();
     _invalidate(LocalOwnerState.closed);
     await _subscription?.cancel();
     await _tail;

@@ -64,6 +64,7 @@ class _FakeRemote implements OwnerSyncRemoteAdapter {
 
 class _DeletionRemote implements OwnerSyncDeletionAdapter {
   bool offline = false;
+  int? failOnDownloadCall;
   bool unavailable = false;
   bool loseAck = false;
   OwnerSyncMutation? accepted;
@@ -155,6 +156,7 @@ class _M2AccountRemote extends _FakeStagedRemote
 
 class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
   int backendChecks = 0;
+  bool backendUnavailable = false;
   final backendEntered = Completer<void>();
   Completer<void>? blockBackend;
   @override
@@ -162,6 +164,9 @@ class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
     backendChecks++;
     if (!backendEntered.isCompleted) backendEntered.complete();
     if (blockBackend != null) await blockBackend!.future;
+    if (backendUnavailable) {
+      throw const OwnerSyncTransportFailure('backend_unavailable');
+    }
   }
 
   @override
@@ -176,6 +181,7 @@ class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
     changes: const [],
   );
   bool failUploadOnce = false;
+  bool failUploads = false;
   bool loseUploadResponseOnce = false;
   bool loseFinalizeResponseOnce = false;
   int finalizeCalls = 0;
@@ -213,7 +219,7 @@ class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
   }) async {
     final descriptor = descriptors[intentId];
     if (descriptor == null) throw const OwnerSyncConflict('intent_missing');
-    if (failUploadOnce) {
+    if (failUploadOnce || failUploads) {
       failUploadOnce = false;
       throw const OwnerSyncTransportFailure('storage_offline');
     }
@@ -289,6 +295,63 @@ class _FakeStagedRemote implements OwnerSyncAccountRemoteAdapter {
         previous.objectBytes != current.objectBytes) {
       throw const OwnerSyncConflict('staging_idempotency_conflict');
     }
+  }
+}
+
+class _AutomaticDownloadRemote extends _FakeStagedRemote {
+  OwnerSyncMutation? mutation;
+  List<OwnerSyncMutation> mutations = const [];
+  bool offline = false;
+  int? failOnDownloadCall;
+  bool wrongOwner = false;
+  int downloads = 0;
+  final entered = Completer<void>();
+  Completer<void>? blockDownload;
+
+  @override
+  Future<OwnerSyncDownloadPage> download({
+    required String ownerId,
+    required String afterCursor,
+    required int limit,
+  }) async {
+    downloads++;
+    expect(limit, 20);
+    if (!entered.isCompleted) entered.complete();
+    if (blockDownload != null) await blockDownload!.future;
+    if (failOnDownloadCall == downloads) {
+      failOnDownloadCall = null;
+      throw const OwnerSyncTransportFailure('offline');
+    }
+    if (offline) throw const OwnerSyncTransportFailure('offline');
+    if (mutations.isNotEmpty) {
+      final start = afterCursor.isEmpty
+          ? 0
+          : int.parse(afterCursor.substring(1));
+      final end = (start + limit).clamp(0, mutations.length);
+      final changes = [
+        for (var i = start; i < end; i++)
+          OwnerSyncRemoteChange(cursor: 'n$i', mutation: mutations[i]),
+      ];
+      return OwnerSyncDownloadPage(
+        ownerId: ownerId,
+        fromCursor: afterCursor,
+        nextCursor: 'c$end',
+        changes: changes,
+        hasMore: end < mutations.length,
+      );
+    }
+    final result = mutation;
+    final include =
+        ownerId == accountA && afterCursor.isEmpty && result != null;
+    return OwnerSyncDownloadPage(
+      ownerId: wrongOwner ? accountB : ownerId,
+      fromCursor: afterCursor,
+      nextCursor: include ? 'cursor-1' : afterCursor,
+      changes: include
+          ? [OwnerSyncRemoteChange(cursor: 'cursor-1', mutation: result)]
+          : const [],
+      hasMore: false,
+    );
   }
 }
 
@@ -421,6 +484,731 @@ void main() {
     await storeB.close();
     await root.delete(recursive: true);
   });
+
+  Future<LocalOwnerLifecycle> queueRuntime(
+    TestAuth auth,
+    _FakeStagedRemote remote,
+    int count,
+  ) async {
+    return LocalOwnerLifecycle(
+      gate: LocalOwnershipGate.synthetic(),
+      auth: auth,
+      driveInProgress: () async => false,
+      automaticAccountDownload: false,
+      accountSyncAdapter: (_) => remote,
+      openStore: (owner) async {
+        final store = await OwnerScopedLocalStore.open(
+          root: '${root.path}/queue-runtime',
+          owner: owner,
+        );
+        if (owner.userId == accountA && store.keys(owner, 'drives').isEmpty) {
+          for (var i = 0; i < count; i++) {
+            final id = i.toString().padLeft(12, '0');
+            await _seedVerifiedDrive(
+              store,
+              driveId: 'queue-$i',
+              identity: '12345678-1234-4123-8123-$id',
+            );
+            await store.put(owner, 'owned_drive_finalization_v1', 'queue-$i', {
+              'state': 'completed',
+              'derivedReady': true,
+              'automaticSyncEligible': true,
+            });
+          }
+        }
+        return store;
+      },
+    );
+  }
+
+  Future<_AutomaticDownloadRemote> downloadRemote() async {
+    await _seedVerifiedDrive(storeA, includeScore: true);
+    final sender = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+    final key = await sender.enqueueDrive('local-drive-1');
+    return _AutomaticDownloadRemote()
+      ..mutation = OwnerSyncMutation.fromMap(
+        Map.from(sender.readRecord(key)!['mutation'] as Map),
+      );
+  }
+
+  LocalOwnerLifecycle downloadRuntime(
+    TestAuth auth,
+    _AutomaticDownloadRemote remote, {
+    Future<void> Function(OwnerScopedLocalStore)? seed,
+  }) => LocalOwnerLifecycle(
+    gate: LocalOwnershipGate.synthetic(),
+    auth: auth,
+    driveInProgress: () async => false,
+    accountSyncAdapter: (_) => remote,
+    openStore: (owner) async {
+      final store = await OwnerScopedLocalStore.open(
+        root: '${root.path}/download-runtime',
+        owner: owner,
+      );
+      if (seed != null && owner.userId == accountA) {
+        await seed(store);
+      }
+      return store;
+    },
+  );
+
+  test(
+    'login and resume download one page without duplicating or uploading',
+    () async {
+      final auth = TestAuth();
+      final remote = await downloadRemote();
+      final runtime = downloadRuntime(auth, remote);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.downloads, 1);
+        expect(runtime.lease.drives(), hasLength(1));
+        final drive = runtime.lease.drives().single;
+        expect(drive.route, hasLength(2));
+        expect(drive.date, DateTime.utc(2026, 10, 12, 9));
+        expect(runtime.lease.telemetry(drive.id)!.points, hasLength(2));
+        expect(
+          runtime.lease.read<Map>(
+            'drive_source_provenance_v1',
+            drive.id,
+          )?['sourceIdentity'],
+          sourceId,
+        );
+        expect(
+          runtime.lease
+              .read<DriveScoreRecord>(
+                'drive_scores',
+                DriveScoreStorageService.keyFor(drive.id, 1),
+              )
+              ?.totalScore,
+          84,
+        );
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.downloads, 2);
+        expect(runtime.lease.drives(), hasLength(1));
+        expect(remote.manifests, isEmpty);
+        auth.emit(null);
+        await runtime.settled;
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), isEmpty);
+        auth.emit(accountA);
+        await runtime.settled;
+        await runtime.syncSettled;
+        expect(remote.downloads, 3);
+        expect(runtime.lease.drives(), hasLength(1));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'network recovery retries one automatic download after offline login',
+    () async {
+      final auth = TestAuth();
+      final remote = await downloadRemote();
+      final runtime = downloadRuntime(auth, remote);
+      try {
+        runtime.onConnectivityChanged(false);
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.downloads, 0);
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.downloads, 1);
+        expect(runtime.lease.drives(), hasLength(1));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'automatic download drains a 50-drive snapshot in bounded pages',
+    () async {
+      final sender = OwnerDriveSyncClient(store: storeA, requireCurrent: () {});
+      final mutations = <OwnerSyncMutation>[];
+      for (var i = 0; i < 50; i++) {
+        final suffix = i.toString().padLeft(12, '0');
+        final driveId = 'bulk-$i';
+        await _seedVerifiedDrive(
+          storeA,
+          driveId: driveId,
+          identity: '12345678-1234-4123-8123-$suffix',
+        );
+        final key = await sender.enqueueDrive(driveId);
+        mutations.add(
+          OwnerSyncMutation.fromMap(
+            Map.from(sender.readRecord(key)!['mutation'] as Map),
+          ),
+        );
+      }
+      final auth = TestAuth();
+      final remote = (await downloadRemote())
+        ..mutations = mutations
+        ..failOnDownloadCall = 2;
+      final runtime = downloadRuntime(auth, remote);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        // The first page is durable when a later network request fails.
+        expect(remote.downloads, 2);
+        expect(runtime.lease.drives(), hasLength(20));
+        expect(runtime.downloadState, OwnerDownloadSyncState.waiting);
+        expect(
+          runtime.lease.read<Map>(
+            OwnerDriveSyncClient.downloadStateBox,
+            'drive_cursor_v1',
+          )?['cursor'],
+          'c20',
+        );
+        // Resume continues from the committed cursor, then completes the
+        // snapshot in two bounded page requests without creating duplicates.
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.downloads, 4);
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.drives(), hasLength(50));
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+        expect(runtime.downloadState, OwnerDownloadSyncState.complete);
+        expect(
+          runtime.lease.read<Map>(
+            OwnerDriveSyncClient.downloadStateBox,
+            'drive_cursor_v1',
+          )?['hasMore'],
+          false,
+        );
+        final completedDownloads = remote.downloads;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.downloads, completedDownloads + 3);
+        expect(runtime.lease.drives(), hasLength(50));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  for (final replacement in [accountB, null]) {
+    test(
+      'late download is discarded on owner change to $replacement',
+      () async {
+        final auth = TestAuth();
+        final remote = (await downloadRemote())
+          ..blockDownload = Completer<void>();
+        final runtime = downloadRuntime(auth, remote);
+        try {
+          await runtime.start();
+          await remote.entered.future;
+          auth.emit(replacement);
+          await runtime.settled;
+          remote.blockDownload!.complete();
+          await runtime.syncSettled;
+          expect(runtime.lease.owner.userId, replacement);
+          expect(runtime.lease.drives(), isEmpty);
+          expect(remote.manifests, isEmpty);
+        } finally {
+          if (!remote.blockDownload!.isCompleted) {
+            remote.blockDownload!.complete();
+          }
+          await runtime.close();
+          runtime.dispose();
+          await auth.events.close();
+        }
+      },
+    );
+  }
+
+  test(
+    'offline or invalid page leaves local state intact until resume',
+    () async {
+      final auth = TestAuth();
+      final remote = (await downloadRemote())..offline = true;
+      final runtime = downloadRuntime(auth, remote);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), isEmpty);
+        expect(runtime.downloadErrorCode, 'owner_download_pending');
+        remote.offline = false;
+        remote.wrongOwner = true;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), isEmpty);
+        expect(runtime.downloadErrorCode, 'owner_download_conflict');
+        remote.wrongOwner = false;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), hasLength(1));
+        expect(runtime.downloadErrorCode, isNull);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test('automatic download respects local deletion evidence', () async {
+    final auth = TestAuth();
+    final remote = await downloadRemote();
+    final runtime = downloadRuntime(
+      auth,
+      remote,
+      seed: (store) async {
+        await store.put(
+          store.owner,
+          OwnerDriveSyncClient.deletionBox,
+          'source:$sourceId',
+          {'state': 'acknowledged'},
+        );
+      },
+    );
+    try {
+      await runtime.start();
+      await runtime.syncSettled;
+      expect(remote.downloads, 1);
+      expect(runtime.lease.drives(), isEmpty);
+    } finally {
+      await runtime.close();
+      runtime.dispose();
+      await auth.events.close();
+    }
+  });
+
+  test('automatic download preserves a conflicting local drive ID', () async {
+    final auth = TestAuth();
+    final remote = await downloadRemote();
+    final runtime = downloadRuntime(
+      auth,
+      remote,
+      seed: (store) async {
+        await _seedVerifiedDrive(
+          store,
+          identity: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        );
+      },
+    );
+    try {
+      await runtime.start();
+      await runtime.syncSettled;
+      final ids = runtime.lease.drives().map((drive) => drive.id).toSet();
+      expect(ids, contains('local-drive-1'));
+      expect(ids, contains('sync_$sourceId'));
+      expect(ids, hasLength(2));
+      expect(runtime.lease.telemetry('local-drive-1'), isNotNull);
+      expect(remote.manifests, isEmpty);
+    } finally {
+      await runtime.close();
+      runtime.dispose();
+      await auth.events.close();
+    }
+  });
+
+  test(
+    'automatic download rejects a malformed payload without advancing',
+    () async {
+      final auth = TestAuth();
+      final remote = await downloadRemote();
+      final original = remote.mutation!;
+      remote.mutation = OwnerSyncMutation(
+        version: original.version,
+        kind: original.kind,
+        ownerScope: original.ownerScope,
+        ownerId: original.ownerId,
+        idempotencyKey: original.idempotencyKey,
+        payloadFingerprint: original.payloadFingerprint,
+        sourceIdentity: original.sourceIdentity,
+        payload: {},
+      );
+      final runtime = downloadRuntime(auth, remote);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), isEmpty);
+        expect(runtime.downloadErrorCode, 'owner_download_conflict');
+        remote.mutation = original;
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), hasLength(1));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'slow download does not block upload or local writes and coalesces resume',
+    () async {
+      final auth = TestAuth();
+      final remote = (await downloadRemote())
+        ..blockDownload = Completer<void>();
+      final runtime = downloadRuntime(
+        auth,
+        remote,
+        seed: (store) async {
+          await _seedVerifiedDrive(
+            store,
+            driveId: 'upload-local',
+            identity: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          );
+          await store.put(
+            store.owner,
+            'owned_drive_finalization_v1',
+            'upload-local',
+            {
+              'state': 'completed',
+              'derivedReady': true,
+              'automaticSyncEligible': true,
+            },
+          );
+        },
+      );
+      try {
+        await runtime.start();
+        await remote.entered.future;
+        runtime.onOwnerResumed();
+        runtime.onOwnerResumed();
+        await runtime
+            .withOwnerOperation(
+              (lease) => lease.put('drive_names', 'local', 'ok'),
+            )
+            .timeout(const Duration(seconds: 2));
+        for (var i = 0; i < 100 && remote.manifests.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        expect(remote.manifests, hasLength(1));
+        expect(remote.downloads, 1);
+        remote.blockDownload!.complete();
+        await runtime.syncSettled;
+        expect(runtime.lease.drives(), hasLength(2));
+      } finally {
+        if (!remote.blockDownload!.isCompleted) {
+          remote.blockDownload!.complete();
+        }
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'validated network return drains offline queue with bounded passes',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote();
+      final runtime = await queueRuntime(auth, remote, 9);
+      try {
+        runtime.onConnectivityChanged(false);
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 0);
+        expect(runtime.lease.drives(), hasLength(9));
+        expect(runtime.lease.pendingSyncKeys(), hasLength(9));
+        runtime.onConnectivityChanged(true);
+        runtime.onConnectivityChanged(true);
+        runtime.onConnectivityChanged(false);
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 3);
+        expect(remote.manifests, hasLength(9));
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'network hint is not backend success and does not retry forever',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..failUploads = true;
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        runtime.onConnectivityChanged(false);
+        await runtime.start();
+        await runtime.syncSettled;
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 1);
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.pendingSyncKeys(), hasLength(5));
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 1);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'unreachable backend retains queue after validated network hint',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..backendUnavailable = true;
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        runtime.onConnectivityChanged(false);
+        await runtime.start();
+        await runtime.syncSettled;
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 1);
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.pendingSyncKeys(), hasLength(5));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test('network recovery while backgrounded waits for resume', () async {
+    final auth = TestAuth();
+    final remote = _FakeStagedRemote();
+    final runtime = await queueRuntime(auth, remote, 5);
+    try {
+      runtime.onConnectivityChanged(false);
+      await runtime.start();
+      await runtime.syncSettled;
+      runtime.onApplicationInactive();
+      runtime.onConnectivityChanged(true);
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      expect(remote.backendChecks, 0);
+      runtime.onOwnerResumed();
+      await runtime.syncSettled;
+      expect(remote.manifests, hasLength(5));
+    } finally {
+      await runtime.close();
+      runtime.dispose();
+      await auth.events.close();
+    }
+  });
+
+  test(
+    'network events during an upload do not start parallel workers',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..blockBackend = Completer<void>();
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        await runtime.start();
+        await remote.backendEntered.future;
+        runtime.onConnectivityChanged(false);
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        expect(remote.backendChecks, 1);
+        remote.blockBackend!.complete();
+        await runtime.syncSettled;
+        expect(remote.manifests, hasLength(5));
+        expect(remote.backendChecks, 2);
+      } finally {
+        if (!remote.blockBackend!.isCompleted) remote.blockBackend!.complete();
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'pending network hint cannot cross owner changes or upload guest data',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote();
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        runtime.onConnectivityChanged(false);
+        await runtime.start();
+        await runtime.syncSettled;
+        runtime.onConnectivityChanged(true);
+        auth.emit(accountB);
+        await runtime.settled;
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(runtime.lease.owner.userId, accountB);
+        expect(remote.manifests, isEmpty);
+        auth.emit(null);
+        await runtime.settled;
+        runtime.onConnectivityChanged(false);
+        runtime.onConnectivityChanged(true);
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 0);
+        expect(remote.manifests, isEmpty);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  for (final count in [5, 9]) {
+    test('automatic queue drains $count drives in bounded passes', () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote();
+      final runtime = await queueRuntime(auth, remote, count);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.manifests, hasLength(count));
+        expect(remote.backendChecks, (count / 4).ceil());
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+        expect(runtime.lease.drives(), hasLength(count));
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    });
+  }
+
+  test(
+    'failed pass stops until a later trigger and preserves the queue',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..failUploadOnce = true;
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 1);
+        expect(remote.manifests, hasLength(3));
+        expect(runtime.lease.pendingSyncKeys(), hasLength(2));
+        expect(runtime.lease.drives(), hasLength(5));
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.manifests, hasLength(5));
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test('a pass with no progress does not retry itself', () async {
+    final auth = TestAuth();
+    final remote = _FakeStagedRemote()..failUploads = true;
+    final runtime = await queueRuntime(auth, remote, 9);
+    try {
+      await runtime.start();
+      await runtime.syncSettled;
+      expect(remote.backendChecks, 1);
+      expect(remote.manifests, isEmpty);
+      expect(runtime.lease.pendingSyncKeys(), hasLength(9));
+      expect(runtime.lease.drives(), hasLength(9));
+    } finally {
+      await runtime.close();
+      runtime.dispose();
+      await auth.events.close();
+    }
+  });
+
+  test(
+    'repeated triggers coalesce while the current pass is blocked',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..blockBackend = Completer<void>();
+      final runtime = await queueRuntime(auth, remote, 9);
+      try {
+        await runtime.start();
+        await remote.backendEntered.future;
+        runtime.onOwnerResumed();
+        runtime.onOwnerResumed();
+        expect(remote.backendChecks, 1);
+        remote.blockBackend!.complete();
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 3);
+        expect(remote.manifests, hasLength(9));
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        if (!remote.blockBackend!.isCompleted) remote.blockBackend!.complete();
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'lost finalization response retries without duplicate cloud record',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..loseFinalizeResponseOnce = true;
+      final runtime = await queueRuntime(auth, remote, 5);
+      try {
+        await runtime.start();
+        await runtime.syncSettled;
+        expect(remote.backendChecks, 1);
+        expect(remote.manifests, hasLength(4));
+        expect(runtime.lease.pendingSyncKeys(), hasLength(2));
+        runtime.onOwnerResumed();
+        await runtime.syncSettled;
+        expect(remote.manifests, hasLength(5));
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
+
+  test(
+    'repeated triggers do not overlap and revoked owner stops the chain',
+    () async {
+      final auth = TestAuth();
+      final remote = _FakeStagedRemote()..blockBackend = Completer<void>();
+      final runtime = await queueRuntime(auth, remote, 9);
+      try {
+        await runtime.start();
+        await remote.backendEntered.future;
+        runtime.onOwnerResumed();
+        runtime.onOwnerResumed();
+        expect(remote.backendChecks, 1);
+        auth.emit(accountB);
+        await runtime.settled;
+        remote.blockBackend!.complete();
+        await runtime.syncSettled;
+        expect(remote.manifests, isEmpty);
+        expect(runtime.lease.owner.userId, accountB);
+        expect(runtime.lease.drives(), isEmpty);
+        expect(runtime.lease.pendingSyncKeys(), isEmpty);
+      } finally {
+        if (!remote.blockBackend!.isCompleted) remote.blockBackend!.complete();
+        await runtime.close();
+        runtime.dispose();
+        await auth.events.close();
+      }
+    },
+  );
 
   test(
     'automatic worker sends only explicitly eligible finalized account drives',

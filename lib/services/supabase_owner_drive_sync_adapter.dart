@@ -442,6 +442,7 @@ class SupabaseOwnerDriveSyncAdapter
       fromCursor: afterCursor,
       nextCursor: nextCursor,
       changes: List.unmodifiable(changes),
+      hasMore: hasMore,
     );
   }
 

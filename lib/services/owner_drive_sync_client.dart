@@ -205,11 +205,13 @@ class OwnerSyncDownloadPage {
     required this.fromCursor,
     required this.nextCursor,
     required this.changes,
+    this.hasMore = false,
   });
   final String ownerId;
   final String fromCursor;
   final String nextCursor;
   final List<OwnerSyncRemoteChange> changes;
+  final bool hasMore;
 }
 
 /// Optional download half of the future protocol. Implementations must scope
@@ -248,10 +250,12 @@ class OwnerSyncDownloadResult {
     required this.applied,
     required this.duplicates,
     required this.cursor,
+    this.hasMore = false,
   });
   final int applied;
   final int duplicates;
   final String cursor;
+  final bool hasMore;
 }
 
 /// Durable queue for only new, proven, account-owned drives. Construction is
@@ -1211,6 +1215,7 @@ class OwnerDriveSyncClient {
   Future<OwnerSyncDownloadPage> fetchDownloadPage(
     OwnerSyncDownloadAdapter remote, {
     int limit = 32,
+    bool restartCompletedSnapshot = false,
   }) async {
     requireCurrent();
     final accountId = _requireAccount();
@@ -1226,7 +1231,9 @@ class OwnerDriveSyncClient {
             previous['cursor'] is! String)) {
       throw const OwnerSyncConflict('download_cursor_owner_conflict');
     }
-    final cursor = previous?['cursor'] as String? ?? '';
+    final cursor = restartCompletedSnapshot && previous?['hasMore'] == false
+        ? ''
+        : previous?['cursor'] as String? ?? '';
     final page = await remote.download(
       ownerId: accountId,
       afterCursor: cursor,
@@ -1242,6 +1249,7 @@ class OwnerDriveSyncClient {
     OwnerSyncDownloadPage page, {
     int limit = 32,
     bool preserveExistingDrives = false,
+    bool restartCompletedSnapshot = false,
   }) async {
     requireCurrent();
     final accountId = _requireAccount();
@@ -1255,12 +1263,17 @@ class OwnerDriveSyncClient {
             previous['cursor'] is! String)) {
       throw const OwnerSyncConflict('download_cursor_owner_conflict');
     }
-    final cursor = previous?['cursor'] as String? ?? '';
+    final cursor = restartCompletedSnapshot && previous?['hasMore'] == false
+        ? ''
+        : previous?['cursor'] as String? ?? '';
     if (page.ownerId != accountId ||
         page.fromCursor != cursor ||
         (page.nextCursor.isEmpty && page.changes.isNotEmpty) ||
         page.changes.length > limit) {
       throw const OwnerSyncConflict('download_page_scope_or_cursor_conflict');
+    }
+    if (page.hasMore && page.nextCursor == cursor) {
+      throw const OwnerSyncConflict('download_page_made_no_progress');
     }
     // Validate the entire page before any local write. A cross-owner or
     // unsupported mutation therefore cannot partially affect this account.
@@ -1293,6 +1306,7 @@ class OwnerDriveSyncClient {
       'ownerId': accountId,
       'ownerScope': store.scope,
       'cursor': page.nextCursor,
+      'hasMore': page.hasMore,
     });
     requireCurrent();
     final saved = store.read<Map>(owner, downloadStateBox, stateKey);
@@ -1305,6 +1319,7 @@ class OwnerDriveSyncClient {
       applied: applied,
       duplicates: duplicates,
       cursor: page.nextCursor,
+      hasMore: page.hasMore,
     );
   }
 

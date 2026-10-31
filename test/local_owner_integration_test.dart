@@ -90,6 +90,7 @@ void main() {
         openStore: (identity) =>
             OwnerScopedLocalStore.open(root: sandbox.path, owner: identity),
         driveInProgress: () async => false,
+        automaticAccountDownload: false,
         accountSyncAdapter: (lease) {
           final remote = _BlockedAccountRemote(lease.owner.userId!);
           remotes[lease.owner.userId!] = remote;

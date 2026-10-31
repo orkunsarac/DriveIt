@@ -482,11 +482,25 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
     with WidgetsBindingObserver {
   int? _workerEpoch;
   int? _initialEpoch;
+  StreamSubscription<dynamic>? _connectivitySubscription;
   GlobalKey<NavigatorState> _personalNavKey = GlobalKey<NavigatorState>();
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    if (WidgetsBinding.instance.lifecycleState != null &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      widget.runtime.owner.onApplicationInactive();
+    }
+    if (Platform.isAndroid) {
+      _connectivitySubscription = const EventChannel('driveit/connectivity')
+          .receiveBroadcastStream()
+          .listen((value) {
+            if (value is bool) {
+              widget.runtime.owner.onConnectivityChanged(value);
+            }
+          }, onError: (Object _) {});
+    }
     FlutterForegroundTask.addTaskDataCallback(_taskData);
     widget.runtime.owner.addListener(_ownerChanged);
     _initialEpoch = widget.runtime.owner.epoch;
@@ -527,11 +541,16 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
         owner.state == LocalOwnerState.ready) {
       owner.scheduleWorldJobs(owner.lease);
       owner.onOwnerResumed();
+    } else if (state == AppLifecycleState.resumed) {
+      owner.onOwnerResumed();
+    } else {
+      owner.onApplicationInactive();
     }
   }
 
   @override
   void dispose() {
+    _connectivitySubscription?.cancel();
     widget.runtime.owner.removeListener(_ownerChanged);
     FlutterForegroundTask.removeTaskDataCallback(_taskData);
     WidgetsBinding.instance.removeObserver(this);

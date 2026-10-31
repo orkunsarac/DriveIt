@@ -132,7 +132,7 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
             return _unavailable(
               'Puanlanamadı — Yetersiz GPS verisi',
               detail: _timing!.timingKnown
-                  ? 'GPS kapsaması: ${(_timing!.coverage! * 100).toStringAsFixed(2)}%'
+                  ? null
                   : 'Güvenilir başlangıç/bitiş zamanı mevcut değil.',
             );
           }
@@ -162,13 +162,8 @@ class _DriveScoreSummarySectionState extends State<DriveScoreSummarySection> {
           ),
         ),
         const SizedBox(height: 14),
-        if (_timing?.timingKnown == true) ...[
-          Text(
-            'GPS kapsaması: ${(_timing!.coverage! * 100).toStringAsFixed(2)}%',
-            style: _secondaryText,
-          ),
-          if (_timing!.partial)
-            const Text('Eksik GPS verisiyle hesaplandı', style: _secondaryText),
+        if (_timing?.timingKnown == true && _timing!.partial) ...[
+          const Text('Eksik GPS verisiyle hesaplandı', style: _secondaryText),
           const SizedBox(height: 8),
         ],
         const Divider(color: Color(0xff1b3658), height: 1),

@@ -3,8 +3,9 @@
   "deploymentReady": false,
   "groupDriveDefault": "FALSE",
   "blockers": [
-    "Actual PROD project ownership, emptiness, Free quota and Auth/SMTP setup require explicit approval and verification.",
-    "Account deletion orchestration, Planet retention policy and two-device product acceptance remain release gates."
+    "PROD Auth signup is enabled by default; closing signup and correcting redirect/SMTP require an explicitly approved configuration step.",
+    "Real PROD migration and Edge deployment are not authorized; offline preparation never applies them.",
+    "Account deletion orchestration, Planet retention policy and two-device acceptance remain beta release gates."
   ],
   "functions": [
     "process-world-publish",
@@ -287,6 +288,11 @@
       "kind": "source",
       "path": "supabase/prod/schema_metadata.sql",
       "sha256": "6B27136F801FBE1EBBE37690C259350C95EE8E7EE7C042838FC677CC1082E46C"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/config.toml",
+      "sha256": "8D38A1F5AEE95F0A8B5755FAAC19D9FA85C2239F0357D47A61C562633CE4E948"
     }
   ],
   "canonicalSchemaVerified": true,
@@ -296,10 +302,11 @@
     "canonicalMetadataCategories": 9,
     "sqlPassed": 185,
     "integrationPassed": 1,
-    "targetGuardPassed": 8,
+    "targetGuardPassed": 10,
     "physicalIsolationPassed": 8,
     "gate": "FALSE",
     "syntheticRowsRemaining": 0
   },
-  "hashMode": "utf8-lf"
+  "hashMode": "utf8-lf",
+  "requiredDeploymentStrategy": "single-transaction-all-25-with-history-and-final-FALSE-assertion"
 }

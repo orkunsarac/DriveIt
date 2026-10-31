@@ -25,7 +25,14 @@ function Get-ProdInventory {
   }
   if ($manifest.groupDriveDefault -cne 'FALSE' -or $manifest.deploymentReady -ne $false) { throw 'Unsafe preparation manifest.' }
   if ($manifest.canonicalSchemaVerified -ne $true -or $manifest.localMigrationChainVerified -ne $true) { throw 'Canonical bootstrap not verified.' }
+  $migrations=@($manifest.files | Where-Object kind -eq 'migration')
+  $versions=@($migrations|ForEach-Object {([IO.Path]::GetFileName($_.path) -split '_')[0]})
+  if($versions.Count -ne 25 -or @($versions|Select-Object -Unique).Count -ne 25 -or ($versions -join ',') -cne (($versions|Sort-Object) -join ',') -or $versions[-1] -cne '202610310001') { throw 'Unsafe migration order/count/gate position.' }
   return $manifest
+}
+function Assert-ApprovedProdTarget([string]$Ref) {
+  $approved=Get-Content -Raw (Join-Path $prodRoot 'supabase/prod/target.json')|ConvertFrom-Json
+  if($Ref -cne 'arwnbogcswisfesayosy' -or $approved.projectRef -cne $Ref -or $approved.region -cne 'eu-central-1') { throw 'Target is not the approved PROD project.' }
 }
 if ($SelfTest) {
   $passed=0
@@ -44,10 +51,14 @@ if ($SelfTest) {
   Assert-ProdTarget 'aaaaaaaaaaaaaaaaaaaa' 'aaaaaaaaaaaaaaaaaaaa' 'https://aaaaaaaaaaaaaaaaaaaa.supabase.co'; $passed++
   $manifest=Get-ProdInventory
   if ($manifest.blockers.Count -eq 0) { throw 'Missing bootstrap blockers.' }; $passed++
+  Assert-ApprovedProdTarget 'arwnbogcswisfesayosy'; $passed++
+  $rejected=$false;try{Assert-ApprovedProdTarget 'aaaaaaaaaaaaaaaaaaaa'}catch{$rejected=$true}
+  if(!$rejected){throw 'Unapproved target accepted'}; $passed++
   "PASS: $passed preparation checks (synthetic targets only; no network)."
   return
 }
 Assert-ProdTarget $ProjectRef $ExpectedProjectRef $SupabaseUrl
+Assert-ApprovedProdTarget $ProjectRef
 $manifest=Get-ProdInventory
 [pscustomobject]@{
   mode='dry-run'; targetSyntaxVerified=$true; remoteIdentityVerified=$false

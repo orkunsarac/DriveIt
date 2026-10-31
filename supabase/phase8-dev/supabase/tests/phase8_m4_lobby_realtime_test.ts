@@ -7,7 +7,16 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 Deno.test("local V2 lobby/start/Edge/private Realtime and old-channel revocation", async () => {
   const url = Deno.env.get("PHASE8_LOCAL_URL");
-  if (url !== "http://127.0.0.1:54321") throw new Error("local target required");
+  if (url !== "http://127.0.0.1:24471" || Deno.env.get("PHASE8_TEST_STACK") !== "pgr1-44f7398d") throw new Error("explicit P-GR1 target required");
+  const container = Deno.env.get("PHASE8_TEST_DB_CONTAINER") ?? "";
+  check(/^supabase-phase8-dev-pgr1-44f7398d-database-[a-f0-9]+$/.test(container), "explicit P-GR1 container required");
+  async function sql(statement: string) {
+    const result = await new Deno.Command("docker", {args:["exec",container,"psql","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c",statement],stdout:"piped",stderr:"piped"}).output();
+    check(result.success, "P-GR1 administrative SQL failed");
+    return new TextDecoder().decode(result.stdout);
+  }
+  const mount = await new Deno.Command("docker", {args:["inspect","--format","{{range .Mounts}}{{if eq .Destination \"/var/lib/postgresql/data\"}}{{.Name}}{{end}}{{end}}",container],stdout:"piped"}).output();
+  check(mount.success && new TextDecoder().decode(mount.stdout).trim() === "supabase-db-8be209d2ef18cfad45c272ec67764692", "P-GR1 volume identity required");
   const anon = Deno.env.get("PHASE8_LOCAL_ANON_KEY")!;
   const anonJwt = Deno.env.get("PHASE8_LOCAL_ANON_BEARER")!;
   const adminKey = Deno.env.get("PHASE8_LOCAL_SERVICE_ROLE_KEY")!;
@@ -45,6 +54,12 @@ Deno.test("local V2 lobby/start/Edge/private Realtime and old-channel revocation
       clients.push(c);
     }
     const [a,b,c] = clients;
+    check((await sql("select case when public.phase8_group_enabled() then 'OPEN' else 'CLOSED' end;")).includes("CLOSED"), "default disabled");
+    for (const action of ["create","join","start","share_start"]) {
+      check((await a.rpc("phase8_group_command",{p_action:action})).error?.message === "group_feature_disabled", `closed ${action}`);
+    }
+    check((await a.from("phase8_group_rollout").update({enabled:true}).eq("singleton",true)).error !== null,"client cannot enable");
+    await sql("update public.phase8_group_rollout set enabled=true;");
     const created = await command(a,"create");
     groupId = created.id;
     check(created.phase === "lobby", "create must open lobby");
@@ -68,7 +83,7 @@ Deno.test("local V2 lobby/start/Edge/private Realtime and old-channel revocation
         const t=setTimeout(()=>resolve("TIMEOUT"),5000);
         channel.subscribe((s)=> {if(["SUBSCRIBED","CHANNEL_ERROR","TIMED_OUT"].includes(s)){clearTimeout(t);resolve(s);}});
       });
-      check(authorized ? status === "SUBSCRIBED" : status !== "SUBSCRIBED", "private channel membership authorization");
+      check(authorized ? status === "SUBSCRIBED" : status !== "SUBSCRIBED", `private channel membership authorization: ${status}`);
       return channel;
     }
     const memberChannel=await subscribe(b,()=>received++);
@@ -85,6 +100,12 @@ Deno.test("local V2 lobby/start/Edge/private Realtime and old-channel revocation
     check(published.status===200,`Edge publish status ${published.status}`);
     for(let i=0;i<20 && received===0;i++) await delay(100);
     check(received===1 && unauthorizedReceived===0,"real private Realtime delivery");
+    await sql("update public.phase8_group_rollout set enabled=false;");
+    check((await publish(sharing,2)).status===403,"disabled Edge publish denied");
+    await subscribe(a,()=>received++,false);
+    await delay(300);
+    check(received===1,"open channel receives no disabled publication");
+    await sql("update public.phase8_group_rollout set enabled=true;");
     await memberChannel.send({type:"broadcast",event:"location",payload:{forged:true}});
     await delay(250);
     check(received===1,"authorized member cannot bypass Edge with direct broadcast");
@@ -165,12 +186,13 @@ Deno.test("local V2 lobby/start/Edge/private Realtime and old-channel revocation
     check(await command(a,"current")===null,"end removes active membership");
     check((await publish(resumed,6)).status===409,"ended publication remains revoked");
   } finally {
+    await sql("update public.phase8_group_rollout set enabled=false;");
     for(const {client,channel} of channels) await client.removeChannel(channel);
     for(const c of clients) await c.removeAllChannels();
     if(groupId && /^[0-9a-f-]{36}$/.test(groupId)) {
       // Exact synthetic group created in this test only; never reset the stack.
       const sql=`begin; delete from public.phase8_group_memberships where group_id='${groupId}'; delete from public.phase8_groups where id='${groupId}'; commit;`;
-      const result=await new Deno.Command("docker",{args:["exec","supabase_db_driveit-phase8-dev","psql","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c",sql],stdout:"piped",stderr:"piped"}).output();
+      const result=await new Deno.Command("docker",{args:["exec",container,"psql","-U","postgres","-d","postgres","-v","ON_ERROR_STOP=1","-c",sql],stdout:"piped",stderr:"piped"}).output();
       check(result.success,"synthetic group cleanup");
     }
     for(const id of ids) check(!(await admin.auth.admin.deleteUser(id)).error,"synthetic account cleanup");

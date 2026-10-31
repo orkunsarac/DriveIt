@@ -49,6 +49,10 @@ Deno.serve(async (request) => {
   });
   try {
     await ready;
+    // Recheck after channel setup: a rollout shutdown may have happened while
+    // waiting for Realtime. Errors and unavailable configuration fail closed.
+    const gate = await auth.admin.rpc("phase8_group_enabled");
+    if (gate.error || gate.data !== true) return failure("group_feature_disabled", 403);
     const response = await channel.send({ type: "broadcast", event: "location", payload: data.payload });
     if (response !== "ok") return failure("realtime_unavailable", 503);
     return json({ ok: true });

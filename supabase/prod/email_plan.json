@@ -1,0 +1,28 @@
+{
+  "projectRef": "arwnbogcswisfesayosy",
+  "status": "preparation-only",
+  "domain": null,
+  "sendingSubdomain": null,
+  "fromAddress": null,
+  "replyToAddress": null,
+  "smtpProvider": null,
+  "smtpHost": null,
+  "smtpPort": null,
+  "smtpTlsMode": null,
+  "credentialsStorage": "outside-repository-windows-dpapi",
+  "siteUrl": null,
+  "allowedRedirectUrls": [],
+  "spfVerified": false,
+  "dkimVerified": false,
+  "dmarcVerified": false,
+  "emailLinkTrackingRequiredDisabled": true,
+  "requiredFlows": [
+    "confirm-signup",
+    "password-recovery",
+    "password-changed-notification",
+    "email-change-confirmation-and-notification",
+    "account-deleted-notification-server-workflow"
+  ],
+  "productionEmailAcceptancePassed": false,
+  "purchaseOrPaidServiceApproved": false
+}

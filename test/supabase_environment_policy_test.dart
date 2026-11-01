@@ -33,4 +33,46 @@ void main() {
       isTrue,
     );
   });
+  test('strict DEV rejects PROD, unknown packages and malformed targets', () {
+    const id = 'com.example.driveit_project';
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: id,
+        url: 'https://viqngnjfgknpxtoapzcg.supabase.co',
+        strictDev: true,
+      ),
+      isTrue,
+    );
+    for (final url in [
+      'https://arwnbogcswisfesayosy.supabase.co',
+      'http://viqngnjfgknpxtoapzcg.supabase.co',
+      'https://viqngnjfgknpxtoapzcg.supabase.co.evil.test',
+      '',
+    ]) {
+      expect(
+        SupabaseEnvironmentPolicy.permits(
+          applicationId: id,
+          url: url,
+          strictDev: true,
+        ),
+        isFalse,
+      );
+    }
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: 'unknown',
+        url: 'https://viqngnjfgknpxtoapzcg.supabase.co',
+        strictDev: true,
+      ),
+      isFalse,
+    );
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: 'com.osaracx.driveit',
+        url: 'https://arwnbogcswisfesayosy.supabase.co',
+        strictDev: true,
+      ),
+      isFalse,
+    );
+  });
 }

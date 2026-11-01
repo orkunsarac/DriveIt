@@ -59,6 +59,7 @@ abstract final class SupabaseBootstrap {
       if (!SupabaseEnvironmentPolicy.permits(
         applicationId: package.packageName,
         url: SupabaseConfig.url,
+        strictDev: package.packageName != 'com.osaracx.driveit',
       )) {
         throw StateError('Supabase environment does not match application');
       }

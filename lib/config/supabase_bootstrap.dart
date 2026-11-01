@@ -35,6 +35,11 @@ abstract final class SupabaseBootstrap {
 
   static bool get isInitialized => _initialized;
 
+  static FlutterAuthClientOptions get authOptions => FlutterAuthClientOptions(
+    authFlowType: AuthFlowType.pkce,
+    detectSessionInUriPredicate: DriveItAuthCallback.accepts,
+  );
+
   static Future<bool> initializeIfConfigured() async {
     if (_initialized) return true;
     if (isIsolatedAndroidTest) {
@@ -71,10 +76,7 @@ abstract final class SupabaseBootstrap {
       await Supabase.initialize(
         url: SupabaseConfig.url,
         publishableKey: SupabaseConfig.publishableKey,
-        authOptions: FlutterAuthClientOptions(
-          authFlowType: AuthFlowType.pkce,
-          detectSessionInUriPredicate: DriveItAuthCallback.accepts,
-        ),
+        authOptions: authOptions,
         // Supabase's debug callback logger can include incoming URI details.
         // Keep Auth codes and callback parameters out of application logs.
         debug: false,

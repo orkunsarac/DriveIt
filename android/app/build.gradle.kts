@@ -6,6 +6,8 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+apply(from = "client_secret_guard.gradle")
+
 // Flutter's `test`/integration_test runner forwards Dart defines as the
 // `dart-defines` Gradle property, but does not reliably forward arbitrary
 // project properties. Detect the explicit test-only define as well as the

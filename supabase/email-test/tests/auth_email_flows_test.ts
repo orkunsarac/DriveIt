@@ -60,6 +60,20 @@ function confirmationLink(message: Mail): URL {
   assert(link.hostname === '127.0.0.1', 'email verification must stay local');
   return link;
 }
+function assertSingleLocalAuthLink(message: Mail, expectedType?: string) {
+  const html = message.HTML.replaceAll('&amp;', '&').replaceAll('&#x3D;', '=');
+  const hrefs = [...html.matchAll(/href=["']([^"']+)["']/gi)].map(match => match[1]);
+  eq(hrefs.length, 1, 'Auth email should contain one action link');
+  const link = new URL(hrefs[0]);
+  assert(link.hostname === '127.0.0.1' && link.port === '63121', 'Auth link must target local Auth only');
+  assert(link.pathname === '/auth/v1/verify', 'Auth link should use the standard verify endpoint');
+  if (expectedType) eq(link.searchParams.get('type'), expectedType, 'Auth link type');
+  const redirectTo = link.searchParams.get('redirect_to');
+  if (redirectTo) {
+    const redirect = new URL(redirectTo);
+    assert(redirect.hostname === '127.0.0.1' && redirect.port === '63130', 'Auth redirect must remain on the local test callback');
+  }
+}
 async function verify(message: Mail) {
   const response = await fetch(confirmationLink(message), {redirect: 'manual'});
   assert([302, 303].includes(response.status), 'Auth verification should redirect');
@@ -92,15 +106,17 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     userId = created.user?.id ?? created.id ?? '';
     assert(userId, 'synthetic account should be created');
 
-    const confirmation = await mailFor(oldEmail, 'e-posta adresinizi doğrulayın');
+    const confirmation = await mailFor(oldEmail, 'DriveIt e-posta adresi doğrulaması');
     assert(confirmation.HTML.includes('E-posta adresimi doğrula'), 'confirmation template should render');
+    assertSingleLocalAuthLink(confirmation, 'signup');
     await verify(confirmation);
 
     // Recovery is requested through the real Auth endpoint and captured by local Mailpit.
     const recoveryRequest = await auth('/recover', {email: oldEmail, redirect_to: 'http://127.0.0.1:63130/recovery'});
     eq(recoveryRequest.status, 200, 'password recovery request status');
-    const recovery = await mailFor(oldEmail, 'parola sıfırlama');
+    const recovery = await mailFor(oldEmail, 'DriveIt parola sıfırlama');
     assert(recovery.HTML.includes('Parolamı sıfırla'), 'recovery template should render');
+    assertSingleLocalAuthLink(recovery, 'recovery');
     await verify(recovery);
     const login = await auth('/token?grant_type=password', {email: oldEmail, password: initialPassword});
     eq(login.status, 200, 'verified synthetic account password login');
@@ -111,15 +127,19 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     const passwordChange = await auth('/user', {password: `Drive!${crypto.randomUUID()}`}, session.access_token, 'PUT');
     eq(passwordChange.status, 200, 'password change status');
     const passwordNotice = await mailFor(oldEmail, 'parola değiştirildi');
-    assert(passwordNotice.HTML.includes('Bu ileti parola veya oturum belirteci içermez'), 'password notice must not expose credentials');
+    assert(passwordNotice.HTML.includes('Bu ileti parola veya oturum bağlantısı içermez'), 'password notice must not expose credentials');
+    eq([...passwordNotice.HTML.matchAll(/href=["']/gi)].length, 0, 'password-change notice should not contain sign-in links');
 
     const emailChange = await auth('/user', {email: newEmail}, session.access_token, 'PUT');
     eq(emailChange.status, 200, 'email change request status');
     const afterChange = await waitForMessageCount(baseline + 3);
-    const oldConfirmation = await mailFor(oldEmail, 'e-posta değişikliğini doğrulayın');
-    const newConfirmation = await mailFor(newEmail, 'e-posta değişikliğini doğrulayın');
-    assert(oldConfirmation.HTML.includes('yeni e-posta adresi doğrulaması'), 'old verified address should receive its confirmation');
-    assert(newConfirmation.HTML.includes('yeni e-posta adresi doğrulaması'), 'new address should receive its confirmation');
+    const oldConfirmation = await mailFor(oldEmail, 'DriveIt e-posta değişikliği onayı');
+    const newConfirmation = await mailFor(newEmail, 'DriveIt e-posta değişikliği onayı');
+    assert(oldConfirmation.HTML.includes('E-posta değişikliği isteğini onayla'), 'old verified address should receive neutral confirmation wording');
+    assert(newConfirmation.HTML.includes('E-posta değişikliği isteğini onayla'), 'new address should receive neutral confirmation wording');
+    assert(!oldConfirmation.HTML.includes(newEmail) && !newConfirmation.HTML.includes(newEmail), 'email-change body should not repeat the new personal address');
+    assertSingleLocalAuthLink(oldConfirmation);
+    assertSingleLocalAuthLink(newConfirmation);
     assert(afterChange.length >= baseline + 3, 'password and double email change should produce test messages');
     await verify(oldConfirmation);
     await verify(newConfirmation);
@@ -128,6 +148,7 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     eq((await changedUser.json()).email, newEmail, 'double-confirmed email address');
     const emailChangeNotice = await mailFor(oldEmail, 'e-posta adresi değiştirildi');
     assert(emailChangeNotice.HTML.includes('DriveIt hesabınızın e-posta adresi değiştirildi'), 'email change notification should render');
+    eq([...emailChangeNotice.HTML.matchAll(/href=["']/gi)].length, 0, 'email-change notice should not contain sign-in links');
     console.log('PASS local signup confirmation; verified recovery; password-change notice; double-confirmed email change and security notice');
   } finally {
     if (userId) {
@@ -163,6 +184,48 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
   }
 });
 
+Deno.test('local Auth invitation uses one local verify link and minimal DriveIt content', async () => {
+  const email = `pgr7d-invite-${crypto.randomUUID()}@example.com`;
+  let userId = '';
+  try {
+    const invite = await auth('/invite', {email, redirect_to: 'http://127.0.0.1:63130/invite'}, service);
+    eq(invite.status, 200, 'synthetic admin invite request');
+    const invited = await invite.json();
+    userId = invited.user?.id ?? invited.id ?? '';
+    assert(userId, 'synthetic invited user should be created');
+
+    const message = await mailFor(email, 'DriveIt hesap daveti');
+    assert(message.HTML.includes('Daveti kabul et'), 'invite template should render');
+    assertSingleLocalAuthLink(message, 'invite');
+    assert(!/kampanya|indirim|hemen katıl|ücretsiz fırsat/i.test(message.HTML), 'invite template should not contain promotional language');
+    await verify(message);
+    console.log('PASS invite subject/body; single local invite link; redirect and verification target');
+  } finally {
+    if (userId) {
+      const response = await fetch(`${api}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'DELETE', headers: {apikey: anon, authorization: `Bearer ${service}`}, signal: AbortSignal.timeout(10000),
+      });
+      assert([200, 204].includes(response.status), 'synthetic invited user cleanup must succeed');
+      await response.body?.cancel();
+    }
+    const ownMessages = (await messages()).filter(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()));
+    if (ownMessages.length) {
+      const response = await fetch(`${mailpit}/api/v1/messages`, {
+        method: 'DELETE', headers: {'content-type': 'application/json'}, body: JSON.stringify({IDs: ownMessages.map(m => m.ID)}),
+      });
+      eq(response.status, 200, 'synthetic invite Mailpit message cleanup status');
+      await response.body?.cancel();
+    }
+    const remaining = await fetch(`${api}/auth/v1/admin/users?page=1&per_page=1000`, {
+      headers: {apikey: anon, authorization: `Bearer ${service}`}, signal: AbortSignal.timeout(10000),
+    });
+    eq(remaining.status, 200, 'invite synthetic-user cleanup verification status');
+    const remainingUsers = await remaining.json();
+    assert(!(remainingUsers.users as Array<{email?: string}>).some(user => user.email?.toLowerCase() === email.toLowerCase()), 'synthetic invited user must be absent after cleanup');
+    assert(!(await messages()).some(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase())), 'synthetic invite message must be absent after cleanup');
+  }
+});
+
 Deno.test('local Auth rejects malformed addresses and rate-limits then permits a safe recovery retry', async () => {
   const malformedEmail = 'not-an-email';
   const invalidSignup = await auth('/signup', {email: malformedEmail, password: `Drive!${crypto.randomUUID()}`});
@@ -183,18 +246,21 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
     const created = await signup.json();
     userId = created.user?.id ?? created.id ?? '';
     assert(userId, 'synthetic retry account should be created');
-    await verify(await mailFor(email, 'e-posta adresinizi doğrulayın'));
+    const confirmation = await mailFor(email, 'DriveIt e-posta adresi doğrulaması');
+    assertSingleLocalAuthLink(confirmation, 'signup');
+    await verify(confirmation);
 
     const first = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
     eq(first.status, 200, 'first recovery request');
-    const firstRecovery = await mailFor(email, 'parola sıfırlama');
+    const firstRecovery = await mailFor(email, 'DriveIt parola sıfırlama');
+    assertSingleLocalAuthLink(firstRecovery, 'recovery');
 
     const immediateRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
     eq(immediateRetry.status, 429, 'recovery request inside configured minimum interval');
     const limited = await immediateRetry.json();
     eq(limited.error_code ?? limited.code, 'over_email_send_rate_limit', 'rate-limit error code');
     const afterLimited = (await messages()).filter(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()));
-    eq(afterLimited.filter(m => m.Subject?.toLowerCase().includes('parola sıfırlama')).length, 1, 'rate-limited retry must not enqueue duplicate email');
+    eq(afterLimited.filter(m => m.Subject?.toLowerCase().includes('driveit parola sıfırlama')).length, 1, 'rate-limited retry must not enqueue duplicate email');
 
     await new Promise(resolve => setTimeout(resolve, 1200));
     const delayedRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
@@ -203,7 +269,7 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
     const retryMessageUntil = Date.now() + 15000;
     while (!recovery && Date.now() < retryMessageUntil) {
       const retrySummary = (await messages()).find(m => m.ID !== firstRecovery.ID &&
-        m.Subject?.toLowerCase().includes('parola sıfırlama') &&
+        m.Subject?.toLowerCase().includes('driveit parola sıfırlama') &&
         m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase())
       );
       if (retrySummary) {
@@ -215,9 +281,10 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
     assert(recovery, 'delayed retry recovery email should arrive');
     const ownedRecoveryMessages = (await messages()).filter(m =>
       m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()) &&
-      m.Subject?.toLowerCase().includes('parola sıfırlama')
+      m.Subject?.toLowerCase().includes('driveit parola sıfırlama')
     );
     eq(ownedRecoveryMessages.length, 2, 'one original and one delayed recovery message');
+    assertSingleLocalAuthLink(recovery, 'recovery');
     await verify(recovery);
     console.log('PASS malformed address rejection; immediate recovery rate limit; delayed retry; no duplicate email');
   } finally {

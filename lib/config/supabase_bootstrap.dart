@@ -3,6 +3,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'driveit_auth_callback.dart';
+import 'supabase_environment_policy.dart';
 
 /// Compile-time client configuration. Only the public publishable key belongs
 /// in a client app; secret/service-role keys must never be supplied here.
@@ -55,6 +56,12 @@ abstract final class SupabaseBootstrap {
 
     try {
       final package = await PackageInfo.fromPlatform();
+      if (!SupabaseEnvironmentPolicy.permits(
+        applicationId: package.packageName,
+        url: SupabaseConfig.url,
+      )) {
+        throw StateError('Supabase environment does not match application');
+      }
       DriveItAuthCallback.configureForApplicationId(package.packageName);
       await Supabase.initialize(
         url: SupabaseConfig.url,

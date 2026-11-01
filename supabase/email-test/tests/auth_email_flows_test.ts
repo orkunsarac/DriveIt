@@ -69,14 +69,24 @@ function assertSingleLocalAuthLink(message: Mail, expectedType?: string) {
   assert(link.pathname === '/auth/v1/verify', 'Auth link should use the standard verify endpoint');
   if (expectedType) eq(link.searchParams.get('type'), expectedType, 'Auth link type');
   const redirectTo = link.searchParams.get('redirect_to');
-  if (redirectTo) {
-    const redirect = new URL(redirectTo);
-    assert(redirect.hostname === '127.0.0.1' && redirect.port === '63130', 'Auth redirect must remain on the local test callback');
-  }
+  eq(redirectTo, 'com.example.driveit-project.isolated-test://auth/callback', 'Auth redirect must use the exact isolated DriveIt callback');
 }
 async function verify(message: Mail) {
   const response = await fetch(confirmationLink(message), {redirect: 'manual'});
   assert([302, 303].includes(response.status), 'Auth verification should redirect');
+  await response.body?.cancel();
+}
+async function assertReusedLinkFailsSafely(message: Mail) {
+  const response = await fetch(confirmationLink(message), {redirect: 'manual'});
+  if ([302, 303].includes(response.status)) {
+    const destination = response.headers.get('location');
+    assert(destination, 'reused link should redirect to the app callback with a safe error');
+    const callback = new URL(destination);
+    assert(callback.protocol === 'com.example.driveit-project.isolated-test:' && callback.hostname === 'auth' && callback.pathname === '/callback', 'reused link must not redirect outside the isolated DriveIt callback');
+    assert(callback.searchParams.has('error') || callback.searchParams.has('error_code') || callback.hash.includes('error'), 'reused link should produce an error callback, not a second session');
+  } else {
+    assert([400, 403].includes(response.status), 'reused link must be rejected');
+  }
   await response.body?.cancel();
 }
 async function waitForMessageCount(expectedMinimum: number): Promise<MailSummary[]> {
@@ -96,7 +106,8 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
   const initialPassword = `Drive!${crypto.randomUUID()}`;
   let userId = '';
   try {
-    const signup = await auth('/signup', {email: oldEmail, password: initialPassword});
+    const appCallback = encodeURIComponent('com.example.driveit-project.isolated-test://auth/callback');
+    const signup = await auth(`/signup?redirect_to=${appCallback}`, {email: oldEmail, password: initialPassword});
     const created = await signup.json();
     if (signup.status !== 200) {
       const code = typeof created.code === 'string' ? created.code : typeof created.error_code === 'string' ? created.error_code : 'none';
@@ -110,9 +121,10 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     assert(confirmation.HTML.includes('E-posta adresimi doğrula'), 'confirmation template should render');
     assertSingleLocalAuthLink(confirmation, 'signup');
     await verify(confirmation);
+    await assertReusedLinkFailsSafely(confirmation);
 
     // Recovery is requested through the real Auth endpoint and captured by local Mailpit.
-    const recoveryRequest = await auth('/recover', {email: oldEmail, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    const recoveryRequest = await auth(`/recover?redirect_to=${appCallback}`, {email: oldEmail});
     eq(recoveryRequest.status, 200, 'password recovery request status');
     const recovery = await mailFor(oldEmail, 'DriveIt parola sıfırlama');
     assert(recovery.HTML.includes('Parolamı sıfırla'), 'recovery template should render');
@@ -130,7 +142,7 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     assert(passwordNotice.HTML.includes('Bu ileti parola veya oturum bağlantısı içermez'), 'password notice must not expose credentials');
     eq([...passwordNotice.HTML.matchAll(/href=["']/gi)].length, 0, 'password-change notice should not contain sign-in links');
 
-    const emailChange = await auth('/user', {email: newEmail}, session.access_token, 'PUT');
+    const emailChange = await auth(`/user?redirect_to=${appCallback}`, {email: newEmail}, session.access_token, 'PUT');
     eq(emailChange.status, 200, 'email change request status');
     const afterChange = await waitForMessageCount(baseline + 3);
     const oldConfirmation = await mailFor(oldEmail, 'DriveIt e-posta değişikliği onayı');
@@ -188,7 +200,8 @@ Deno.test('local Auth invitation uses one local verify link and minimal DriveIt 
   const email = `pgr7d-invite-${crypto.randomUUID()}@example.com`;
   let userId = '';
   try {
-    const invite = await auth('/invite', {email, redirect_to: 'http://127.0.0.1:63130/invite'}, service);
+    const appCallback = encodeURIComponent('com.example.driveit-project.isolated-test://auth/callback');
+    const invite = await auth(`/invite?redirect_to=${appCallback}`, {email}, service);
     eq(invite.status, 200, 'synthetic admin invite request');
     const invited = await invite.json();
     userId = invited.user?.id ?? invited.id ?? '';
@@ -241,7 +254,8 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
   const password = `Drive!${crypto.randomUUID()}`;
   let userId = '';
   try {
-    const signup = await auth('/signup', {email, password});
+    const appCallback = encodeURIComponent('com.example.driveit-project.isolated-test://auth/callback');
+    const signup = await auth(`/signup?redirect_to=${appCallback}`, {email, password});
     eq(signup.status, 200, 'synthetic retry account creation');
     const created = await signup.json();
     userId = created.user?.id ?? created.id ?? '';
@@ -250,12 +264,12 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
     assertSingleLocalAuthLink(confirmation, 'signup');
     await verify(confirmation);
 
-    const first = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    const first = await auth(`/recover?redirect_to=${appCallback}`, {email});
     eq(first.status, 200, 'first recovery request');
     const firstRecovery = await mailFor(email, 'DriveIt parola sıfırlama');
     assertSingleLocalAuthLink(firstRecovery, 'recovery');
 
-    const immediateRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    const immediateRetry = await auth(`/recover?redirect_to=${appCallback}`, {email});
     eq(immediateRetry.status, 429, 'recovery request inside configured minimum interval');
     const limited = await immediateRetry.json();
     eq(limited.error_code ?? limited.code, 'over_email_send_rate_limit', 'rate-limit error code');
@@ -263,7 +277,7 @@ Deno.test('local Auth rejects malformed addresses and rate-limits then permits a
     eq(afterLimited.filter(m => m.Subject?.toLowerCase().includes('driveit parola sıfırlama')).length, 1, 'rate-limited retry must not enqueue duplicate email');
 
     await new Promise(resolve => setTimeout(resolve, 1200));
-    const delayedRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    const delayedRetry = await auth(`/recover?redirect_to=${appCallback}`, {email});
     eq(delayedRetry.status, 200, 'recovery retry after configured interval');
     let recovery: Mail | undefined;
     const retryMessageUntil = Date.now() + 15000;

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'config/local_ownership_gate.dart';
+import 'config/driveit_auth_callback.dart';
 import 'services/local_ownership_bootstrap.dart';
 import 'services/device_drive_archive.dart';
 import 'services/android_device_archive_authorizer.dart';
@@ -14,6 +15,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'models/drive_session.dart';
 import 'features/my_world/persistence/my_world_hive.dart';
@@ -25,6 +27,7 @@ import 'config/supabase_bootstrap.dart';
 import 'services/supabase_account_service.dart';
 import 'features/my_world/services/my_world_runtime.dart';
 import 'features/onboarding/screens/onboarding_screen.dart';
+import 'features/account/screens/driveit_password_recovery_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/drive_recovery_screen.dart';
 import 'services/drive_recovery_status.dart';
@@ -377,6 +380,9 @@ class DriveItApp extends StatefulWidget {
 final GlobalKey<NavigatorState> driveNavigatorKey = GlobalKey<NavigatorState>();
 
 class _DriveItAppState extends State<DriveItApp> {
+  StreamSubscription<AuthState>? _authCallbackSubscription;
+  bool _recoveryRouteOpen = false;
+
   void _onTaskData(Object data) {
     if (data is Map && data['openDrive'] == true) {
       driveNavigatorKey.currentState?.push(
@@ -388,6 +394,27 @@ class _DriveItAppState extends State<DriveItApp> {
   @override
   void initState() {
     super.initState();
+    if (SupabaseBootstrap.isInitialized) {
+      _authCallbackSubscription = Supabase
+          .instance
+          .client
+          .auth
+          .onAuthStateChange
+          .listen(
+            (state) {
+              if (DriveItAuthCallback.shouldOpenPasswordRecovery(
+                event: state.event,
+                hasSession: state.session != null,
+              )) {
+                _openPasswordRecovery();
+              }
+            },
+            onError: (Object _) {
+              // Do not log callback URIs, codes, tokens, or Auth error payloads.
+              _showAuthCallbackFailure();
+            },
+          );
+    }
     if (widget.ownerRuntime != null) return;
     FlutterForegroundTask.addTaskDataCallback(_onTaskData);
     final recovery = widget.recoveryStatus;
@@ -404,8 +431,46 @@ class _DriveItAppState extends State<DriveItApp> {
     }
   }
 
+  void _openPasswordRecovery() {
+    if (_recoveryRouteOpen) return;
+    _recoveryRouteOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final navigator = driveNavigatorKey.currentState;
+      if (!mounted ||
+          navigator == null ||
+          Supabase.instance.client.auth.currentSession == null) {
+        _recoveryRouteOpen = false;
+        return;
+      }
+      unawaited(
+        navigator
+            .push<void>(
+              MaterialPageRoute<void>(
+                builder: (_) => const DriveItPasswordRecoveryScreen(),
+              ),
+            )
+            .whenComplete(() => _recoveryRouteOpen = false),
+      );
+    });
+  }
+
+  void _showAuthCallbackFailure() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = driveNavigatorKey.currentContext;
+      if (context == null || !mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Giriş bağlantısı doğrulanamadı. Süresi dolmuş olabilir; yeni bir bağlantı iste.',
+          ),
+        ),
+      );
+    });
+  }
+
   @override
   void dispose() {
+    _authCallbackSubscription?.cancel();
     FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
     super.dispose();
   }

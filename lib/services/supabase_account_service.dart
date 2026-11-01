@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/local_ownership_gate.dart';
+import '../config/driveit_auth_callback.dart';
 import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
 
@@ -93,6 +94,7 @@ abstract interface class DriveItAccountGateway {
   Future<void> signIn({required String email, required String password});
   Future<void> signOut();
   Future<void> resetPasswordForEmail(String email);
+  Future<void> completePasswordRecovery(String newPassword);
   Future<DriveItAccountProfile?> fetchCurrentProfile();
   Future<DriveItAccountProfile> updateDisplayName(String displayName);
   Future<DriveItAccountProfile> updateUsername(String username);
@@ -195,19 +197,25 @@ class SupabaseAccountService extends ChangeNotifier
   void startIdentitySync() {
     final client = _client;
     if (client == null || _identitySubscription != null) return;
-    _identitySubscription = client.auth.onAuthStateChange.listen((state) {
-      if (state.session == null) {
-        _clearCloudIdentity();
-      } else {
-        // Auth changes can arrive before the replacement profile request
-        // completes. Drop the previous account's name immediately so no
-        // screen can briefly render it under the new identity.
-        if (_profile?.id != state.session!.user.id) {
+    _identitySubscription = client.auth.onAuthStateChange.listen(
+      (state) {
+        if (state.session == null) {
           _clearCloudIdentity();
+        } else {
+          // Auth changes can arrive before the replacement profile request
+          // completes. Drop the previous account's name immediately so no
+          // screen can briefly render it under the new identity.
+          if (_profile?.id != state.session!.user.id) {
+            _clearCloudIdentity();
+          }
+          unawaited(_refreshProfileQuietly());
         }
-        unawaited(_refreshProfileQuietly());
-      }
-    });
+      },
+      onError: (Object _) {
+        // Supabase reports invalid/expired callback exchanges on this stream.
+        // The UI handles a safe generic message; never echo callback details.
+      },
+    );
     if (client.auth.currentSession != null) {
       unawaited(_refreshProfileQuietly());
     } else {
@@ -317,6 +325,7 @@ class SupabaseAccountService extends ChangeNotifier
         email: email.trim(),
         password: password,
         data: {'username': username, 'display_name': displayName.trim()},
+        emailRedirectTo: DriveItAuthCallback.uri,
       );
       final sessionCreated = result.session != null;
       if (sessionCreated) {
@@ -369,7 +378,25 @@ class SupabaseAccountService extends ChangeNotifier
     final client = _client;
     if (client == null) throw const AccountServiceException.unavailable();
     try {
-      await client.auth.resetPasswordForEmail(email.trim());
+      await client.auth.resetPasswordForEmail(
+        email.trim(),
+        redirectTo: DriveItAuthCallback.uri,
+      );
+    } on AuthException catch (error) {
+      throw AccountServiceException.fromAuth(error);
+    }
+  }
+
+  @override
+  Future<void> completePasswordRecovery(String newPassword) async {
+    final client = _client;
+    if (client == null || client.auth.currentSession == null) {
+      throw const AccountServiceException.unavailable();
+    }
+    final validation = AccountInputRules.validatePassword(newPassword);
+    if (validation != null) throw AccountServiceException(validation);
+    try {
+      await client.auth.updateUser(UserAttributes(password: newPassword));
     } on AuthException catch (error) {
       throw AccountServiceException.fromAuth(error);
     }

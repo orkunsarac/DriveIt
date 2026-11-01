@@ -1,5 +1,8 @@
 import 'package:flutter/foundation.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'driveit_auth_callback.dart';
 
 /// Compile-time client configuration. Only the public publishable key belongs
 /// in a client app; secret/service-role keys must never be supplied here.
@@ -22,8 +25,9 @@ abstract final class SupabaseConfig {
 abstract final class SupabaseBootstrap {
   /// Explicit kill switch for isolated Android integration-test builds. Even
   /// if somebody accidentally supplies real dart-defines, tests stay offline.
-  static const isIsolatedAndroidTest =
-      bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST');
+  static const isIsolatedAndroidTest = bool.fromEnvironment(
+    'DRIVEIT_ISOLATED_ANDROID_TEST',
+  );
 
   static bool _initialized = false;
 
@@ -33,7 +37,9 @@ abstract final class SupabaseBootstrap {
     if (_initialized) return true;
     if (isIsolatedAndroidTest) {
       if (kDebugMode) {
-        debugPrint('[SUPABASE] Disabled in isolated Android integration tests.');
+        debugPrint(
+          '[SUPABASE] Disabled in isolated Android integration tests.',
+        );
       }
       return false;
     }
@@ -48,9 +54,18 @@ abstract final class SupabaseBootstrap {
     }
 
     try {
+      final package = await PackageInfo.fromPlatform();
+      DriveItAuthCallback.configureForApplicationId(package.packageName);
       await Supabase.initialize(
         url: SupabaseConfig.url,
         publishableKey: SupabaseConfig.publishableKey,
+        authOptions: FlutterAuthClientOptions(
+          authFlowType: AuthFlowType.pkce,
+          detectSessionInUriPredicate: DriveItAuthCallback.accepts,
+        ),
+        // Supabase's debug callback logger can include incoming URI details.
+        // Keep Auth codes and callback parameters out of application logs.
+        debug: false,
       );
       _initialized = true;
       if (kDebugMode) debugPrint('[SUPABASE] Client initialized.');

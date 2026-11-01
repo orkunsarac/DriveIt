@@ -40,6 +40,7 @@ class _TestAccountGateway implements DriveItAccountGateway {
   int usernameUpdateCalls = 0;
   int displayNameUpdateCalls = 0;
   int passwordChangeCalls = 0;
+  int recoveryCompletionCalls = 0;
   bool usernameIsAvailable = true;
   bool passwordChangeFails = false;
   String _displayName = 'Bulut Adı';
@@ -94,6 +95,11 @@ class _TestAccountGateway implements DriveItAccountGateway {
   @override
   Future<void> resetPasswordForEmail(String email) async {
     passwordResetCalls++;
+  }
+
+  @override
+  Future<void> completePasswordRecovery(String newPassword) async {
+    recoveryCompletionCalls++;
   }
 
   @override

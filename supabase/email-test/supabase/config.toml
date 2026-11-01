@@ -23,7 +23,7 @@ api_url = "http://127.0.0.1:63121"
 [auth]
 enabled = true
 site_url = "http://127.0.0.1:63130"
-additional_redirect_urls = ["http://127.0.0.1:63130/**"]
+additional_redirect_urls = ["http://127.0.0.1:63130/**", "com.example.driveit-project.isolated-test://auth/callback"]
 enable_signup = true
 enable_anonymous_sign_ins = false
 

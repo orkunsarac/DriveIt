@@ -121,6 +121,7 @@ android {
         manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "false"
         manifestPlaceholders["driveItLocalOwnerRuntime"] =
             if (driveItLocalOwnerActivation && !driveItIsolatedTest) "true" else "false"
+        manifestPlaceholders["driveItAuthScheme"] = configuredApplicationId.replace('_', '-')
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testApplicationId = "$configuredApplicationId.test"
     }

@@ -54,6 +54,17 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
+            <!-- Exact custom-scheme callback used only for Supabase Auth. -->
+            <intent-filter android:label="DriveIt Auth callback">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="${driveItAuthScheme}"
+                    android:host="auth"
+                    android:path="/callback" />
+            </intent-filter>
+
         </activity>
 
         <!-- image_cropper (uCrop) hosts its editor in this activity. Keeping

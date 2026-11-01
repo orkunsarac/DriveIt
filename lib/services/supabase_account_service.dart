@@ -214,6 +214,26 @@ class SupabaseAccountService extends ChangeNotifier
 
   static final instance = SupabaseAccountService._();
   LocalOwnerLifecycle? _controlledOwner;
+
+  /// Planet readers pin the approved lease; they never follow a new account.
+  OwnerProfileGateway requirePlanetReadGateway() {
+    final client = _client;
+    final lease = _controlledOwner?.lease;
+    if (!SupabaseBootstrap.isPlayPackage || client == null || lease == null) {
+      throw StateError('Planet owner context unavailable');
+    }
+    lease.requireCurrent();
+    return OwnerProfileGateway(
+      authClient: client,
+      url: SupabaseConfig.url,
+      publicKey: SupabaseConfig.publishableKey,
+      applicationId: 'com.osaracx.driveit',
+      approvedOwner: () => lease.owner.userId,
+      approvedEpoch: () => lease.epoch,
+      isLeaseCurrent: (epoch) => epoch == lease.epoch && lease.isCurrent,
+    );
+  }
+
   int? _observedOwnerEpoch;
   LocalOwnerState? _observedOwnerState;
 

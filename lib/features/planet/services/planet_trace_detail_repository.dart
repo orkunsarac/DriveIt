@@ -1,6 +1,9 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../config/supabase_bootstrap.dart';
 import '../models/planet_trace_detail.dart';
+import 'package:flutter/foundation.dart';
+import '../../../services/owner_profile_gateway.dart';
+import 'planet_read_scope.dart';
 
 abstract interface class PlanetTraceDetailRepository {
   Future<PlanetTraceDetail> read(String traceId);
@@ -21,10 +24,21 @@ class PlanetDetailFailure implements Exception {
 }
 
 class SupabasePlanetTraceDetailRepository
-    implements PlanetTraceDetailRepository {
+    implements PlanetTraceDetailRepository, PlanetScopedRead {
+  SupabasePlanetTraceDetailRepository({
+    OwnerProfileGateway? gateway,
+    Listenable? ownerChanges,
+  }) : _scope = PlanetReadScope(gateway, ownerChanges);
+  final PlanetReadScope _scope;
+  @override
+  bool get isReadAuthorized => _scope.authorized;
+  @override
+  Listenable? get readScopeChanges => _scope.changes;
   final _inFlight = <String, Future<PlanetTraceDetail>>{};
   @override
   Future<PlanetTraceDetail> read(String id) {
+    // Shared id-only in-flight caching must not bridge owner/token contexts.
+    if (_scope.scoped) return _read(id);
     final existing = _inFlight[id];
     if (existing != null) return existing;
     final result = _read(id);
@@ -33,7 +47,32 @@ class SupabasePlanetTraceDetailRepository
   }
 
   Future<PlanetTraceDetail> _read(String id) async {
-    if (!SupabaseBootstrap.isInitialized || SupabaseBootstrap.isPlayPackage ||
+    if (_scope.scoped) {
+      try {
+        return await _scope.gateway.run((data, uid) async {
+          final response = await data.functions.invoke(
+            'planet-trace-detail',
+            body: {'trace_id': id},
+          );
+          final detail = PlanetTraceDetail.parse(
+            (response.data as Map).cast<String, dynamic>(),
+          );
+          if (detail.traceId != id) {
+            throw const PlanetDetailFailure('trace_changed');
+          }
+          return detail;
+        });
+      } on FunctionException catch (e) {
+        final data = e.details;
+        final code = data is Map ? data['error_code'] : null;
+        throw PlanetDetailFailure(code is String ? code : 'detail_unavailable');
+      } on PlanetDetailFailure {
+        rethrow;
+      } catch (_) {
+        throw const PlanetDetailFailure('unauthorized');
+      }
+    }
+    if (!SupabaseBootstrap.isInitialized ||
         Supabase.instance.client.auth.currentSession == null) {
       throw const PlanetDetailFailure('unauthorized');
     }

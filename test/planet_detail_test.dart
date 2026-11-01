@@ -6,6 +6,7 @@ import 'package:driveit_project/features/planet/models/planet_viewport.dart';
 import 'package:driveit_project/features/planet/services/planet_map_repository.dart';
 import 'package:driveit_project/features/planet/services/planet_map_presentation.dart';
 import 'package:driveit_project/features/planet/services/planet_trace_detail_repository.dart';
+import 'package:driveit_project/features/planet/services/planet_read_scope.dart';
 import 'package:driveit_project/screens/planet_map_screen.dart';
 import 'package:driveit_project/screens/planet_trace_detail_screen.dart';
 
@@ -63,6 +64,25 @@ class RetryDetails implements PlanetTraceDetailRepository {
   }
 }
 
+class ScopedDetails extends ChangeNotifier
+    implements PlanetTraceDetailRepository, PlanetScopedRead {
+  bool authorized = true;
+  @override
+  bool get isReadAuthorized => authorized;
+  @override
+  Listenable get readScopeChanges => this;
+  @override
+  Future<PlanetTraceDetail> read(String id) async {
+    if (!authorized) throw const PlanetDetailFailure('unauthorized');
+    return detail();
+  }
+
+  void revoke() {
+    authorized = false;
+    notifyListeners();
+  }
+}
+
 class MapRepository implements PlanetMapRepository {
   @override
   Future<PlanetSnapshot> read(PlanetViewport viewport) async =>
@@ -70,6 +90,52 @@ class MapRepository implements PlanetMapRepository {
 }
 
 void main() {
+  testWidgets(
+    'initially unauthorized scoped detail does not expose preview or leak an unhandled error',
+    (tester) async {
+      final repository = ScopedDetails()..revoke();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PlanetTraceDetailScreen(
+            trace: trace,
+            generation: BigInt.from(4),
+            repository: repository,
+            mapBuilder: (_) => const Text('selected-route-preview'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('selected-route-preview'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      repository.dispose();
+    },
+  );
+  testWidgets(
+    'revoked scope hides completed detail and selected route preview',
+    (tester) async {
+      final repository = ScopedDetails();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PlanetTraceDetailScreen(
+            trace: trace,
+            generation: BigInt.from(4),
+            repository: repository,
+            mapBuilder: (_) => const Text('selected-route-preview'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Test Sürücü'), findsOneWidget);
+      expect(find.text('selected-route-preview'), findsOneWidget);
+      repository.revoke();
+      await tester.pumpAndSettle();
+      expect(find.text('Test Sürücü'), findsNothing);
+      expect(find.text('selected-route-preview'), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      repository.dispose();
+    },
+  );
   testWidgets('detail network failure retries without stale/fake owner', (
     tester,
   ) async {

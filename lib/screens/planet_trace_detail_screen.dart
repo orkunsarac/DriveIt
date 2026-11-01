@@ -8,6 +8,7 @@ import '../features/planet/models/planet_viewport.dart';
 import '../features/planet/models/planet_trace_detail.dart';
 import '../features/planet/services/planet_map_presentation.dart';
 import '../features/planet/services/planet_trace_detail_repository.dart';
+import '../features/planet/services/planet_read_scope.dart';
 import '../theme/drive_map_visuals.dart';
 
 class PlanetTraceDetailScreen extends StatefulWidget {
@@ -35,6 +36,12 @@ class _PlanetTraceDetailScreenState extends State<PlanetTraceDetailScreen> {
   void initState() {
     super.initState();
     _detail = widget.repository.read(widget.trace.id);
+    // The scope guard can hide FutureBuilder before a rejected request settles.
+    // Consume that error without publishing it; the visible builder still
+    // receives the original future and its ordinary retry/error behavior.
+    unawaited(
+      _detail.then<void>((_) {}, onError: (Object error, StackTrace stack) {}),
+    );
   }
 
   @override
@@ -79,7 +86,30 @@ class _PlanetTraceDetailScreenState extends State<PlanetTraceDetailScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) {
+    final repository = widget.repository;
+    if (repository is PlanetScopedRead) {
+      final scope = repository as PlanetScopedRead;
+      Widget guarded(BuildContext context) => scope.isReadAuthorized
+          ? _buildScreen(context)
+          : const Scaffold(
+              body: Center(
+                child: Text('Gezegeni görmek için hesabına giriş yap.'),
+              ),
+            );
+      final changes = scope.readScopeChanges;
+      if (changes != null) {
+        return ListenableBuilder(
+          listenable: changes,
+          builder: (context, _) => guarded(context),
+        );
+      }
+      return guarded(context);
+    }
+    return _buildScreen(context);
+  }
+
+  Widget _buildScreen(BuildContext context) => Scaffold(
     backgroundColor: DriveMapVisuals.background,
     appBar: AppBar(
       title: const Text('Gezegen İz Detayı'),

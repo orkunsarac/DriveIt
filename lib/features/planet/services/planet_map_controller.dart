@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/planet_viewport.dart';
 import 'planet_map_repository.dart';
+import 'planet_read_scope.dart';
 
 class _LoadedRegion {
   _LoadedRegion(this.viewport, this.data, this.loadedAt, this.revision);
@@ -22,13 +23,32 @@ class PlanetMapController extends ChangeNotifier {
     this.coverageLifetime = const Duration(seconds: 60),
     DateTime Function()? now,
   }) : assert(maxRegions > 0 && maxTraces > 0 && maxVertices >= 2),
-       _now = now ?? DateTime.now;
+       _now = now ?? DateTime.now {
+    _scope?.readScopeChanges?.addListener(_scopeChanged);
+  }
+  PlanetScopedRead? get _scope =>
+      repository is PlanetScopedRead ? repository as PlanetScopedRead : null;
+  void _scopeChanged() {
+    if (_disposed || (_scope?.isReadAuthorized ?? true)) return;
+    _request++;
+    _timer?.cancel();
+    _regions.clear();
+    _snapshot = null;
+    _highestGeneration = null;
+    _pending = null;
+    loading = false;
+    error = 'Gezegeni görmek için hesabına giriş yap.';
+    notifyListeners();
+  }
+
   final PlanetMapRepository repository;
   final int maxRegions, maxTraces, maxVertices;
   final Duration coverageLifetime;
   final DateTime Function() _now;
   final _regions = <_LoadedRegion>[];
-  PlanetSnapshot? snapshot;
+  PlanetSnapshot? _snapshot;
+  PlanetSnapshot? get snapshot =>
+      (_scope?.isReadAuthorized ?? true) ? _snapshot : null;
   String? error;
   bool loading = false, zoomIn = false;
   bool get initialLoading => loading && snapshot == null;
@@ -171,7 +191,7 @@ class PlanetMapController extends ChangeNotifier {
         )) {
       return;
     }
-    snapshot = PlanetSnapshot(generation, false, List.unmodifiable(ordered));
+    _snapshot = PlanetSnapshot(generation, false, List.unmodifiable(ordered));
     drawingSetChanges++;
   }
 
@@ -181,6 +201,7 @@ class PlanetMapController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _scope?.readScopeChanges?.removeListener(_scopeChanged);
     _disposed = true;
     _request++;
     _timer?.cancel();

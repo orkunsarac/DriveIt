@@ -24,11 +24,30 @@ class OwnerProfileGateway {
   final bool Function(int) isLeaseCurrent;
   final http.Client? transport;
 
+  bool get isAuthorized {
+    try {
+      final session = authClient.auth.currentSession;
+      final uid = approvedOwner();
+      return SupabasePublicKeyPolicy.permits(publicKey) &&
+          SupabaseEnvironmentPolicy.permits(
+            applicationId: applicationId,
+            url: url,
+          ) &&
+          uid != null &&
+          session?.user.id == uid &&
+          session!.accessToken.isNotEmpty &&
+          isLeaseCurrent(approvedEpoch());
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<T> run<T>(Future<T> Function(SupabaseClient, String) action) async {
-    if (!SupabasePublicKeyPolicy.permits(publicKey) || !SupabaseEnvironmentPolicy.permits(
-      applicationId: applicationId,
-      url: url,
-    )) {
+    if (!SupabasePublicKeyPolicy.permits(publicKey) ||
+        !SupabaseEnvironmentPolicy.permits(
+          applicationId: applicationId,
+          url: url,
+        )) {
       throw StateError('Unapproved data project');
     }
     final session = authClient.auth.currentSession;

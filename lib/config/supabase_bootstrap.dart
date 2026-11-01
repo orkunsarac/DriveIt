@@ -3,6 +3,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'driveit_auth_callback.dart';
+import 'play_auth_runtime_policy.dart';
 import 'supabase_environment_policy.dart';
 import 'supabase_public_key_policy.dart';
 
@@ -32,8 +33,14 @@ abstract final class SupabaseBootstrap {
   );
 
   static bool _initialized = false;
+  static bool _isPlayPackage = false;
 
   static bool get isInitialized => _initialized;
+  static bool get isPlayPackage => _isPlayPackage;
+
+  // A later reviewed release must explicitly replace this closed gate.
+  // No synthetic build define can enable Play Auth in the current app.
+  static const playAuthEnabled = false;
 
   static FlutterAuthClientOptions get authOptions => FlutterAuthClientOptions(
     authFlowType: AuthFlowType.pkce,
@@ -65,6 +72,12 @@ abstract final class SupabaseBootstrap {
         throw StateError('Supabase client key is not a publishable key');
       }
       final package = await PackageInfo.fromPlatform();
+      if (!PlayAuthRuntimePolicy.permitsBootstrap(
+        applicationId: package.packageName,
+        playAuthEnabled: playAuthEnabled,
+      )) {
+        throw StateError('Play Auth runtime is disabled');
+      }
       if (!SupabaseEnvironmentPolicy.permits(
         applicationId: package.packageName,
         url: SupabaseConfig.url,
@@ -81,6 +94,7 @@ abstract final class SupabaseBootstrap {
         // Keep Auth codes and callback parameters out of application logs.
         debug: false,
       );
+      _isPlayPackage = package.packageName == 'com.osaracx.driveit';
       _initialized = true;
       if (kDebugMode) debugPrint('[SUPABASE] Client initialized.');
       return true;

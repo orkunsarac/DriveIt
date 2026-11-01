@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/local_ownership_gate.dart';
+import '../config/play_auth_runtime_policy.dart';
 import '../config/driveit_auth_callback.dart';
 import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
@@ -165,8 +166,15 @@ class SupabaseAccountService extends ChangeNotifier
     _controlledOwner = null;
   }
 
-  Future<T> _identityChange<T>(Future<T> Function() action) =>
-      _controlledOwner?.authorizeIdentityChange(action) ?? action();
+  Future<T> _identityChange<T>(Future<T> Function() action) {
+    if (!PlayAuthRuntimePolicy.permitsIdentityChange(
+      isPlay: SupabaseBootstrap.isPlayPackage,
+      ownerBound: _controlledOwner != null,
+    )) {
+      throw StateError('Play Auth owner runtime unavailable');
+    }
+    return _controlledOwner?.authorizeIdentityChange(action) ?? action();
+  }
 
   /// Account deletion must never fall back to an unfenced legacy/GPS composition.
   Future<void> authorizeAccountDeletion(Future<void> Function() action) async {

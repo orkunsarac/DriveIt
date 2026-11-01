@@ -33,7 +33,7 @@ class SupabasePlanetTraceDetailRepository
   }
 
   Future<PlanetTraceDetail> _read(String id) async {
-    if (!SupabaseBootstrap.isInitialized ||
+    if (!SupabaseBootstrap.isInitialized || SupabaseBootstrap.isPlayPackage ||
         Supabase.instance.client.auth.currentSession == null) {
       throw const PlanetDetailFailure('unauthorized');
     }

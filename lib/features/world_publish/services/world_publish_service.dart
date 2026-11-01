@@ -59,7 +59,8 @@ abstract interface class WorldPublishGateway {
 
 class SupabaseWorldPublishGateway implements WorldPublishGateway {
   SupabaseClient? get _client =>
-      SupabaseBootstrap.isInitialized ? Supabase.instance.client : null;
+      SupabaseBootstrap.isInitialized && !SupabaseBootstrap.isPlayPackage
+          ? Supabase.instance.client : null;
 
   @override
   bool get isAvailable => _client != null;

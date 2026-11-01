@@ -14,7 +14,7 @@ class PlanetReadFailure implements Exception {
 class SupabasePlanetMapRepository implements PlanetMapRepository {
   @override
   Future<PlanetSnapshot> read(PlanetViewport viewport) async {
-    if (!SupabaseBootstrap.isInitialized) {
+    if (!SupabaseBootstrap.isInitialized || SupabaseBootstrap.isPlayPackage) {
       throw const PlanetReadFailure(
         'Çevrimiçi gezegen hizmeti şu anda kullanılamıyor.',
       );

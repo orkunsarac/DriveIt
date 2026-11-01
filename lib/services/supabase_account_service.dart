@@ -8,6 +8,7 @@ import '../config/play_auth_runtime_policy.dart';
 import '../config/driveit_auth_callback.dart';
 import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
+import 'owner_profile_gateway.dart';
 
 /// Cloud identity is deliberately separate from the existing local profile.
 class DriveItAccountProfile {
@@ -127,6 +128,90 @@ class SupabaseAccountService extends ChangeNotifier
     implements DriveItAccountGateway {
   SupabaseAccountService._();
 
+  @visibleForTesting
+  SupabaseAccountService.forTesting(this._testClient, this._testGateway);
+  SupabaseClient? _testClient;
+  OwnerProfileGateway? _testGateway;
+  int? _profileEpoch;
+
+  bool get _requiresScopedProfile =>
+      _testGateway != null || SupabaseBootstrap.isPlayPackage;
+
+  OwnerProfileGateway _profileGateway(SupabaseClient client) {
+    final injected = _testGateway;
+    if (injected != null) return injected;
+    final owner = _controlledOwner;
+    if (owner == null) throw StateError('Owner context unavailable');
+    return OwnerProfileGateway(
+      authClient: client,
+      url: SupabaseConfig.url,
+      publicKey: SupabaseConfig.publishableKey,
+      applicationId: 'com.osaracx.driveit',
+      approvedOwner: () => owner.lease.owner.userId,
+      approvedEpoch: () => owner.epoch,
+      isLeaseCurrent: (epoch) {
+        try {
+          return owner.lease.epoch == epoch && owner.lease.isCurrent;
+        } catch (_) {
+          return false;
+        }
+      },
+    );
+  }
+
+  Future<T> _profileOperation<T>(
+    SupabaseClient client,
+    Future<T> Function(SupabaseClient, String) operation,
+  ) {
+    if (_requiresScopedProfile) return _profileGateway(client).run(operation);
+    final uid = client.auth.currentUser?.id;
+    if (uid == null) throw StateError('Session unavailable');
+    return operation(client, uid);
+  }
+
+  bool _profileIsVisible() {
+    if (!_requiresScopedProfile) return true;
+    try {
+      final owner =
+          _testGateway?.approvedOwner() ?? _controlledOwner?.lease.owner.userId;
+      final epoch = _testGateway?.approvedEpoch() ?? _controlledOwner?.epoch;
+      if (epoch == null ||
+          !(_testGateway?.isLeaseCurrent(epoch) ??
+              (_controlledOwner?.lease.isCurrent ?? false))) {
+        return false;
+      }
+      return owner != null &&
+          _client?.auth.currentUser?.id == owner &&
+          (_profile == null ||
+              (_profile!.id == owner &&
+                  _profileEpoch ==
+                      (_testGateway?.approvedEpoch() ??
+                          _controlledOwner?.epoch)));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  (String?, String?, int?) _profileContext() => (
+    _client?.auth.currentUser?.id,
+    _client?.auth.currentSession?.accessToken,
+    _testGateway?.approvedEpoch() ?? _controlledOwner?.epoch,
+  );
+
+  void _requireProfileContext((String?, String?, int?) captured) {
+    if (!_requiresScopedProfile) return;
+    final client = _client;
+    if (client == null) throw StateError('Owner context revoked');
+    final gateway = _profileGateway(client);
+    if (captured != _profileContext() ||
+        captured.$1 == null ||
+        captured.$1 != gateway.approvedOwner() ||
+        captured.$3 == null ||
+        !gateway.isLeaseCurrent(captured.$3!)) {
+      throw StateError('Owner context revoked');
+    }
+  }
+
   static final instance = SupabaseAccountService._();
   LocalOwnerLifecycle? _controlledOwner;
 
@@ -194,8 +279,8 @@ class SupabaseAccountService extends ChangeNotifier
   int _profileRequest = 0;
   Future<DriveItAccountProfile?>? _profileLoadFuture;
 
-  DriveItAccountProfile? get profile => _profile;
-  bool get profileLoaded => _profileLoaded;
+  DriveItAccountProfile? get profile => _profileIsVisible() ? _profile : null;
+  bool get profileLoaded => _profileIsVisible() && _profileLoaded;
   bool get profileLoading => _profileLoading;
   bool get profileFailed => _profileFailed;
   String? get profileError => _profileError;
@@ -243,8 +328,8 @@ class SupabaseAccountService extends ChangeNotifier
       DriveItEffectiveProfile.displayName(
         localName: localName,
         hasSession: hasSession,
-        cloudProfile: _profile,
-        cloudProfileLoaded: _profileLoaded,
+        cloudProfile: profile,
+        cloudProfileLoaded: profileLoaded,
         cloudProfileFailed: _profileFailed,
       );
 
@@ -252,8 +337,8 @@ class SupabaseAccountService extends ChangeNotifier
       DriveItEffectiveProfile.username(
         localUsername: localUsername,
         hasSession: hasSession,
-        cloudProfile: _profile,
-        cloudProfileLoaded: _profileLoaded,
+        cloudProfile: profile,
+        cloudProfileLoaded: profileLoaded,
         cloudProfileFailed: _profileFailed,
       );
 
@@ -279,7 +364,8 @@ class SupabaseAccountService extends ChangeNotifier
   }
 
   SupabaseClient? get _client =>
-      SupabaseBootstrap.isInitialized ? Supabase.instance.client : null;
+      _testClient ??
+      (SupabaseBootstrap.isInitialized ? Supabase.instance.client : null);
 
   @override
   bool get isAvailable => _client != null;
@@ -418,16 +504,23 @@ class SupabaseAccountService extends ChangeNotifier
       throw const AccountServiceException.unavailable();
     }
     final normalized = displayName.trim();
+    final context = _profileContext();
     final validation = AccountInputRules.validateDisplayName(normalized);
     if (validation != null) throw AccountServiceException(validation);
     try {
-      final row = await client
-          .from('profiles')
-          .update({'display_name': normalized})
-          .eq('id', user.id)
-          .select('id, username, display_name, avatar_url')
-          .maybeSingle();
-      if (row == null) throw const AccountServiceException.profileUnavailable();
+      final row = await _profileOperation(client, (data, uid) {
+        if (uid != user.id) throw StateError('Owner changed');
+        return data
+            .from('profiles')
+            .update({'display_name': normalized})
+            .eq('id', uid)
+            .select('id, username, display_name, avatar_url')
+            .maybeSingle();
+      });
+      if (row == null || row['id'] != user.id) {
+        throw const AccountServiceException.profileUnavailable();
+      }
+      _requireProfileContext(context);
       final profile = DriveItAccountProfile.fromRow(user.id, user.email, row);
       _publishCloudProfile(profile);
       return profile;
@@ -444,23 +537,31 @@ class SupabaseAccountService extends ChangeNotifier
       throw const AccountServiceException.unavailable();
     }
     final normalized = AccountInputRules.normalizeUsername(username);
+    final context = _profileContext();
     final validation = AccountInputRules.validateUsername(normalized);
     if (validation != null) throw AccountServiceException(validation);
-    final current = _profile ?? await fetchCurrentProfile();
+    final current = profile ?? await fetchCurrentProfile();
     if (current?.username?.trim().toLowerCase() == normalized) {
+      _requireProfileContext(context);
       if (current == null) {
         throw const AccountServiceException.profileUnavailable();
       }
       return current;
     }
     try {
-      final row = await client
-          .from('profiles')
-          .update({'username': normalized})
-          .eq('id', user.id)
-          .select('id, username, display_name, avatar_url')
-          .maybeSingle();
-      if (row == null) throw const AccountServiceException.profileUnavailable();
+      final row = await _profileOperation(client, (data, uid) {
+        if (uid != user.id) throw StateError('Owner changed');
+        return data
+            .from('profiles')
+            .update({'username': normalized})
+            .eq('id', uid)
+            .select('id, username, display_name, avatar_url')
+            .maybeSingle();
+      });
+      if (row == null || row['id'] != user.id) {
+        throw const AccountServiceException.profileUnavailable();
+      }
+      _requireProfileContext(context);
       final profile = DriveItAccountProfile.fromRow(user.id, user.email, row);
       _publishCloudProfile(profile);
       return profile;
@@ -530,21 +631,26 @@ class SupabaseAccountService extends ChangeNotifier
     final user = client?.auth.currentUser;
     if (client == null || user == null) return null;
     final request = ++_profileRequest;
+    final context = _profileContext();
     _profileLoading = true;
     _profileFailed = false;
     _profileError = null;
     notifyListeners();
     try {
-      final row = await client
-          .from('profiles')
-          .select('id, username, display_name, avatar_url')
-          .eq('id', user.id)
-          .maybeSingle();
+      final row = await _profileOperation(client, (data, uid) {
+        if (uid != user.id) throw StateError('Owner changed');
+        return data
+            .from('profiles')
+            .select('id, username, display_name, avatar_url')
+            .eq('id', uid)
+            .maybeSingle();
+      });
       if (request != _profileRequest ||
           _client?.auth.currentUser?.id != user.id) {
-        return _profile;
+        return this.profile;
       }
-      if (row == null) {
+      _requireProfileContext(context);
+      if (row == null || row['id'] != user.id) {
         _setProfileFailure(
           'Hesap profili bulunamadı. Biraz sonra yeniden deneyebilirsin.',
           request,
@@ -555,12 +661,14 @@ class SupabaseAccountService extends ChangeNotifier
       _publishCloudProfile(profile);
       return profile;
     } on PostgrestException {
+      _requireProfileContext(context);
       _setProfileFailure(
         'Hesap bilgileri alınamadı. Yeniden deneyebilirsin.',
         request,
       );
       throw const AccountServiceException.profileUnavailable();
     } catch (_) {
+      _requireProfileContext(context);
       _setProfileFailure(
         'Hesap bilgileri alınamadı. Yeniden deneyebilirsin.',
         request,
@@ -571,6 +679,7 @@ class SupabaseAccountService extends ChangeNotifier
 
   void _publishCloudProfile(DriveItAccountProfile profile) {
     _profileRequest++;
+    _profileEpoch = _testGateway?.approvedEpoch() ?? _controlledOwner?.epoch;
     _profile = profile;
     _profileLoaded = true;
     _profileLoading = false;

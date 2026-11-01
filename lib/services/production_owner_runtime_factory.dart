@@ -126,7 +126,7 @@ abstract final class ProductionOwnerRuntimeFactory {
           : (lease) {
               // Use the SAME Auth project/client; never forward a Planet JWT
               // to the separate Phase 8 project or fabricate a backend user.
-              if (!hasCloudAuth ||
+              if (!hasCloudAuth || SupabaseBootstrap.isPlayPackage ||
                   SupabaseConfig.url !=
                       'https://viqngnjfgknpxtoapzcg.supabase.co' ||
                   lease.owner.kind != GpsOwnerKind.account) {
@@ -147,6 +147,7 @@ abstract final class ProductionOwnerRuntimeFactory {
       automaticCloudDeletionRetry: false,
       cloudDeletionEnabled: accountDeletionEnabled,
       groupDriveService: accountGroupDriveEnabled &&
+              !SupabaseBootstrap.isPlayPackage &&
               hasCloudAuth &&
               SupabaseConfig.url ==
                   'https://viqngnjfgknpxtoapzcg.supabase.co'

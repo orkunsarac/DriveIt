@@ -44,6 +44,9 @@ abstract final class AccountDeletionRuntime {
   static AccountDeletionController? _controller;
   static AccountDeletionController get controller => _controller ??= create();
   static AccountDeletionController create() {
+    if (SupabaseBootstrap.isPlayPackage) {
+      throw StateError('Owner-scoped account deletion is unavailable');
+    }
     final account = SupabaseAccountService.instance,
         client = Supabase.instance.client;
     return AccountDeletionController(

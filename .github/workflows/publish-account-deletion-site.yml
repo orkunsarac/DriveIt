@@ -1,0 +1,42 @@
+name: Publish account deletion site (manual approval only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_publication:
+        description: 'I approve publishing the DriveIt account deletion site publicly'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ inputs.confirm_publication == true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    if: ${{ inputs.confirm_publication == true }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy approved site artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

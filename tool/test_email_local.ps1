@@ -52,7 +52,7 @@ try {
   $env:DRIVEIT_MAILPIT_API=$mailpit
   $env:DRIVEIT_EMAIL_TEST_ANON=$values.ANON_KEY
   $env:DRIVEIT_EMAIL_TEST_SERVICE=$values.SERVICE_ROLE_KEY
-  & 'C:\Users\PC\.deno\bin\deno.exe' test --allow-env=DRIVEIT_EMAIL_TEST_API,DRIVEIT_MAILPIT_API,DRIVEIT_EMAIL_TEST_ANON,DRIVEIT_EMAIL_TEST_SERVICE --allow-net=127.0.0.1 --allow-read=site,supabase/email-test/templates site/tests/deletion_pages_test.ts supabase/email-test/tests/auth_email_flows_test.ts
+  & 'C:\Users\PC\.deno\bin\deno.exe' test --allow-env=DRIVEIT_EMAIL_TEST_API,DRIVEIT_MAILPIT_API,DRIVEIT_EMAIL_TEST_ANON,DRIVEIT_EMAIL_TEST_SERVICE --allow-net=127.0.0.1 --allow-read=site,supabase/email-test/templates,.github/workflows site/tests/deletion_pages_test.ts supabase/email-test/tests/auth_email_flows_test.ts
   if($LASTEXITCODE -ne 0){throw "Email integration tests failed with exit code $LASTEXITCODE"}
   'PASS: Auth/Mailpit integration and deletion/privacy page checks; loopback only'
 } finally {

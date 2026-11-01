@@ -8,12 +8,30 @@ function includes(value: string, expected: string, message: string) {
 Deno.test('Google Play deletion resource identifies DriveIt and provides an external request path', async () => {
   const page = await Deno.readTextFile('site/account-deletion/index.html');
   includes(page, '<title>DriveIt', 'DriveIt app name must be present');
-  includes(page, 'Hesap ve verilerin silinmesini isteyin', 'deletion request must be prominent');
+  includes(page, 'Hesap silme talebi', 'deletion request must be prominent');
   includes(page, 'mailto:driveit.osaracx@gmail.com', 'external request email must be usable');
-  includes(page, 'Auth hesabındaki doğrulanmış adrese', 'verification must target registered address');
+  includes(page, 'hesapla ilişkili doğrulanmış adrese', 'verification must target registered address');
   includes(page, 'Parola, doğrulama kodu, oturum bağlantısı', 'page must forbid sending secrets');
   includes(page, '../privacy/', 'privacy link must be present');
+  includes(page, 'kişisel bulutta saklanan sürüş kayıtları', 'cloud drive data category must be disclosed');
+  includes(page, 'yerel sürüş arşivini uzaktan silemez', 'local archive limitation must be clear');
+  includes(page, 'Saklama sınırları', 'undecided retention limits must be visible');
+  includes(page, 'blocked_planet', 'Planet blocked deletion must not claim completion');
+  includes(page, 'id="copy-email"', 'email copy action must be available without an email app');
+  includes(page, 'copy-email.js', 'copy behavior must be locally bundled');
   assert(!/name=["'](?:password|token|gps|route)["']/i.test(page), 'page must not collect credentials or location data');
+});
+
+Deno.test('account deletion static package has no automatic publication and minimal browser permissions', async () => {
+  const script = await Deno.readTextFile('site/account-deletion/copy-email.js');
+  assert(script.includes('navigator.clipboard.writeText(address)'), 'copy action should use the clipboard only after user click');
+  assert(script.includes("addEventListener('click'"), 'clipboard write must be user initiated');
+  assert(!/fetch\s*\(|XMLHttpRequest|sendBeacon|localStorage|sessionStorage/i.test(script), 'copy script must not send or persist user data');
+  const workflow = await Deno.readTextFile('.github/workflows/publish-account-deletion-site.yml');
+  assert(workflow.includes('workflow_dispatch:'), 'publication must be manual only');
+  assert(!/\n\s*(push|pull_request):/.test(workflow), 'push and pull requests must not publish the site');
+  assert(workflow.includes('inputs.confirm_publication == true'), 'publication confirmation must be enforced for every job');
+  assert(workflow.includes('path: site'), 'only the reviewed site package should be uploaded');
 });
 
 Deno.test('privacy page is visibly a draft and separates device, private cloud and Planet data', async () => {

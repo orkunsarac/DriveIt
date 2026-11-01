@@ -53,6 +53,7 @@ dependencies:
   image_cropper: ^8.0.2
   package_info_plus: ^10.2.1
   supabase_flutter: ^2.17.2
+  flutter_secure_storage: 11.2.0
 
 dev_dependencies:
   integration_test:

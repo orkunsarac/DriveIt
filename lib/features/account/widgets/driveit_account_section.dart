@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../../config/supabase_bootstrap.dart';
 import '../../../services/supabase_account_service.dart';
+import '../../../services/account_deletion_runtime.dart';
+import '../screens/account_deletion_screen.dart';
 import '../screens/driveit_account_screen.dart';
 import '../screens/driveit_account_settings_screen.dart';
 
@@ -175,6 +177,18 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
   }
 
   Future<void> _showCloseAccountNotice() async {
+    if (AccountDeletionRuntime.enabled &&
+        SupabaseBootstrap.isInitialized &&
+        identical(_service, SupabaseAccountService.instance)) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AccountDeletionScreen(
+            controller: AccountDeletionRuntime.controller,
+          ),
+        ),
+      );
+      return;
+    }
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -343,6 +357,11 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
               ),
             ),
           ],
+          if (!signedIn && available && AccountDeletionRuntime.enabled)
+            TextButton(
+              onPressed: _showCloseAccountNotice,
+              child: const Text('Bekleyen hesap silme talebim'),
+            ),
         ],
       ),
     );

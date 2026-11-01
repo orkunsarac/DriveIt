@@ -166,6 +166,15 @@ class SupabaseAccountService extends ChangeNotifier
   Future<T> _identityChange<T>(Future<T> Function() action) =>
       _controlledOwner?.authorizeIdentityChange(action) ?? action();
 
+  /// Account deletion must never fall back to an unfenced legacy/GPS composition.
+  Future<void> authorizeAccountDeletion(Future<void> Function() action) async {
+    final owner = _controlledOwner;
+    if (owner == null || !owner.gate.enabled) {
+      throw StateError('Safe account deletion owner runtime unavailable');
+    }
+    await owner.authorizeIdentityChange(action);
+  }
+
   StreamSubscription<AuthState>? _identitySubscription;
   DriveItAccountProfile? _profile;
   bool _profileLoaded = false;

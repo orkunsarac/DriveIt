@@ -55,10 +55,11 @@ class SupabaseOwnerDriveSyncAdapter
 
   final SupabaseClient _client;
 
-  /// Play uploads must use an owner/epoch bound, credential-pinned client.
+  /// Play upload and download use the same owner/epoch credential boundary.
+  /// The parameter name is retained for compatibility with upload composition.
   final OwnerProfileGateway? uploadGateway;
 
-  Future<T> _uploadData<T>(Future<T> Function(SupabaseClient) operation) {
+  Future<T> _ownerData<T>(Future<T> Function(SupabaseClient) operation) {
     final gateway = uploadGateway;
     if (gateway == null) return operation(_client);
     return gateway.run((data, uid) {
@@ -315,7 +316,7 @@ class SupabaseOwnerDriveSyncAdapter
     }
     final path = '$_ownerId/$intentId/envelope.json';
     try {
-      await _uploadData(
+      await _ownerData(
         (data) => data.storage
             .from(bucket)
             .uploadBinary(
@@ -371,9 +372,6 @@ class SupabaseOwnerDriveSyncAdapter
     required String afterCursor,
     required int limit,
   }) async {
-    if (uploadGateway != null) {
-      throw const OwnerSyncConflict('play_download_not_activated');
-    }
     _assertOwner();
     if (ownerId != _ownerId || limit < 1 || limit > 100) {
       throw const OwnerSyncConflict('download_request_invalid');
@@ -482,7 +480,7 @@ class SupabaseOwnerDriveSyncAdapter
   ) async {
     _assertOwner();
     try {
-      final response = await _uploadData(
+      final response = await _ownerData(
         (data) =>
             data.functions.invoke(function, body: body).timeout(requestTimeout),
       );

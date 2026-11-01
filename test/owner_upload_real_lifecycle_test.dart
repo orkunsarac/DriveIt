@@ -133,7 +133,7 @@ void main() {
         );
         expect(sent, isEmpty);
         await expectLater(
-          adapter.download(ownerId: a, afterCursor: '', limit: 1),
+          adapter.observeDrive('cccccccc-cccc-4ccc-8ccc-cccccccccccc'),
           throwsA(isA<OwnerSyncConflict>()),
         );
         final descriptor = OwnerSyncUploadDescriptor(

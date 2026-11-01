@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="DriveIt hesabının ve ilişkili verilerin silinmesini başlatma bilgileri.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; img-src 'none'; font-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'">
+  <title>DriveIt — Hesap silme başvurusu</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:light dark;line-height:1.6}
+    body{max-width:48rem;margin:0 auto;padding:clamp(1rem,4vw,2.5rem)}
+    header,main,footer{margin-block:1.5rem} h1{line-height:1.2}
+    .panel{border:1px solid #8888;border-radius:1rem;padding:1.25rem;margin-block:1rem}
+    .primary{display:inline-block;padding:.8rem 1rem;border-radius:.6rem;background:#e76f19;color:#fff;font-weight:700;text-decoration:none}
+    a{overflow-wrap:anywhere} li{margin-block:.5rem}
+  </style>
+</head>
+<body>
+  <header><p><strong>DriveIt</strong></p><h1>Hesap ve verilerin silinmesini isteyin</h1>
+    <p>Uygulamayı artık kullanamıyor olsanız bile başvuruyu e-postayla başlatabilirsiniz.</p></header>
+  <main>
+    <p class="panel"><strong>Hazırlık uyarısı:</strong> Bu sayfa henüz kamuya yayımlanmadı. PROD hesap silme worker'ı etkin değildir; sayfayı yayınlamadan önce gerçek başvuru/operatör süreci ve hukuki metin onaylanmalıdır.</p>
+    <section class="panel" aria-labelledby="request-title">
+      <h2 id="request-title">Başvuru gönderme</h2>
+      <ol>
+        <li>DriveIt hesabınızda kayıtlı ve doğrulanmış e-posta adresinden yazın.</li>
+        <li>Konuya “DriveIt hesap silme talebi” yazın. Parola, doğrulama kodu, oturum bağlantısı veya rota/GPS bilgisi göndermeyin.</li>
+        <li>Destek ekibi hesabın varlığını başvuru e-postasıyla doğrulamaz. Talep, Auth hesabındaki doğrulanmış adrese ayrı tek kullanımlı doğrulama iletilerek teyit edilir.</li>
+        <li>Doğrulama tamamlanınca silme kuyruğa alınır. Planet ortak katkılarındaki belirsizlik çözülmeden tamamlandı gösterilmez; inceleme gerekirse başvurana güvenli durum bilgisi verilir.</li>
+      </ol>
+      <p><a class="primary" href="mailto:driveit.osaracx@gmail.com?subject=DriveIt%20hesap%20silme%20talebi">E-posta ile silme başvurusu başlat</a></p>
+      <p>Bu bağlantı parola veya hesap verisi taşımaz; yalnız e-posta taslağı açar.</p>
+    </section>
+    <section class="panel"><h2>Silme kapsamı</h2>
+      <p>Silme kabul edildiğinde hesap profili, kişisel bulut sürüşleri ve bunlara bağlı rota/GPS nesneleri silme iş akışına girer. Bu web başvurusu cihazdaki yerel sürüş arşivini uzaktan silemez; uygulama verisini kaldırmadan önce geçmişinizi dışa aktarıp saklayın.</p>
+      <p>DriveIt Gezegeni'nde açıkça yayımlanmış katkılar kişisel sürüş yedeği değildir. Kaynaklar güvenle yeniden hesaplanabiliyorsa katkı kaldırılır; doğrulanamayan ortak katkı incelemeye alınır ve silme tamamlandı denmez. Hukuki saklama ve sağlayıcı yedeklerinin fiziksel silinme süreleri kesinleştirilmemiştir.</p>
+    </section>
+    <section><h2>Gizlilik ve destek</h2><p><a href="../privacy/">Gizlilik ve veri silme açıklaması</a>. Destek: <a href="mailto:driveit.osaracx@gmail.com">driveit.osaracx@gmail.com</a>.</p></section>
+  </main>
+  <footer><small>Bu sayfa yayımlanmadan önce hesap silme işleyişi, destek doğrulama süresi ve hukuki metin sahibi tarafından gözden geçirilmelidir.</small></footer>
+</body>
+</html>

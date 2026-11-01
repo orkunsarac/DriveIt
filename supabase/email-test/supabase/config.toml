@@ -1,0 +1,71 @@
+project_id = "driveit-email-pgr6d"
+
+[api]
+enabled = true
+port = 63121
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 63122
+shadow_port = 63120
+major_version = 17
+
+[db.pooler]
+enabled = false
+
+[studio]
+enabled = true
+port = 63123
+api_url = "http://127.0.0.1:63121"
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:63130"
+additional_redirect_urls = ["http://127.0.0.1:63130/**"]
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+enable_confirmations = true
+double_confirm_changes = true
+max_frequency = "1s"
+otp_length = 6
+otp_expiry = 3600
+
+[auth.email.notification.password_changed]
+enabled = true
+subject = "DriveIt: parola değiştirildi"
+content_path = "./templates/password_changed.html"
+
+[auth.email.notification.email_changed]
+enabled = true
+subject = "DriveIt: e-posta adresi değiştirildi"
+content_path = "./templates/email_changed.html"
+
+[local_smtp]
+enabled = true
+port = 63124
+smtp_port = 63125
+pop3_port = 63126
+admin_email = "no-reply@driveit.local"
+sender_name = "DriveIt Yerel Test"
+
+[analytics]
+enabled = false
+port = 63127
+vector_port = 63128
+
+[auth.email.template.confirmation]
+subject = "DriveIt: e-posta adresinizi doğrulayın"
+content_path = "./templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "DriveIt: parola sıfırlama"
+content_path = "./templates/recovery.html"
+
+[auth.email.template.email_change]
+subject = "DriveIt: e-posta değişikliğini doğrulayın"
+content_path = "./templates/email_change.html"

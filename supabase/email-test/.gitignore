@@ -1,0 +1,5 @@
+# Local Supabase CLI state includes generated credentials; never commit it.
+supabase/.temp/
+supabase/.branches/
+supabase/.env
+supabase/functions/.env

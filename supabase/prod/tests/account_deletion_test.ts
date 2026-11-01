@@ -413,8 +413,24 @@ Deno.test('P-GR6C worker: 33 survivors over 500km checkpoint, invalidate, crash 
  const initial=base+34;
  await sql(`update public.world_active_world_generations set trace_count=1 where generation=${initial};`);
  check((await request(a,r)).status===202,'durable consent');
- const initialWorkers=await Promise.all([worker(),worker()]);
- check(initialWorkers.filter(x=>x.body.state==='pending').length===1&&initialWorkers.filter(x=>x.body.state==='idle').length===1,'same job has one worker and no duplicate computation');
+ // The HTTP worker releases its lease in `finally` after each bounded batch.
+ // Therefore two overlapping HTTP requests may legitimately run in sequence:
+ // the second can acquire the job after the first batch releases it. Do not
+ // assert a timing-specific pending/idle HTTP response pair. Exercise the
+ // actual atomic SQL claim directly instead: every concurrent pair must have
+ // exactly one owner and one idle result while the winner's lease is held.
+ for(let round=0;round<24;round++){
+  const leases=[crypto.randomUUID(),crypto.randomUUID()];
+  const claims=await Promise.all(leases.map(p_lease=>admin.rpc('account_deletion_worker_claim',{p_lease})));
+  check(claims.every(x=>!x.error),'concurrent claim RPCs succeed');
+  const owners=claims.map((x,index)=>({claim:x.data,lease:leases[index]})).filter(x=>x.claim?.id===r.requestId);
+  const idle=claims.filter(x=>x.data?.state==='idle');
+  check(owners.length===1&&idle.length===1,'concurrent claim pair has exactly one job owner');
+  check(await sql(`select lease from public.account_deletion_jobs where id='${r.requestId}';`)===owners[0].lease,'database lease matches sole owner');
+  check(!(await admin.rpc('account_deletion_release',{p_id:r.requestId,p_lease:owners[0].lease})).error,'winning lease releases cleanly');
+ }
+ const firstBatch=await worker();
+ check(firstBatch.body.state==='pending','single worker advances a bounded replay batch');
  check(await sql(`select next_index from public.account_deletion_replays where job_id='${r.requestId}';`)==='2','prefix checkpoint durable');
  check((await admin.rpc('account_deletion_replay_finish',{p_id:r.requestId,p_lease:crypto.randomUUID()})).error,'invalid lease cannot publish partial index');
  check((await b.client.from('account_deletion_replays').select('*')).error,'no client access to staged geometry');
@@ -444,8 +460,12 @@ Deno.test('P-GR6C worker: 33 survivors over 500km checkpoint, invalidate, crash 
 Deno.test('P-GR6C worker: concurrent A/B requests isolate leases and preserve C',()=>planetFixture(async(_admin,a,b,c,r,_rows)=>{
  const other={requestId:crypto.randomUUID(),receiptToken:[...crypto.getRandomValues(new Uint8Array(32))].map(x=>x.toString(16).padStart(2,'0')).join('')};
  try{
-  check((await request(a,r)).status===202,'A consent');check((await request(b,other)).status===202,'B consent');
-  const results=await Promise.all([worker(),worker()]);check(results.every(x=>[200,202,503].includes(x.status)),'concurrent workers terminate safely');
+  const aConsent=await request(a,r),aError=typeof aConsent.body?.error==='string'?aConsent.body.error:'none';
+  check(aConsent.status===202,`A consent HTTP ${aConsent.status}, code ${aError}`);
+  const bConsent=await request(b,other),bError=typeof bConsent.body?.error==='string'?bConsent.body.error:'none';
+  check(bConsent.status===202,`B consent HTTP ${bConsent.status}, code ${bError}`);
+  const results=await Promise.all([worker(),worker()]);
+  check(results.every(x=>[200,202,503].includes(x.status)),`concurrent workers terminate safely (${results.map(x=>`${x.status}:${typeof x.body?.error==='string'?x.body.error:'none'}`).join(',')})`);
   for(let i=0;i<6;i++){
    if(await sql(`select count(*) from auth.users where id in('${a.id}','${b.id}');`)==='0')break;
    await worker('worker_retry',r.requestId);await worker('worker_retry',other.requestId);await worker();

@@ -54,3 +54,7 @@ Mahremiyet kaynakları: `202610070001_planet_trace_detail_read.sql` yalnız akti
 ## Korunan sınırlar
 
 Play Auth/signup/cloud gate, World Publish/Storage/processing, Group Drive, silme worker'ı, hukuki onboarding, R1 signing ve Android paketleri değiştirilmedi. Yalnız güvenli okuma kodu/testleri checkpoint'e alınır. Yeni aşamaya veya PROD aktivasyonuna geçilmez.
+
+## 4F1B takip kaydı
+
+Önceki kaynak hash başarısızlığı güvenilir üreticiyle yeniden derlenerek düzeltildi; ilgili Deno paketi 12/12 geçti. Yerel reliable hesaplayıcı ile Planet legacy v1 arasında ayrı, önceden mevcut bir skor sözleşmesi farkı ölçüldü. Ayrıntı ve açık FAIL sonucu: `docs/pgr7i4f1b_score_bundle_acceptance.md`.

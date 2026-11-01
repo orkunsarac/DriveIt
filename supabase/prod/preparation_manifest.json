@@ -217,12 +217,12 @@
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring.generated.js",
-      "sha256": "6CE74EF082E35FA8589904DC8620A14A4EEC3545C585152AAD3A5E4EBA76D601"
+      "sha256": "F7A3FD0150E2B424FF282C2EBE20C93508FCBA8CB31613E2D86B13F458022395"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring.manifest.json",
-      "sha256": "BDCB837E93B564694F5CE4BAE99ED91BE33D7C01477C4DE7F448F823233D065F"
+      "sha256": "F3BDF9D16FC69AE8270639F34F33022D142D7D994E9FDBE81B9F65B05FCA93B4"
     },
     {
       "kind": "source",

@@ -1,4 +1,5 @@
 import {createClient,type SupabaseClient} from 'npm:@supabase/supabase-js@2.117.2';
+import {rebuildPlanet,type RebuildContext} from '../../functions/delete-account/planet_rebuild.ts';
 function check(v:unknown,m:string):asserts v {if(!v)throw Error(m);}
 const url=Deno.env.get('PGR6_LOCAL_URL')??'',container=Deno.env.get('PGR6_CONTAINER')??'';
 const anon=Deno.env.get('PGR6_ANON')??'',service=Deno.env.get('PGR6_SERVICE')??'';
@@ -249,6 +250,130 @@ Deno.test('account deletion: ordinary member revokes old topic generation but pr
  const done=await call({...r,action:'run'});check(done.status===200&&done.body.state==='completed','member account removed');
  check(await sql(`select status from public.phase8_groups where id='${group}';`)==='active','other administrator group preserved');
  check(await sql(`select count(*) from public.phase8_group_memberships where group_id='${group}' and account_id='${b.id}' and state='active';`)==='1','other administrator membership preserved');
+}));
+
+// Provider-free canonical fixtures: real Auth/Storage/SQL/Edge, synthetic geometry
+// and telemetry only. The published order is B, C, A (A is being withdrawn).
+async function planetFixture(run:(admin:SupabaseClient,a:User,b:User,c:User,r:Record<string,string>,rows:PlanetRow[],base:number)=>Promise<void>,partial=false,shiftSurvivors=false){
+ await fixture(async(admin,create,receipt)=>{
+  const a=await create(),b=await create(),c=await create(),r=receipt(),rows:PlanetRow[]=[];
+  const base=Number(await sql('select current_generation from public.world_active_world_state where singleton;'));
+  check(await sql('select count(*) from public.world_publishes;')==='0','exclusive empty synthetic Planet fixture');
+  try{
+   for(const [i,u] of [b,c,a].entries())rows.push(await seedPlanet(u,i<2&&shiftSurvivors ? .02 : i===1&&partial ? .03 : 0,base+i+1,i===2));
+   await seedPrivateDrive(b);await seedPrivateDrive(c);
+   await run(admin,a,b,c,r,rows,base);
+  }finally{
+   const ids=rows.map(x=>`'${x.publish}'`).join(',');
+   if(ids)await sql(`begin;set local session_replication_role=replica;
+   delete from public.world_active_world_traces where source_publish_id in(${ids});
+   update public.world_active_world_state set current_generation=${base} where singleton;
+   delete from public.world_active_world_generations where generation>${base} and generation<=${base+6};commit;`);
+  }
+ });
+}
+type PlanetRow={publish:string;road:string;path:string;source:Record<string,unknown>};
+async function seedPlanet(u:User,start:number,generation:number,active:boolean):Promise<PlanetRow>{
+ const publish=crypto.randomUUID(),road=crypto.randomUUID(),drive=`synthetic-${publish}`,path=`${u.id}/${publish}.json`;
+ const route=Array.from({length:601},(_,i)=>({latitude:0,longitude:start+i*.0001}));
+ const source={publish_id:publish,local_drive_id:drive,schema_version:1,telemetry_version:1,drive_score_algorithm_version:1,world_rules_version:6,
+ started_at:'2026-01-01T00:00:00Z',ended_at:'2026-01-01T00:10:00Z',recorded_distance_meters:6000,raw_route:route,
+ canonical_telemetry:route.map((p,i)=>({...p,timestamp:new Date(Date.parse('2026-01-01T00:00:00Z')+i*1000).toISOString(),speed_mps:10,heading_degrees:90,altitude_meters:0,accuracy_meters:3,distance_from_previous_meters:i?10:0,acceleration_mps2:0}))};
+ check(!(await u.client.storage.from('world-drive-sources').upload(path,new Blob([JSON.stringify(source)],{type:'application/json'}))).error,'canonical surviving source upload');
+ await sql(`begin;
+ insert into public.world_publishes(id,user_id,local_drive_id,started_at,ended_at,distance_meters,world_rules_version,status,processed_at,source_path,source_ready_at,source_schema_version,telemetry_version,drive_score_algorithm_version,raw_route_point_count,telemetry_point_count)
+ values('${publish}','${u.id}','${drive}','2026-01-01','2026-01-01 00:10:00+00',6000,6,'published',now(),'${path}',now(),1,1,1,601,601);
+ insert into public.world_validated_roads(id,publish_id,user_id,provider_id,processing_version,valid_distance_meters,validation_status,direction_key,section_count,geometry)
+ values('${road}','${publish}','${u.id}','synthetic',6,6000,'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(${start} 0,${start+.06} 0)',4326)));
+ insert into public.world_validated_road_sections(validated_road_id,section_key,section_order,distance_meters,source_trace_index,source_chunk_index,geometry)
+ values('${road}','section-0',0,6000,0,0,extensions.ST_GeomFromText('LINESTRING(${start} 0,${start+.06} 0)',4326));
+ insert into public.world_active_world_generations(generation,base_generation,operation_id,operation_reason,source_publish_id,source_drive_session_id,drive_score_algorithm_version,validated_road_processing_version,valid_distance_meters,trace_count,created_at)
+ values(${generation},${generation-1},'world:${drive}:v1','recordProcessing','${publish}','${drive}',1,6,6000,${active?1:0},now());
+ ${active?`insert into public.world_active_world_traces(trace_id,active_from_generation,source_publish_id,source_drive_session_id,validated_road_id,matched_section_id,start_offset_meters,end_offset_meters,direction_key,min_latitude,max_latitude,min_longitude,max_longitude,bounds,processing_version,created_at,updated_at)
+ values('trace-${publish}',${generation},'${publish}','${drive}','${road}','section-0',0,6000,'east',0,0,${start},${start+.06},extensions.ST_MakeEnvelope(${start},0,${start+.06},0,4326),6,now(),now());`:''}
+ update public.world_active_world_state set current_generation=${generation} where singleton;commit;`);
+ return {publish,road,path,source};
+}
+
+Deno.test('Planet withdrawal: A/B/C overlap restores surviving winner without retaining A',()=>planetFixture(async(admin,a,b,c,r,rows,base)=>{
+ await sql(`insert into public.world_active_world_traces(trace_id,active_from_generation,active_to_generation,source_publish_id,source_drive_session_id,validated_road_id,matched_section_id,start_offset_meters,end_offset_meters,direction_key,min_latitude,max_latitude,min_longitude,max_longitude,bounds,processing_version,created_at,updated_at)
+ select 'synthetic-A-influenced-cut',${base+1},${base+3},source_publish_id,source_drive_session_id,'${rows[0].road}','section-0',1000,2000,'east',0,0,0,.06,extensions.ST_MakeEnvelope(0,0,.06,0,4326),6,now(),now()
+ from public.world_active_world_generations where generation=${base+1};`);
+ const before=await sql(`select jsonb_agg(to_jsonb(p) order by id)::text from public.world_publishes p where user_id in('${b.id}','${c.id}');`);
+ const geometryBefore=await sql(`select jsonb_agg(to_jsonb(r) order by id)::text from public.world_validated_roads r where user_id in('${b.id}','${c.id}');`);
+ check((await request(a,r)).status===202,'withdrawal consent');
+ const done=await call({...r,action:'run'});check(done.status===200&&done.body.state==='completed','shared withdrawal completes');
+ check(await sql(`select count(*) from public.world_active_world_traces where active_to_generation is null and source_publish_id='${rows[0].publish}';`)==='1','equal score restores earlier B source');
+ check(await sql(`select count(*) from public.world_active_world_traces where source_publish_id='${rows[2].publish}';`)==='0','all A historical/current traces erased');
+ check(await sql(`select count(*) from public.world_active_world_traces where trace_id='synthetic-A-influenced-cut';`)==='0','old survivor boundary influenced by A is not retained');
+ check(await sql(`select jsonb_agg(to_jsonb(p) order by id)::text from public.world_publishes p where user_id in('${b.id}','${c.id}');`)===before,'B/C publish metadata byte equivalent');
+ check(await sql(`select jsonb_agg(to_jsonb(r) order by id)::text from public.world_validated_roads r where user_id in('${b.id}','${c.id}');`)===geometryBefore,'B/C canonical road geometry unchanged');
+ for(const [i,u] of [[0,b],[1,c]] as const){
+  check(!(await admin.storage.from('world-drive-sources').download(rows[i].path)).error,'surviving source preserved');
+  check(await sql(`select count(*) from public.phase8_drive_manifests where owner_id='${u.id}';`)==='1','surviving private history preserved');
+ }
+ check((await call({...r,action:'run'})).body.state==='completed','response-lost retry is idempotent');
+ const page=await b.client.rpc('read_planet_viewport',{p_south:-.01,p_north:.01,p_west:-.01,p_east:.1,p_zoom:15});
+ check(!page.error&&page.data.traces.length>0,'Planet readable after durable withdrawal');
+}));
+
+Deno.test('Planet withdrawal: partial overlap retains B and C unique intervals',()=>planetFixture(async(_admin,a,_b,_c,r,rows)=>{
+ check((await request(a,r)).status===202,'request');
+ const done=await call({...r,action:'run'});
+ check(done.status===200&&done.body.state==='completed',`partial overlap completes: HTTP ${done.status}, ${done.body.state??done.body.error}`);
+ for(const source of rows.slice(0,2))check(Number(await sql(`select count(*) from public.world_active_world_traces where active_to_generation is null and source_publish_id='${source.publish}';`))>0,'both surviving sources own valid intervals');
+ check(await sql(`select count(*) from public.world_validated_road_sections where validated_road_id='${rows[2].road}';`)==='0','A canonical section geometry erased');
+},true));
+
+Deno.test('Planet withdrawal: A-only geometry has no invented replacement',()=>planetFixture(async(_admin,a,_b,_c,r,rows)=>{
+ check((await request(a,r)).status===202,'request');
+ const done=await call({...r,action:'run'});check(done.status===200&&done.body.state==='completed','withdrawal completes');
+ check(await sql(`select count(*) from public.world_active_world_traces where active_to_generation is null and min_longitude<.02;`)==='0','A-only physical tail removed, not anonymized');
+ check(await sql(`select count(*) from public.world_active_world_traces where source_publish_id='${rows[2].publish}';`)==='0','A history erased as well');
+},false,true));
+
+Deno.test('Planet withdrawal: missing surviving GPS fails closed, restored source retries',()=>planetFixture(async(admin,a,b,_c,r,rows)=>{
+ check(!(await admin.storage.from('world-drive-sources').remove([rows[0].path])).error,'local partial source failure');
+ check((await request(a,r)).status===202,'request');
+ const blocked=await call({...r,action:'run'});check(blocked.status===202&&blocked.body.state==='blocked_planet','no invented source or false completion');
+ check(await sql(`select count(*) from auth.users where id='${a.id}';`)==='1','Auth retained until recovery');
+ check(!(await b.client.storage.from('world-drive-sources').upload(rows[0].path,new Blob([JSON.stringify(rows[0].source)],{type:'application/json'}))).error,'owner restores its exact synthetic source');
+ const recovered=await call({...r,action:'run'});check(recovered.status===200&&recovered.body.state==='completed','same receipt safely retries');
+}));
+
+Deno.test('Planet withdrawal: stale snapshot, invalid plan rollback and lost commit response',()=>planetFixture(async(admin,a,_b,_c,r,rows,base)=>{
+ check((await request(a,r)).status===202,'request');
+ const lease=crypto.randomUUID();
+ const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(r.receiptToken)))].map(x=>x.toString(16).padStart(2,'0')).join('');
+ check(!(await admin.rpc('account_deletion_claim',{p_id:r.requestId,p_hash:digest,p_lease:lease})).error,'lease');
+ const args={p_id:r.requestId,p_lease:lease};
+ const context=(await admin.rpc('account_deletion_planet_context',args)).data as RebuildContext;
+ const plan=await rebuildPlanet(context,{metadata:async(ids)=>context.sources.filter(s=>ids.includes(s.source.id)).map(s=>s.source),download:async(path)=>{const s=await admin.storage.from('world-drive-sources').download(path);check(!s.error,'test source');return JSON.parse(await s.data!.text());}});
+ const commit={...args,p_fingerprint:context.fingerprint,p_traces:plan};
+ check((await a.client.rpc('account_deletion_planet_commit',commit)).error,'client cannot rewrite Planet');
+ check((await admin.rpc('account_deletion_planet_commit',{...commit,p_traces:plan.map(t=>({...t,sourcePublishId:rows[2].publish}))})).error,'forged A provenance refused');
+ check((await admin.rpc('account_deletion_planet_commit',{...commit,p_traces:plan.map(t=>({...t,createdAt:'not-a-date'}))})).error,'failure after generation insert rolls back');
+ check(await sql('select current_generation from public.world_active_world_state where singleton;')===String(base+3),'invalid transaction left pointer unchanged');
+ check(await sql(`select count(*) from public.world_active_world_generations where generation=${base+4};`)==='0','partial replacement generation rolled back');
+ check(await sql(`select count(*) from public.world_active_world_traces where source_publish_id='${rows[2].publish}' and active_to_generation is null;`)==='1','partial retirement rolled back');
+ // Change only this synthetic object's version; old content-plan proof must fail.
+ await sql(`update storage.objects set updated_at=clock_timestamp() where bucket_id='world-drive-sources' and name='${rows[0].path}';`);
+ check((await admin.rpc('account_deletion_planet_commit',commit)).error,'stale Storage version proof refused');
+ const fresh=(await admin.rpc('account_deletion_planet_context',args)).data as RebuildContext;
+ const result=await admin.rpc('account_deletion_planet_commit',{...commit,p_fingerprint:fresh.fingerprint});check(!result.error&&result.data==='ready',`atomic rebuild: ${result.error?.code??''} ${result.error?.message??''}`);
+ check(!(await admin.rpc('account_deletion_planet_commit',{...commit,p_fingerprint:fresh.fingerprint})).error,'lost reply commit retry returns ready');
+ check(await sql('select current_generation from public.world_active_world_state where singleton;')===String(base+4),'replay commit applied once');
+ check(!(await admin.rpc('account_deletion_release',args)).error,'release simulated worker');
+ const done=await call({...r,action:'run'});check(done.status===200&&done.body.state==='completed','Edge resumes committed rebuild and finishes A');
+}));
+
+Deno.test('Planet withdrawal: contradictory road and publish ownership fails closed',()=>planetFixture(async(_admin,a,b,_c,r,rows)=>{
+ await sql(`update public.world_validated_roads set user_id='${b.id}' where id='${rows[2].road}';`);
+ check((await request(a,r)).status===202,'request accepted but ownership not assumed');
+ const result=await call({...r,action:'run'});check(result.status===202&&result.body.state==='blocked_planet','ambiguous withdrawing source is not purged');
+ check(await sql(`select count(*) from auth.users where id='${a.id}';`)==='1','Auth not removed with ambiguous provenance');
+ check(await sql(`select count(*) from public.world_validated_roads where id='${rows[2].road}';`)==='1','contradictory geometry retained for review');
+ check(await sql(`select count(*) from public.phase8_drive_manifests where owner_id='${b.id}';`)==='1','B private data preserved');
 }));
 
 Deno.test('account deletion: final synthetic dataset is clean and gates remain closed',async()=>{

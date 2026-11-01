@@ -1,4 +1,5 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.117.2';
+import {rebuildPlanet, readPlanetSource, type RebuildContext} from './planet_rebuild.ts';
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
 const hash=async(s:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -74,6 +75,31 @@ Deno.serve(async request=>{
   for(const f of files){if(typeof f.bucket!=='string'||typeof f.name!=='string')throw Error('object_listing_invalid');buckets.set(f.bucket,[...(buckets.get(f.bucket)??[]),f.name]);}
   const firstBucket=buckets.entries().next();
   if(!firstBucket.done){const [bucket,paths]=firstBucket.value;if((await admin.storage.from(bucket).remove(paths)).error)throw Error('storage_remove_failed');}
+  // Never discard incumbent ownership without reconstructing the survivors.
+  const context=await rpc('account_deletion_planet_context',{p_id:body.requestId,p_lease:lease}) as RebuildContext;
+  if(context.state==='blocked_planet'){
+   await rpc('account_deletion_planet_block',{p_id:body.requestId,p_lease:lease});
+   return json({state:'blocked_planet'},202);
+  }
+  if(context.state==='rebuild'){
+   let traces;
+   try{
+    let downloaded=0;
+    traces=await rebuildPlanet(context,{
+     metadata:async(ids)=>context.sources.filter(s=>ids.includes(s.source.id)).map(s=>s.source),
+     download:async(path)=>{
+      const response=await fetch(`${url}/storage/v1/object/authenticated/world-drive-sources/${path.split('/').map(encodeURIComponent).join('/')}`,{
+       headers:{apikey:key,authorization:`Bearer ${key}`},signal:AbortSignal.timeout(15000),
+      });
+      const result=await readPlanetSource(response,16777216-downloaded);downloaded+=result.bytes;return result.source;
+     },
+    });
+   }catch{
+    await rpc('account_deletion_planet_block',{p_id:body.requestId,p_lease:lease});
+    return json({state:'blocked_planet'},202);
+   }
+   await rpc('account_deletion_planet_commit',{p_id:body.requestId,p_lease:lease,p_fingerprint:context.fingerprint,p_traces:traces});
+  }else if(context.state!=='ready'&&context.state!=='not_required')throw Error('planet_context_invalid');
   const state=await rpc('account_deletion_purge',{p_id:body.requestId,p_lease:lease});
   if(state!=='purged')return json({state},202);
   // Database and Storage are empty before Auth removal. If this boundary fails, the job remains retryable.

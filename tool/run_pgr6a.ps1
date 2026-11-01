@@ -31,6 +31,7 @@ try {
   }}
   New-Item -ItemType Directory "$work/supabase/functions/delete-account"|Out-Null
   Copy-Item supabase/functions/delete-account/index.ts "$work/supabase/functions/delete-account/index.ts"
+  Copy-Item supabase/functions/delete-account/planet_rebuild.ts "$work/supabase/functions/delete-account/planet_rebuild.ts"
   Set-LocalWorkerEnvironment $work
   $raw=& npx --no-install supabase@2.120.0 stack start --stack $name --workdir $work --eager --output-format json
   if($LASTEXITCODE -ne 0){throw 'New isolated stack startup failed'}
@@ -124,9 +125,51 @@ try {
   Get-Content supabase/account-deletion/migrations/202611010011_account_deletion_group_member_revocation.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
   if($LASTEXITCODE -ne 0){throw 'Local member revocation migration failed'}
  }
+ $planetRebuild=docker exec $container psql -U postgres -d postgres -X -At -c "select to_regprocedure('public.account_deletion_planet_context(uuid,uuid)') is not null;"
+ if($LASTEXITCODE -ne 0){throw 'Local Planet rebuild preflight failed'}
+ if($planetRebuild -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010012_account_deletion_planet_rebuild.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local Planet rebuild migration failed'}
+ }
+ $planAliases=docker exec $container psql -U postgres -d postgres -X -At -c "select position('left_trace' in pg_get_functiondef('public.account_deletion_planet_commit(uuid,uuid,text,jsonb)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Local plan alias preflight failed'}
+ if($planAliases -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010013_account_deletion_planet_plan_alias.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local plan alias migration failed'}
+ }
+ $insertAlias=docker exec $container psql -U postgres -d postgres -X -At -c "select position('projected' in pg_get_functiondef('public.account_deletion_planet_commit(uuid,uuid,text,jsonb)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Local insert alias preflight failed'}
+ if($insertAlias -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010014_account_deletion_planet_insert_alias.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local insert alias migration failed'}
+ }
+ $ownerProof=docker exec $container psql -U postgres -d postgres -X -At -c "select position('road.user_id<>publication.user_id' in pg_get_functiondef('public.account_deletion_planet_context(uuid,uuid)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Local owner proof preflight failed'}
+ if($ownerProof -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010015_account_deletion_planet_owner_proof.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local owner proof migration failed'}
+ }
+ $derivedHistory=docker exec $container psql -U postgres -d postgres -X -At -c "select position('delete from public.world_active_world_traces' in pg_get_functiondef('public.account_deletion_planet_commit(uuid,uuid,text,jsonb)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Local derived history preflight failed'}
+ if($derivedHistory -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010016_account_deletion_planet_derived_history.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local derived history migration failed'}
+ }
+ $historyBound=docker exec $container psql -U postgres -d postgres -X -At -c "select position('where active_from_generation<=g;' in pg_get_functiondef('public.account_deletion_planet_commit(uuid,uuid,text,jsonb)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Local history bound preflight failed'}
+ if($historyBound -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010017_account_deletion_planet_history_bound.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local history bound migration failed'}
+ }
+ Get-Content supabase/account-deletion/tests/planet_rebuild_security.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1
+ if($LASTEXITCODE -ne 0){throw 'Local Planet RPC security acceptance failed'}
  $workerToken=$env:ACCOUNT_DELETION_WORKER_TOKEN
  # Copy only this candidate endpoint into the local workspace; no deployment command.
  Copy-Item supabase/functions/delete-account/index.ts ($descriptor.work+'/supabase/functions/delete-account/index.ts') -Force
+ Copy-Item supabase/functions/delete-account/planet_rebuild.ts ($descriptor.work+'/supabase/functions/delete-account/planet_rebuild.ts') -Force
+ foreach($file in @('world_scoring.generated.js','world_scoring.manifest.json')){
+  Copy-Item ('supabase/functions/process-world-publish/'+$file) ($descriptor.work+'/supabase/functions/process-world-publish/'+$file) -Force
+ }
  $values=@{PGR6_LOCAL_URL=$state.env.API_URL;PGR6_CONTAINER=$container;PGR6_SUBPATH=$mount;PGR6_SYSTEM=$system;PGR6_ANON=$state.env.ANON_KEY;PGR6_SERVICE=$state.env.SERVICE_ROLE_KEY;PGR6_WORKER_TOKEN=$workerToken}
  foreach($key in $values.Keys){$saved[$key]=[Environment]::GetEnvironmentVariable($key);[Environment]::SetEnvironmentVariable($key,$values[$key])}
  if($PrepareOnly){'Isolated deletion test environment prepared; credentials suppressed';return}

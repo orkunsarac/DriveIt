@@ -1,6 +1,6 @@
 # P-GR6A account deletion candidate
 
-Local acceptance: **PASS**. No DEV/PROD deployment is included. Eleven forward migrations live here intentionally outside the default deployment chain; apply only after the reviewed 25-migration baseline. The existing PROD preparation manifest is unchanged.
+P-GR6A local acceptance: **PASS**; current P-GR6B evidence is linked below. No DEV/PROD deployment is included. Seventeen forward migrations live here intentionally outside the default deployment chain; apply only after the reviewed 25-migration baseline. P-GR6B changes only two reviewed compiler source hashes in the preparation inventory; baseline SQL and the nine-function deployment list are unchanged.
 
 ## Protocol
 
@@ -16,7 +16,9 @@ Storage is removed before relational purge, and Auth last. Completion requires a
 
 ## Planet boundary
 
-No shared-contribution retention or legally verified anonymization is assumed. If another owner's validated road exists while the deleting account has a validated road, independence remains unproven: `blocked_planet`, never completed. Public Planet reads and derived writes fail closed while affected publication data remains. This can temporarily pause Planet globally and is a real availability limit requiring a reviewed withdrawal/recomputation path before broad activation. Other users' private drives/rows are preserved.
+P-GR6B adds a bounded survivor replay in candidates 012–017. See [P-GR6B acceptance](../../docs/account_deletion_pgr6b_acceptance.md) for the current shared-contribution contract, resource limits, artifact regeneration evidence and remaining rollout gates. The original P-GR6A evidence below remains historical. The current candidate chain has seventeen migrations; default deployment still excludes it.
+
+No shared-contribution retention or legally verified anonymization is assumed. When another owner's validated road exists, candidates 012–017 require verified replay of surviving canonical sources before purge. The derived trace index (including historical splits potentially influenced by the withdrawing account) is replaced atomically within the captured generation; survivor canonical roads/sections/sources and private drives remain intact. Unsupported/missing/oversized or concurrent-deletion contexts remain `blocked_planet`, never completed. Public Planet reads and derived writes fail closed while affected publication data remains. This can temporarily pause Planet globally.
 
 Unshared source/publish/geometry/trace data is erased. Neutral generation ordering needed by remaining records has its source ID/session/distance/time erased; a new deletion generation invalidates stale plans. This is a technical state change, not a legal declaration about anonymization or retention.
 

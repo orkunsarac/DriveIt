@@ -214,6 +214,28 @@ class SupabaseAccountService extends ChangeNotifier
 
   static final instance = SupabaseAccountService._();
   LocalOwnerLifecycle? _controlledOwner;
+  int? _observedOwnerEpoch;
+  LocalOwnerState? _observedOwnerState;
+
+  void _onOwnerStateChanged() {
+    final owner = _controlledOwner;
+    if (!_requiresScopedProfile ||
+        owner == null ||
+        _identitySubscription == null) {
+      return;
+    }
+    if (_observedOwnerEpoch == owner.epoch &&
+        _observedOwnerState == owner.state) {
+      return;
+    }
+    _observedOwnerEpoch = owner.epoch;
+    _observedOwnerState = owner.state;
+    if (owner.state != LocalOwnerState.ready) {
+      _clearCloudIdentity();
+    } else if (_profileIsVisible() && _client?.auth.currentUser != null) {
+      unawaited(_refreshProfileQuietly());
+    }
+  }
 
   /// Same public Auth entry points, fenced only in an explicit debug harness.
   void attachOwnerForTesting(LocalOwnerLifecycle owner) {
@@ -223,6 +245,7 @@ class SupabaseAccountService extends ChangeNotifier
       throw StateError('Controlled Auth owner unavailable');
     }
     _controlledOwner = owner;
+    owner.addListener(_onOwnerStateChanged);
   }
 
   /// Fences real account switches against active local GPS operations in the
@@ -234,13 +257,17 @@ class SupabaseAccountService extends ChangeNotifier
       throw StateError('Production Auth owner unavailable');
     }
     _controlledOwner = owner;
+    owner.addListener(_onOwnerStateChanged);
   }
 
   void detachOwnerForTesting(LocalOwnerLifecycle owner) {
     if (!identical(_controlledOwner, owner)) {
       throw StateError('Auth owner conflict');
     }
+    owner.removeListener(_onOwnerStateChanged);
     _controlledOwner = null;
+    _observedOwnerEpoch = null;
+    _observedOwnerState = null;
   }
 
   void detachOwnerForProduction(LocalOwnerLifecycle owner) {
@@ -248,7 +275,10 @@ class SupabaseAccountService extends ChangeNotifier
         !identical(_controlledOwner, owner)) {
       throw StateError('Production Auth owner conflict');
     }
+    owner.removeListener(_onOwnerStateChanged);
     _controlledOwner = null;
+    _observedOwnerEpoch = null;
+    _observedOwnerState = null;
   }
 
   Future<T> _identityChange<T>(Future<T> Function() action) {
@@ -278,6 +308,7 @@ class SupabaseAccountService extends ChangeNotifier
   String? _profileError;
   int _profileRequest = 0;
   Future<DriveItAccountProfile?>? _profileLoadFuture;
+  (String?, String?, int?)? _profileLoadContext;
 
   DriveItAccountProfile? get profile => _profileIsVisible() ? _profile : null;
   bool get profileLoaded => _profileIsVisible() && _profileLoaded;
@@ -345,6 +376,7 @@ class SupabaseAccountService extends ChangeNotifier
   void _clearCloudIdentity() {
     _profileRequest++;
     _profileLoadFuture = null;
+    _profileLoadContext = null;
     _profile = null;
     _profileLoaded = false;
     _profileLoading = false;
@@ -374,8 +406,11 @@ class SupabaseAccountService extends ChangeNotifier
   @override
   bool get hasSession => currentSession != null;
   @override
-  String? get currentDisplayName =>
-      currentUser?.userMetadata?['display_name']?.toString();
+  String? get currentDisplayName {
+    if (!_profileIsVisible()) return null;
+    return currentUser?.userMetadata?['display_name']?.toString();
+  }
+
   @override
   Stream<dynamic> get authStateChanges =>
       _client?.auth.onAuthStateChange ?? const Stream<dynamic>.empty();
@@ -617,12 +652,23 @@ class SupabaseAccountService extends ChangeNotifier
 
   @override
   Future<DriveItAccountProfile?> fetchCurrentProfile() {
+    final context = _profileContext();
+    if (_requiresScopedProfile && context.$1 != null) {
+      _requireProfileContext(context);
+    }
     final inFlight = _profileLoadFuture;
-    if (inFlight != null) return inFlight;
+    if (inFlight != null &&
+        (!_requiresScopedProfile || _profileLoadContext == context)) {
+      return inFlight;
+    }
     final future = _fetchCurrentProfile();
     _profileLoadFuture = future;
+    _profileLoadContext = context;
     return future.whenComplete(() {
-      if (identical(_profileLoadFuture, future)) _profileLoadFuture = null;
+      if (identical(_profileLoadFuture, future)) {
+        _profileLoadFuture = null;
+        _profileLoadContext = null;
+      }
     });
   }
 

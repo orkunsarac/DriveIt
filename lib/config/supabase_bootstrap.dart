@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'driveit_auth_callback.dart';
 import 'supabase_environment_policy.dart';
+import 'supabase_public_key_policy.dart';
 
 /// Compile-time client configuration. Only the public publishable key belongs
 /// in a client app; secret/service-role keys must never be supplied here.
@@ -55,6 +56,9 @@ abstract final class SupabaseBootstrap {
     }
 
     try {
+      if (!SupabasePublicKeyPolicy.permits(SupabaseConfig.publishableKey)) {
+        throw StateError('Supabase client key is not a publishable key');
+      }
       final package = await PackageInfo.fromPlatform();
       if (!SupabaseEnvironmentPolicy.permits(
         applicationId: package.packageName,

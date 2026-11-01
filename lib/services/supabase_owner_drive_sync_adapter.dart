@@ -6,6 +6,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'owner_drive_sync_client.dart';
 import 'owner_sync_causality.dart';
+import 'owner_profile_gateway.dart';
+import '../config/supabase_bootstrap.dart';
 
 /// Real Supabase transport for the Phase 8 M1 staged-drive contract.
 ///
@@ -25,11 +27,15 @@ class SupabaseOwnerDriveSyncAdapter
     required this.requireCurrent,
     this.requestTimeout = const Duration(seconds: 30),
     this.deletionEnabled = false,
+    this.uploadGateway,
     String? Function()? authenticatedUserId,
   }) : _client = client,
        _ownerId = ownerId.toLowerCase(),
        _authenticatedUserId =
            authenticatedUserId ?? (() => client.auth.currentUser?.id) {
+    if (SupabaseBootstrap.isPlayPackage && uploadGateway == null) {
+      throw StateError('Play upload requires owner credentials');
+    }
     if (!_uuidV4.hasMatch(_ownerId) || ownerId != _ownerId) {
       throw ArgumentError.value(
         ownerId,
@@ -48,6 +54,22 @@ class SupabaseOwnerDriveSyncAdapter
   static final _safeErrorCode = RegExp(r'^[a-z0-9_]{1,80}$');
 
   final SupabaseClient _client;
+
+  /// Play uploads must use an owner/epoch bound, credential-pinned client.
+  final OwnerProfileGateway? uploadGateway;
+
+  Future<T> _uploadData<T>(Future<T> Function(SupabaseClient) operation) {
+    final gateway = uploadGateway;
+    if (gateway == null) return operation(_client);
+    return gateway.run((data, uid) {
+      _assertOwner();
+      if (uid != _ownerId) {
+        throw const OwnerSyncConflict('gateway_owner_mismatch');
+      }
+      return operation(data);
+    });
+  }
+
   final String _ownerId;
   final void Function() requireCurrent;
   final Duration requestTimeout;
@@ -88,6 +110,9 @@ class SupabaseOwnerDriveSyncAdapter
 
   Future<void> _requireM2() async {
     _assertOwner();
+    if (uploadGateway != null) {
+      throw const OwnerSyncConflict('play_m2_not_activated');
+    }
     if (!deletionEnabled) throw const OwnerSyncConflict('m2_not_activated');
     final data = await _invokeJson('phase8-drive-begin', {
       'action': 'capabilities',
@@ -290,18 +315,20 @@ class SupabaseOwnerDriveSyncAdapter
     }
     final path = '$_ownerId/$intentId/envelope.json';
     try {
-      await _client.storage
-          .from(bucket)
-          .uploadBinary(
-            path,
-            Uint8List.fromList(envelopeBytes),
-            fileOptions: const FileOptions(
-              contentType: 'application/json',
-              upsert: false,
-            ),
-            retryAttempts: 0,
-          )
-          .timeout(requestTimeout);
+      await _uploadData(
+        (data) => data.storage
+            .from(bucket)
+            .uploadBinary(
+              path,
+              Uint8List.fromList(envelopeBytes),
+              fileOptions: const FileOptions(
+                contentType: 'application/json',
+                upsert: false,
+              ),
+              retryAttempts: 0,
+            )
+            .timeout(requestTimeout),
+      );
     } on TimeoutException {
       throw const OwnerSyncTransportFailure('storage_timeout');
     } on StorageException catch (error) {
@@ -344,6 +371,9 @@ class SupabaseOwnerDriveSyncAdapter
     required String afterCursor,
     required int limit,
   }) async {
+    if (uploadGateway != null) {
+      throw const OwnerSyncConflict('play_download_not_activated');
+    }
     _assertOwner();
     if (ownerId != _ownerId || limit < 1 || limit > 100) {
       throw const OwnerSyncConflict('download_request_invalid');
@@ -452,9 +482,10 @@ class SupabaseOwnerDriveSyncAdapter
   ) async {
     _assertOwner();
     try {
-      final response = await _client.functions
-          .invoke(function, body: body)
-          .timeout(requestTimeout);
+      final response = await _uploadData(
+        (data) =>
+            data.functions.invoke(function, body: body).timeout(requestTimeout),
+      );
       _assertOwner();
       if (response.data is! Map) {
         throw const OwnerSyncConflict('function_response_invalid');

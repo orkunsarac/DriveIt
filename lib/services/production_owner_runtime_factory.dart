@@ -20,6 +20,8 @@ import 'owned_foreground_bootstrap.dart';
 import 'owner_scoped_local_store.dart';
 import 'supabase_local_owner_auth.dart';
 import 'supabase_owner_drive_sync_adapter.dart';
+import 'owner_profile_gateway.dart';
+import '../config/supabase_environment_policy.dart';
 import 'account_drive_transfer.dart';
 import 'legacy_drive_transfer_source.dart';
 import 'android_device_archive_authorizer.dart';
@@ -68,8 +70,9 @@ abstract final class ProductionOwnerRuntimeFactory {
       bool.fromEnvironment('DRIVEIT_ACCOUNT_DELETE_ENABLED');
 
   /// Keep disabled until M4 migration/Realtime security is deployed and accepted.
-  static const accountGroupDriveEnabled =
-      bool.fromEnvironment('DRIVEIT_GROUP_DRIVE_ENABLED');
+  static const accountGroupDriveEnabled = bool.fromEnvironment(
+    'DRIVEIT_GROUP_DRIVE_ENABLED',
+  );
   static Future<ProductionOwnerRuntimeDependencies> create() async {
     if (!LocalOwnershipGate.production.enabled ||
         !LocalOwnershipGate.localProductionActivation) {
@@ -126,9 +129,15 @@ abstract final class ProductionOwnerRuntimeFactory {
           : (lease) {
               // Use the SAME Auth project/client; never forward a Planet JWT
               // to the separate Phase 8 project or fabricate a backend user.
-              if (!hasCloudAuth || SupabaseBootstrap.isPlayPackage ||
-                  SupabaseConfig.url !=
-                      'https://viqngnjfgknpxtoapzcg.supabase.co' ||
+              final play = SupabaseBootstrap.isPlayPackage;
+              if (!hasCloudAuth ||
+                  !SupabaseEnvironmentPolicy.permits(
+                    applicationId: play
+                        ? 'com.osaracx.driveit'
+                        : 'com.example.driveit_project',
+                    url: SupabaseConfig.url,
+                    strictDev: !play,
+                  ) ||
                   lease.owner.kind != GpsOwnerKind.account) {
                 throw StateError('Account sync Auth project not approved');
               }
@@ -136,7 +145,19 @@ abstract final class ProductionOwnerRuntimeFactory {
                 client: Supabase.instance.client,
                 ownerId: lease.owner.userId!,
                 requireCurrent: lease.requireCurrent,
-                deletionEnabled: accountDeletionEnabled,
+                deletionEnabled: !play && accountDeletionEnabled,
+                uploadGateway: !play
+                    ? null
+                    : OwnerProfileGateway(
+                        authClient: Supabase.instance.client,
+                        url: SupabaseConfig.url,
+                        publicKey: SupabaseConfig.publishableKey,
+                        applicationId: 'com.osaracx.driveit',
+                        approvedOwner: () => lease.owner.userId,
+                        approvedEpoch: () => lease.epoch,
+                        isLeaseCurrent: (epoch) =>
+                            epoch == lease.epoch && lease.isCurrent,
+                      ),
               );
             },
       // Upload only new account drives explicitly marked at local finalization.
@@ -146,11 +167,11 @@ abstract final class ProductionOwnerRuntimeFactory {
       // History exposes the existing consent-preserving manual retry instead.
       automaticCloudDeletionRetry: false,
       cloudDeletionEnabled: accountDeletionEnabled,
-      groupDriveService: accountGroupDriveEnabled &&
+      groupDriveService:
+          accountGroupDriveEnabled &&
               !SupabaseBootstrap.isPlayPackage &&
               hasCloudAuth &&
-              SupabaseConfig.url ==
-                  'https://viqngnjfgknpxtoapzcg.supabase.co'
+              SupabaseConfig.url == 'https://viqngnjfgknpxtoapzcg.supabase.co'
           ? SupabaseGroupDriveService(Supabase.instance.client)
           : null,
       transferSources: AccountDriveTransferSources(

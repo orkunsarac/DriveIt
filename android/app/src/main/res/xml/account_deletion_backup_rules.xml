@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Only device-bound receipt ciphertext; existing drive history backup rules are unchanged. -->
-    <exclude domain="sharedpref" path="FlutterSecureStorage.xml" />
-    <exclude domain="sharedpref" path="FlutterSecureKeyStorage.xml" />
+    <!--
+      Keep device-private routes, GPS journals, owner metadata, credentials,
+      and profile content out of Android 11 and older Auto Backup / D2D backup.
+      Local history is intentionally device-bound; a new installation will not
+      recover it through Android backup or device transfer.
+    -->
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
 </full-backup-content>

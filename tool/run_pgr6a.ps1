@@ -225,6 +225,14 @@ try {
   Get-Content supabase/account-deletion/migrations/202611010024_account_deletion_scope_relevance.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
   if($LASTEXITCODE -ne 0){throw 'Local scope relevance migration failed'}
  }
+ $durableAudit=docker exec $container psql -U postgres -d postgres -X -At -c "select to_regclass('public.account_deletion_erasure_audit') is not null;"
+ if($LASTEXITCODE -ne 0){throw 'Durable audit migration preflight failed'}
+ if($durableAudit -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010025_account_deletion_retention_audit.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local durable audit migration failed'}
+ }
+ Get-Content supabase/account-deletion/tests/audit_retention.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1
+ if($LASTEXITCODE -ne 0){throw 'Local durable audit retention acceptance failed'}
  Get-Content supabase/account-deletion/tests/planet_rebuild_security.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1
  if($LASTEXITCODE -ne 0){throw 'Local Planet RPC security acceptance failed'}
  $workerToken=$env:ACCOUNT_DELETION_WORKER_TOKEN

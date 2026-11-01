@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "kvkk",
+      "title": "KVKK Aydınlatma Metni",
+      "status": "pending_legal_review",
+      "version": null,
+      "approval": { "reference": null, "approved_at": null },
+      "body": "Bu metin hukuki inceleme beklemektedir. Nihai aydınlatma metni onaylanıp bu belge paketine yüklenene kadar burada herhangi bir onay veya bilgilendirme kabulü alınmaz."
+    },
+    {
+      "id": "privacy",
+      "title": "Gizlilik Politikası",
+      "status": "pending_legal_review",
+      "version": null,
+      "approval": { "reference": null, "approved_at": null },
+      "body": "Bu metin hukuki inceleme beklemektedir. Onaylanmış gizlilik politikası henüz bu uygulama paketine yüklenmemiştir."
+    },
+    {
+      "id": "terms",
+      "title": "Kullanım Koşulları",
+      "status": "pending_legal_review",
+      "version": null,
+      "approval": { "reference": null, "approved_at": null },
+      "body": "Kullanım koşulları hukuki inceleme beklemektedir. Bu durum metni kabul edilmiş koşul haline getirmez."
+    },
+    {
+      "id": "consent",
+      "title": "Açık Rıza Metni",
+      "status": "pending_legal_review",
+      "version": null,
+      "approval": { "reference": null, "approved_at": null },
+      "body": "Bu koşullu belge hukuki inceleme beklemektedir. Onaylanmamış açık rıza metni gösterilmez ve rıza alınmış sayılmaz."
+    }
+  ]
+}

@@ -13,16 +13,27 @@ class OnboardingPermissionSnapshot {
   final bool notificationGranted;
 }
 
-class OnboardingPermissionService {
+abstract interface class OnboardingPermissionGateway {
+  Future<OnboardingPermissionSnapshot> readStatus();
+  Future<OnboardingPermissionSnapshot> requestSequentially();
+  Future<bool> openSettings();
+}
+
+class OnboardingPermissionService implements OnboardingPermissionGateway {
   const OnboardingPermissionService();
 
+  @override
   Future<OnboardingPermissionSnapshot> readStatus() async {
     final location = await Geolocator.checkPermission();
     final notification = await permissions.Permission.notification.status;
     return _snapshot(location, notification);
   }
 
+  @override
   Future<OnboardingPermissionSnapshot> requestSequentially() async {
+    // The geolocator Android implementation requests coarse and fine together,
+    // allowing Android 12+ to present its precise/approximate choice. Background
+    // access is deliberately not requested in this foreground permission step.
     var location = await Geolocator.checkPermission();
     if (location == LocationPermission.denied) {
       location = await Geolocator.requestPermission();
@@ -35,6 +46,7 @@ class OnboardingPermissionService {
     return _snapshot(location, notification);
   }
 
+  @override
   Future<bool> openSettings() => permissions.openAppSettings();
 
   OnboardingPermissionSnapshot _snapshot(

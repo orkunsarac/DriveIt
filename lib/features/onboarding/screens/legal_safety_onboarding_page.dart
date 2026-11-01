@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../models/legal_document_catalog.dart';
 import '../widgets/onboarding_primary_button.dart';
 import '../widgets/onboarding_progress_indicator.dart';
+
+typedef LegalDocumentCatalogLoader = Future<LegalDocumentCatalog> Function();
 
 class LegalDocumentState {
   const LegalDocumentState({
@@ -18,12 +21,16 @@ class LegalDocumentState {
   final DateTime? readAt;
   final DateTime? acceptedAt;
 
-  LegalDocumentState copyWith({bool? viewed, bool? accepted}) {
+  LegalDocumentState copyWith({
+    bool? viewed,
+    bool? accepted,
+    String? acceptedVersion,
+  }) {
     final nextAccepted = accepted ?? this.accepted;
     return LegalDocumentState(
       viewed: viewed ?? this.viewed,
       accepted: nextAccepted,
-      version: version,
+      version: accepted == false ? null : acceptedVersion ?? version,
       readAt: viewed == true ? DateTime.now() : readAt,
       acceptedAt: accepted == true
           ? DateTime.now()
@@ -35,9 +42,14 @@ class LegalDocumentState {
 }
 
 class LegalSafetyOnboardingPage extends StatefulWidget {
-  const LegalSafetyOnboardingPage({super.key, required this.onContinue});
+  const LegalSafetyOnboardingPage({
+    super.key,
+    required this.onContinue,
+    this.catalogLoader,
+  });
 
   final VoidCallback onContinue;
+  final LegalDocumentCatalogLoader? catalogLoader;
 
   @override
   State<LegalSafetyOnboardingPage> createState() =>
@@ -50,18 +62,32 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
   LegalDocumentState _terms = const LegalDocumentState();
   LegalDocumentState _explicitConsent = const LegalDocumentState();
   bool _securityAcknowledged = false;
+  late final Future<LegalDocumentCatalog> _catalog;
 
-  bool get _canContinue =>
-      _kvkk.viewed &&
-      _kvkk.accepted &&
-      _privacy.viewed &&
-      _privacy.accepted &&
-      _terms.viewed &&
-      _terms.accepted &&
-      _securityAcknowledged;
+  @override
+  void initState() {
+    super.initState();
+    _catalog =
+        widget.catalogLoader?.call() ?? LegalDocumentCatalog.loadFromAssets();
+  }
+
+  bool _canContinue(LegalDocumentCatalog catalog) {
+    bool accepted(String id, LegalDocumentState state) {
+      final content = catalog[id];
+      return content.canBeAccepted &&
+          state.viewed &&
+          state.accepted &&
+          state.version == content.version;
+    }
+
+    return accepted('kvkk', _kvkk) &&
+        accepted('privacy', _privacy) &&
+        accepted('terms', _terms) &&
+        _securityAcknowledged;
+  }
 
   Future<void> _showDocument(
-    String title,
+    LegalDocumentContent document,
     LegalDocumentState state,
     ValueChanged<LegalDocumentState> update,
   ) async {
@@ -79,7 +105,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                title,
+                document.title,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 20,
@@ -88,7 +114,20 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
               ),
               const SizedBox(height: 14),
               Text(
-                'Bu alan gerçek belge metni eklendiğinde güncellenecektir. Şimdilik yalnızca onboarding UI ve state akışını doğrulamak için placeholder içerik gösterilmektedir.',
+                document.status == LegalDocumentStatus.approved
+                    ? 'Sürüm ${document.version}'
+                    : 'HUKUKİ İNCELEME BEKLİYOR — bu içerik kabul edilemez.',
+                key: ValueKey('document_status_${document.id}'),
+                style: TextStyle(
+                  color: document.canBeAccepted
+                      ? const Color(0xFF45D69B)
+                      : const Color(0xFFFFC266),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                document.body,
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: .72),
                   fontSize: 14,
@@ -145,6 +184,37 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
 
   @override
   Widget build(BuildContext context) {
+    return FutureBuilder<LegalDocumentCatalog>(
+      future: _catalog,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF020B18),
+            body: Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Yasal belgeler yüklenemedi. Devam edebilmek için belgelerin geçerli biçimde sunulması gerekir.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ),
+          );
+        }
+        final catalog = snapshot.data;
+        if (catalog == null) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF020B18),
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return _buildContent(context, catalog);
+      },
+    );
+  }
+
+  Widget _buildContent(BuildContext context, LegalDocumentCatalog catalog) {
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -207,7 +277,9 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     ),
                     SizedBox(height: compact ? 6 : 9),
                     Text(
-                      'Devam etmeden önce önemli bilgileri incele.',
+                      catalog.documents.values.any((doc) => !doc.canBeAccepted)
+                          ? 'Bazı belgeler hukuk incelemesinde; bunlar kabul edilemez.'
+                          : 'Devam etmeden önce önemli bilgileri incele.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: .7),
@@ -218,7 +290,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     SizedBox(height: compact ? 9 : 12),
                     _documentCard(
                       compact: compact,
-                      title: 'KVKK Aydınlatma Metni',
+                      document: catalog['kvkk'],
                       icon: Icons.description_rounded,
                       state: _kvkk,
                       label: 'Metni okudum ve bilgilendirildim.',
@@ -227,7 +299,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     SizedBox(height: gap),
                     _documentCard(
                       compact: compact,
-                      title: 'Gizlilik Politikası',
+                      document: catalog['privacy'],
                       icon: Icons.shield_rounded,
                       state: _privacy,
                       label: "Gizlilik Politikası'nı okudum.",
@@ -236,7 +308,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     SizedBox(height: gap),
                     _documentCard(
                       compact: compact,
-                      title: 'Kullanım Koşulları',
+                      document: catalog['terms'],
                       icon: Icons.rule_rounded,
                       state: _terms,
                       label: "Kullanım Koşulları'nı kabul ediyorum.",
@@ -245,7 +317,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     SizedBox(height: gap),
                     _documentCard(
                       compact: compact,
-                      title: 'Açık Rıza Metni',
+                      document: catalog['consent'],
                       icon: Icons.fact_check_rounded,
                       state: _explicitConsent,
                       label: '',
@@ -259,9 +331,9 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                     FractionallySizedBox(
                       widthFactor: .913,
                       child: IgnorePointer(
-                        ignoring: !_canContinue,
+                        ignoring: !_canContinue(catalog),
                         child: AnimatedOpacity(
-                          opacity: _canContinue ? 1 : .46,
+                          opacity: _canContinue(catalog) ? 1 : .46,
                           duration: const Duration(milliseconds: 180),
                           child: OnboardingPrimaryButton(
                             label: 'Kabul Et ve Devam Et',
@@ -284,19 +356,20 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
 
   Widget _documentCard({
     required bool compact,
-    required String title,
+    required LegalDocumentContent document,
     required IconData icon,
     required LegalDocumentState state,
     required String label,
     required ValueChanged<LegalDocumentState> update,
     bool optional = false,
   }) {
+    final title = document.title;
     return Material(
       color: const Color(0xFF061323).withValues(alpha: .74),
       borderRadius: BorderRadius.circular(15),
       child: InkWell(
         key: ValueKey('open_$title'),
-        onTap: () => _showDocument(title, state, update),
+        onTap: () => _showDocument(document, state, update),
         borderRadius: BorderRadius.circular(15),
         child: Container(
           padding: EdgeInsets.fromLTRB(12, compact ? 6 : 8, 8, compact ? 4 : 6),
@@ -339,8 +412,10 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                         color: const Color(0xFF15314B).withValues(alpha: .8),
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: const Text(
-                        'Koşullu',
+                      child: Text(
+                        document.canBeAccepted
+                            ? 'Koşullu'
+                            : 'İnceleme bekliyor',
                         style: TextStyle(
                           color: Color(0xFF9BCFF2),
                           fontSize: 9.5,
@@ -359,7 +434,7 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                   ),
                 ],
               ),
-              if (!optional) ...[
+              if (!optional && document.canBeAccepted) ...[
                 SizedBox(height: compact ? 1 : 3),
                 Row(
                   children: [
@@ -371,9 +446,12 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                         child: Checkbox(
                           key: ValueKey('checkbox_$title'),
                           value: state.accepted,
-                          onChanged: state.viewed
+                          onChanged: state.viewed && document.canBeAccepted
                               ? (value) => update(
-                                  state.copyWith(accepted: value ?? false),
+                                  state.copyWith(
+                                    accepted: value ?? false,
+                                    acceptedVersion: document.version,
+                                  ),
                                 )
                               : null,
                           side: const BorderSide(color: Color(0xFF7897AC)),
@@ -398,6 +476,22 @@ class _LegalSafetyOnboardingPageState extends State<LegalSafetyOnboardingPage> {
                   ],
                 ),
               ],
+              if (!document.canBeAccepted && !optional)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5, bottom: 5),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Hukuki inceleme bekleniyor — kabul alınmıyor.',
+                      key: ValueKey('pending_$title'),
+                      style: const TextStyle(
+                        color: Color(0xFFFFC266),
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

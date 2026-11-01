@@ -17,6 +17,7 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
         android:fullBackupContent="@xml/account_deletion_backup_rules"
         android:dataExtractionRules="@xml/account_deletion_extraction_rules"
         android:stopWithTask="false">

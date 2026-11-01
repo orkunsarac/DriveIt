@@ -6,8 +6,9 @@
 
 - PROD signup kapalı; P-GR6A/B/C silme aday zinciri ve worker üretimde etkinleştirilmiş kabul edilmemelidir.
 - P-GR6F operatör akışı yerel prototype/runbook ve Mailpit test tasarımıdır; kamuya açık web hizmeti değildir. `site/account-deletion` yayımlanmamıştır.
+- P-GR6H adayı, operational job/event kayıtlarından bağımsız `account_deletion_erasure_audit` tablosuna minimal state/time ve opaque operation UUID kopyalar; job/event temizliği bu kaydı cascade ile silmez. `retain_until` en az 1096 gün hesaplanır. Migration sadece izole testte PASS oldu; PROD/DEV'e uygulanmadı ve worker kapalı.
 - Destek adresi `driveit.osaracx@gmail.com`; kullanıcı mail uygulamasıyla başvurabilir. E-posta gönderen adresi tek başına hesap sahipliği kanıtı sayılamaz.
-- Yerel SQLite/Hive sürüş geçmişinin Auth hesabı silindiğinde cihazdan kaldırıldığı doğrulanmamıştır. Android backup kuralları yerel sürüş depolarını açıkça dışlamıyor.
+- Yerel SQLite/Hive sürüş geçmişi Auth hesabı silindiğinde cihazdan otomatik kaldırılmaz. Yeni uygulama sürümü Android Auto Backup'ı kapatır ve legacy/modern backup+device-transfer XML kuralları hassas yerel depoları dışlar. Sonuç olarak yerel kayıtlar yeni cihazda Android backup ile geri yüklenmez. Önceden alınmış Android backup kopyalarının bu kuralla kendiliğinden silindiği söylenemez.
 - Planet ortak yollar için güvenli sahiplikten bağımsızlaştırma/recompute kanıtı yoksa silme `blocked_planet` kalmalıdır; tamamlandı denmemelidir.
 
 ## Başvuru akışı için şartlar
@@ -16,8 +17,8 @@
 2. Gönderici adresine güvenmek yerine mevcut doğrulanmış Auth adresine tek kullanımlık, hash'lenmiş, süreli challenge. Hesap varlığını yanıtla dışarı sızdırmama, rate limit ve replay koruması.
 3. Açık teyitten sonra silme worker'ına idempotent iş oluşturma. Operatörün rolü, MFA, least privilege ve audit gereklidir.
 4. Terminal `completed` ancak Auth kimliğinin, profil/kişisel bulut/Storage kaynaklarının ve ilgili Planet katkısının doğrulanmış terminal kanıtından sonra. `blocked_planet`, bekleyen ve başarısız işler tamamlandı sayılmaz.
-5. Yerel cihaz verisi için kullanıcıya ayrı, cihaz-bağlamlı adımlar ve Android backup/transfer davranışı açıkça anlatılmalı; hesap silme ile cihaz içi silme aynı şeymiş gibi sunulmamalı.
-6. Yedeklerde silme, backup expiration/restore replay ve log saklama kanıtı olmadan “kalıcı olarak hemen silinir” denmemeli.
+5. Yerel cihaz verisi için kullanıcıya ayrı, cihaz-bağlamlı adımlar ve Android backup/transfer davranışı açıkça anlatılmalı; hesap silme ile cihaz içi silme aynı şeymiş gibi sunulmamalı. Android dışlaması, cihazlar arası yerel sürüş geçmişi aktarımını da kapatır.
+6. Yedeklerde silme, backup expiration/restore replay ve log saklama kanıtı olmadan “kalıcı olarak hemen silinir” denmemeli. Android dışlaması mevcut cihazı silmez; yalnız yeni backup/device transfer'i engeller ve önceki kopyaları kaldırdığı iddia edilmez.
 
 ## Veri kategorilerine göre önerilen silme kapsamı
 

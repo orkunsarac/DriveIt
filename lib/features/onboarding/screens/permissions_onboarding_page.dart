@@ -6,9 +6,14 @@ import '../widgets/onboarding_primary_button.dart';
 import '../widgets/onboarding_progress_indicator.dart';
 
 class PermissionsOnboardingPage extends StatefulWidget {
-  const PermissionsOnboardingPage({super.key, required this.onContinue});
+  const PermissionsOnboardingPage({
+    super.key,
+    required this.onContinue,
+    this.permissionService = const OnboardingPermissionService(),
+  });
 
   final VoidCallback onContinue;
+  final OnboardingPermissionGateway permissionService;
 
   @override
   State<PermissionsOnboardingPage> createState() =>
@@ -17,7 +22,6 @@ class PermissionsOnboardingPage extends StatefulWidget {
 
 class _PermissionsOnboardingPageState extends State<PermissionsOnboardingPage>
     with WidgetsBindingObserver {
-  final _permissionService = const OnboardingPermissionService();
   OnboardingPermissionSnapshot? _permissions;
   bool _requestedOnce = false;
   bool _busy = false;
@@ -43,7 +47,7 @@ class _PermissionsOnboardingPageState extends State<PermissionsOnboardingPage>
   }
 
   Future<void> _refreshPermissions() async {
-    final result = await _permissionService.readStatus();
+    final result = await widget.permissionService.readStatus();
     if (!mounted) return;
     setState(() => _permissions = result);
   }
@@ -51,23 +55,56 @@ class _PermissionsOnboardingPageState extends State<PermissionsOnboardingPage>
   Future<void> _handleCta() async {
     final permissions = _permissions;
     if (_busy || permissions == null) return;
+
+    final disclosed = await _showLocationDisclosure();
+    if (!mounted || !disclosed) return;
     if (permissions.locationGranted) {
       widget.onContinue();
       return;
     }
     if (permissions.locationPermanentlyDenied) {
-      await _permissionService.openSettings();
+      await widget.permissionService.openSettings();
       return;
     }
 
     setState(() => _busy = true);
-    final result = await _permissionService.requestSequentially();
+    final result = await widget.permissionService.requestSequentially();
     if (!mounted) return;
     setState(() {
       _permissions = result;
       _requestedOnce = true;
       _busy = false;
     });
+  }
+
+  Future<bool> _showLocationDisclosure() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sürüş sırasında konum kullanımı'),
+        content: const SingleChildScrollView(
+          child: Text(
+            'DriveIt, senin başlattığın aktif sürüş sırasında konum verilerini toplar. Sürüş kaydı; rota, mesafe, hız, Drive Score, Replay ve kayıt kurtarma için uygulama arka plandayken, ekran kapalıyken veya uygulama kapalı görünürken de sürebilir. Sürüşü bitirdiğinde kayıt durur; Android uygulamayı veya konum hizmetini durdurursa kayıt kesilebilir.\n\n'
+            'Rota eşleme isteği yaptığında koordinatlar Mapbox\'a gönderilebilir. Kişisel bulut senkronizasyonu yalnız yapılandırılmış hesap özelliğiyle çalışır. DriveIt Gezegeni\'ne rota gönderimi bu konum izninden ayrı bir işlemdir ve ayrıca senin yayın onayın olmadan başlamaz. Konum reklam amacıyla kullanılmaz.\n\n'
+            'Devam edersen Android\'in konum izni ekranı açılır. İzni reddedebilir ve daha sonra ayarlardan değiştirebilirsin.',
+            key: ValueKey('location_prominent_disclosure_text'),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Şimdi değil'),
+          ),
+          FilledButton(
+            key: const ValueKey('continue_to_location_permission'),
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Anladım, devam et'),
+          ),
+        ],
+      ),
+    );
+    return accepted == true;
   }
 
   String get _ctaLabel {
@@ -160,7 +197,7 @@ class _PermissionsOnboardingPageState extends State<PermissionsOnboardingPage>
                       title: 'Konum',
                       badge: 'Gerekli',
                       description:
-                          'Rota, mesafe ve hız verilerini kaydetmek için.',
+                          'Aktif sürüşte rota, mesafe, hız, puan ve Replay için. Ekran kapalıyken de sürüş kaydı sürebilir.',
                       granted: permissions?.locationGranted ?? false,
                     ),
                     SizedBox(height: compact ? 9 : 12),

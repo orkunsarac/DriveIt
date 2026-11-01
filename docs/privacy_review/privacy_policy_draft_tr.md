@@ -36,7 +36,7 @@ Sağlayıcı sözleşmeleri, alt işleyenler, bölge/uluslararası aktarım ve u
 
 ## Saklama, silme ve yedek
 
-Uygulamanın yerel sürüş geçmişi hesap silme worker'ı tarafından cihazdan otomatik silindiği doğrulanmamıştır. Android backup kuralları mevcut SQLite/Hive sürüş verisini dışlamıyor; cihaz backup/transfer davranışı ayrıca doğrulanmalıdır.
+Uygulamanın yerel sürüş geçmişi hesap silme worker'ı tarafından cihazdan otomatik silindiği doğrulanmamıştır. Android uygulama paketindeki yeni kurallar, yerel uygulama verisini Android Auto Backup ve cihaz aktarımından dışlar; bu nedenle yeni telefonda yerel sürüş geçmişi otomatik geri yüklenmez. Bu ayar mevcut telefondaki kayıtları silmez ve Android sağlayıcısındaki eski yedek kopyalarını geriye dönük sildiği anlamına gelmez. Android 11 ve Android 12+ fiziksel cihaz kabulü tamamlanmalıdır.
 
 Üretim hesabı silme akışı şu anda etkin değildir. Destek e-postasıyla talep işleme ve yayımlanmamış statik sayfa, gerçek silme mekanizması değildir. Silme tamamlandı denmesi için kimlik doğrulama, Auth silme, kişisel bulut/Storage cleanup ve Planet katkı yeniden hesaplama/`blocked_planet` durumlarının doğrulanması gerekir. Yedeklerdeki kalıcı silinme ve süre **ONAY BEKLİYOR**.
 

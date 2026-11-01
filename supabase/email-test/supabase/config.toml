@@ -35,6 +35,11 @@ max_frequency = "1s"
 otp_length = 6
 otp_expiry = 3600
 
+# Isolated test-only ceiling: exercise the per-address max_frequency window
+# without hitting the unrelated project-wide hourly email quota.
+[auth.rate_limit]
+email_sent = 20
+
 [auth.email.notification.password_changed]
 enabled = true
 subject = "DriveIt: parola değiştirildi"

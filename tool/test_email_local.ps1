@@ -27,6 +27,14 @@ try {
   $config=Get-Content "$work/supabase/config.toml" -Raw
   if($config -notmatch '(?m)^project_id\s*=\s*"driveit-email-pgr6d"\s*$'){throw 'Email test project identity mismatch'}
   if($config -match '(?i)viqngnjfgknpxtoapzcg|arwnbogcswisfesayosy|SUPABASE_ACCESS_TOKEN'){throw 'Remote target marker in local email config'}
+  foreach($expected in @(
+    '(?m)^port\s*=\s*63121\s*$',
+    '(?m)^port\s*=\s*63122\s*$',
+    '(?m)^max_frequency\s*=\s*"1s"\s*$',
+    '(?m)^email_sent\s*=\s*20\s*$',
+    '(?m)^enabled\s*=\s*true\s*$'
+  )){if($config -notmatch $expected){throw 'Local Auth/Mailpit test settings do not match the pinned isolated profile'}}
+  if($config -match '(?im)^\s*(?:host|smtp_host)\s*=\s*"(?!(?:127\.0\.0\.1|localhost))[^\"]+"'){throw 'Remote SMTP target is forbidden in the local email test profile'}
 
   # Capture CLI output only in process memory: `status --output env` contains local keys.
   $startResult=Invoke-SupabaseCli 'start --workdir supabase/email-test'

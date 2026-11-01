@@ -162,3 +162,86 @@ Deno.test('local Auth confirmation, recovery, password/email changes and privacy
     assert(!leftoverMessages, 'synthetic Mailpit emails must be absent after cleanup');
   }
 });
+
+Deno.test('local Auth rejects malformed addresses and rate-limits then permits a safe recovery retry', async () => {
+  const malformedEmail = 'not-an-email';
+  const invalidSignup = await auth('/signup', {email: malformedEmail, password: `Drive!${crypto.randomUUID()}`});
+  eq(invalidSignup.status, 400, 'malformed signup address must be rejected');
+  await invalidSignup.body?.cancel();
+
+  const invalidRecovery = await auth('/recover', {email: malformedEmail});
+  eq(invalidRecovery.status, 400, 'malformed recovery address must be rejected');
+  await invalidRecovery.body?.cancel();
+
+  const id = crypto.randomUUID();
+  const email = `pgr7a-retry-${id}@example.com`;
+  const password = `Drive!${crypto.randomUUID()}`;
+  let userId = '';
+  try {
+    const signup = await auth('/signup', {email, password});
+    eq(signup.status, 200, 'synthetic retry account creation');
+    const created = await signup.json();
+    userId = created.user?.id ?? created.id ?? '';
+    assert(userId, 'synthetic retry account should be created');
+    await verify(await mailFor(email, 'e-posta adresinizi doğrulayın'));
+
+    const first = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    eq(first.status, 200, 'first recovery request');
+    const firstRecovery = await mailFor(email, 'parola sıfırlama');
+
+    const immediateRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    eq(immediateRetry.status, 429, 'recovery request inside configured minimum interval');
+    const limited = await immediateRetry.json();
+    eq(limited.error_code ?? limited.code, 'over_email_send_rate_limit', 'rate-limit error code');
+    const afterLimited = (await messages()).filter(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()));
+    eq(afterLimited.filter(m => m.Subject?.toLowerCase().includes('parola sıfırlama')).length, 1, 'rate-limited retry must not enqueue duplicate email');
+
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const delayedRetry = await auth('/recover', {email, redirect_to: 'http://127.0.0.1:63130/recovery'});
+    eq(delayedRetry.status, 200, 'recovery retry after configured interval');
+    let recovery: Mail | undefined;
+    const retryMessageUntil = Date.now() + 15000;
+    while (!recovery && Date.now() < retryMessageUntil) {
+      const retrySummary = (await messages()).find(m => m.ID !== firstRecovery.ID &&
+        m.Subject?.toLowerCase().includes('parola sıfırlama') &&
+        m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase())
+      );
+      if (retrySummary) {
+        const response = await fetch(`${mailpit}/api/v1/message/${encodeURIComponent(retrySummary.ID)}`);
+        eq(response.status, 200, 'retry recovery email detail status');
+        recovery = await response.json() as Mail;
+      } else await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    assert(recovery, 'delayed retry recovery email should arrive');
+    const ownedRecoveryMessages = (await messages()).filter(m =>
+      m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()) &&
+      m.Subject?.toLowerCase().includes('parola sıfırlama')
+    );
+    eq(ownedRecoveryMessages.length, 2, 'one original and one delayed recovery message');
+    await verify(recovery);
+    console.log('PASS malformed address rejection; immediate recovery rate limit; delayed retry; no duplicate email');
+  } finally {
+    if (userId) {
+      const response = await fetch(`${api}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'DELETE', headers: {apikey: anon, authorization: `Bearer ${service}`}, signal: AbortSignal.timeout(10000),
+      });
+      assert([200, 204].includes(response.status), 'synthetic retry account cleanup must succeed');
+      await response.body?.cancel();
+    }
+    const ownMessages = (await messages()).filter(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase()));
+    if (ownMessages.length) {
+      const response = await fetch(`${mailpit}/api/v1/messages`, {
+        method: 'DELETE', headers: {'content-type': 'application/json'}, body: JSON.stringify({IDs: ownMessages.map(m => m.ID)}),
+      });
+      eq(response.status, 200, 'synthetic retry Mailpit message cleanup status');
+      await response.body?.cancel();
+    }
+    const remaining = await fetch(`${api}/auth/v1/admin/users?page=1&per_page=1000`, {
+      headers: {apikey: anon, authorization: `Bearer ${service}`}, signal: AbortSignal.timeout(10000),
+    });
+    eq(remaining.status, 200, 'retry synthetic-user cleanup verification status');
+    const remainingUsers = await remaining.json();
+    assert(!(remainingUsers.users as Array<{email?: string}>).some(user => user.email?.toLowerCase() === email.toLowerCase()), 'retry synthetic account must be absent after cleanup');
+    assert(!(await messages()).some(m => m.To?.some(to => to.Address?.toLowerCase() === email.toLowerCase())), 'retry synthetic messages must be absent after cleanup');
+  }
+});

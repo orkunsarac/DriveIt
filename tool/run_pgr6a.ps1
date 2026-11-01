@@ -1,4 +1,5 @@
-param([switch]$Initialize,[switch]$BootstrapEmpty,[switch]$PrepareOnly,[string]$Filter='')
+param([switch]$Initialize,[switch]$BootstrapEmpty,[switch]$PrepareOnly,[switch]$RestartLocal,[string]$Filter='',
+ [ValidateSet('test','once','status','retry')][string]$WorkerMode='test',[string]$ReviewJob='')
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 Push-Location (Join-Path $PSScriptRoot '..')
@@ -44,6 +45,7 @@ try {
   Set-LocalWorkerEnvironment $descriptor.work
   $state=(& npx --no-install supabase@2.120.0 stack status --stack-id $descriptor.id --workdir $descriptor.work --output-format json)|ConvertFrom-Json
   if($LASTEXITCODE -ne 0){throw 'Isolated stack unavailable'}
+  if($state.identity.id -cne $descriptor.id -or $state.identity.name -cne $descriptor.name){throw 'Stack status identity mismatch'}
  }
  $url=[uri]$state.env.API_URL;$db=[uri]$state.env.DB_URL
  if($url.Scheme -cne 'http' -or $url.Host -cne '127.0.0.1' -or $db.Host -cne '127.0.0.1'){throw 'Non-loopback target'}
@@ -60,6 +62,21 @@ try {
  if($LASTEXITCODE -ne 0 -or $system -notmatch '^\d+$' -or $system -in @('7702818118349594665','7702837359395967017','7702852553093967913')){throw 'Cluster identity mismatch'}
  if($descriptor.PSObject.Properties['system']){if($descriptor.system -cne $system -or $descriptor.subpath -cne $mount){throw 'Pinned cluster changed'}}
  else{$descriptor|Add-Member -NotePropertyName system -NotePropertyValue $system;$descriptor|Add-Member -NotePropertyName subpath -NotePropertyValue $mount;$descriptor|ConvertTo-Json|Set-Content tmp/pgr6a-target.json}
+ if($RestartLocal){
+  if($Initialize -or $BootstrapEmpty){throw 'Restart cannot initialize or bootstrap'}
+  $previousApi=$state.env.API_URL
+  $raw=& npx --no-install supabase@2.120.0 stack restart --stack-id $descriptor.id --workdir $descriptor.work --output-format json
+  if($LASTEXITCODE -ne 0){throw 'Targeted local stack restart failed'}
+  $state=(& npx --no-install supabase@2.120.0 stack status --stack-id $descriptor.id --workdir $descriptor.work --output-format json)|ConvertFrom-Json
+  if($LASTEXITCODE -ne 0){throw 'Restart status unavailable'}
+  if($state.identity.id -cne $descriptor.id -or $state.identity.name -cne $descriptor.name -or $state.env.API_URL -cne $previousApi){throw 'Restart changed target identity/endpoints'}
+  $matches=@(docker ps --format '{{.Names}}'|Where-Object {$_ -match ('^supabase-'+[regex]::Escape($descriptor.name)+'-'+[regex]::Escape($descriptor.name)+'-database-[a-f0-9]+$')})
+  if($matches.Count -ne 1){throw 'Restart DB ambiguous'};$container=$matches[0]
+  $restartedMount=docker inspect --format '{{range .HostConfig.Mounts}}{{if eq .Target "/var/lib/postgresql/data"}}{{.VolumeOptions.Subpath}}{{end}}{{end}}' $container
+  $restartedSystem=docker exec $container psql -U postgres -d postgres -X -At -c 'select system_identifier from pg_control_system();'
+  if($LASTEXITCODE -ne 0 -or $restartedMount -cne $descriptor.subpath -or $restartedSystem -cne $descriptor.system){throw 'Restart physical identity changed'}
+  'Local isolated stack restarted; pinned PGDATA/system identity preserved'
+ }
  if($Initialize -or $BootstrapEmpty){
   $empty=docker exec $container psql -U postgres -d postgres -X -At -c "select (select count(*) from auth.users)+(select count(*) from pg_class where relnamespace='public'::regnamespace and relkind='r');"
   if($empty -cne '0'){throw 'New stack not empty'}
@@ -161,6 +178,42 @@ try {
   Get-Content supabase/account-deletion/migrations/202611010017_account_deletion_planet_history_bound.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
   if($LASTEXITCODE -ne 0){throw 'Local history bound migration failed'}
  }
+ foreach($entry in @(
+  @('public.account_deletion_worker_claim(uuid)','202611010018_account_deletion_worker_queue.sql'),
+  @('public.account_deletion_replay_load(uuid,uuid)','202611010019_account_deletion_replay_checkpoints.sql'),
+  @('public.account_deletion_planet_hidden_roads()','202611010020_account_deletion_read_scope.sql')
+ )){
+  $installed=docker exec $container psql -U postgres -d postgres -X -At -c ("select to_regprocedure('"+$entry[0]+"') is not null;")
+  if($LASTEXITCODE -ne 0){throw 'P-GR6C migration preflight failed'}
+  if($installed -ceq 'f'){
+   Get-Content ('supabase/account-deletion/migrations/'+$entry[1]) -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+   if($LASTEXITCODE -ne 0){throw ('Local P-GR6C migration failed: '+$entry[1])}
+  }
+ }
+ $scopeDomain=docker exec $container psql -U postgres -d postgres -X -At -c "select position('179.98' in pg_get_functiondef('public.account_deletion_planet_hidden_roads()'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Scope domain preflight failed'}
+ if($scopeDomain -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010021_account_deletion_scope_domain.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local scope domain migration failed'}
+ }
+ $crashBudget=docker exec $container psql -U postgres -d postgres -X -At -c "select exists(select 1 from information_schema.columns where table_schema='public' and table_name='account_deletion_jobs' and column_name='lease_expirations');"
+ if($LASTEXITCODE -ne 0){throw 'Crash budget preflight failed'}
+ if($crashBudget -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010022_account_deletion_crash_budget.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local crash budget migration failed'}
+ }
+ $scopeBudget=docker exec $container psql -U postgres -d postgres -X -At -c "select position('limit 129' in pg_get_functiondef('public.account_deletion_planet_hidden_roads()'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Scope budget preflight failed'}
+ if($scopeBudget -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010023_account_deletion_scope_budget.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local scope budget migration failed'}
+ }
+ $scopeRelevance=docker exec $container psql -U postgres -d postgres -X -At -c "select position('r.user_id=j.owner_id)))' in pg_get_functiondef('public.account_deletion_planet_hidden_roads()'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Scope relevance preflight failed'}
+ if($scopeRelevance -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611010024_account_deletion_scope_relevance.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local scope relevance migration failed'}
+ }
  Get-Content supabase/account-deletion/tests/planet_rebuild_security.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1
  if($LASTEXITCODE -ne 0){throw 'Local Planet RPC security acceptance failed'}
  $workerToken=$env:ACCOUNT_DELETION_WORKER_TOKEN
@@ -173,7 +226,19 @@ try {
  $values=@{PGR6_LOCAL_URL=$state.env.API_URL;PGR6_CONTAINER=$container;PGR6_SUBPATH=$mount;PGR6_SYSTEM=$system;PGR6_ANON=$state.env.ANON_KEY;PGR6_SERVICE=$state.env.SERVICE_ROLE_KEY;PGR6_WORKER_TOKEN=$workerToken}
  foreach($key in $values.Keys){$saved[$key]=[Environment]::GetEnvironmentVariable($key);[Environment]::SetEnvironmentVariable($key,$values[$key])}
  if($PrepareOnly){'Isolated deletion test environment prepared; credentials suppressed';return}
- $arguments=@('test','--allow-env','--allow-net','--allow-run=docker')
+ if($WorkerMode -cne 'test'){
+  $action=switch($WorkerMode){'once'{'worker'}'status'{'worker_status'}'retry'{'worker_retry'}}
+  if($WorkerMode -ceq 'retry' -and $ReviewJob -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'){throw 'Explicit local review job UUID required'}
+  $body=@{action=$action};if($WorkerMode -ceq 'retry'){$body.jobId=$ReviewJob}
+  $response=Invoke-WebRequest -Uri ($state.env.API_URL+'/functions/v1/delete-account') -Method Post -ContentType 'application/json' -Headers @{
+   apikey=$state.env.ANON_KEY;'x-driveit-deletion-worker'=$workerToken
+  } -Body ($body|ConvertTo-Json -Compress) -TimeoutSec 60 -SkipHttpErrorCheck
+  if($response.StatusCode -notin @(200,202)){throw ('Local worker HTTP '+$response.StatusCode+'; credentials suppressed')}
+  $result=$response.Content|ConvertFrom-Json
+  foreach($property in $result.PSObject.Properties.Name){if($property -notin @('state','pending','review','jobs')){throw 'Unexpected worker response field'}}
+  $result|ConvertTo-Json -Depth 5;return
+ }
+ $arguments=@('test','--allow-env','--allow-net','--allow-run=docker,pwsh')
  if($Filter){$arguments+=@('--filter',$Filter)}
  $arguments+='supabase/prod/tests/account_deletion_test.ts'
  & 'C:\Users\PC\.deno\bin\deno.exe' @arguments

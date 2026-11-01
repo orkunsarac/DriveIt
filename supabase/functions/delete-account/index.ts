@@ -1,5 +1,5 @@
 import {createClient} from 'npm:@supabase/supabase-js@2.117.2';
-import {rebuildPlanet, readPlanetSource, type RebuildContext} from './planet_rebuild.ts';
+import {advancePlanetReplay, readPlanetSource, type RebuildContext} from './planet_rebuild.ts';
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store'}});
 const hash=async(s:string)=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -23,24 +23,31 @@ Deno.serve(async request=>{
  let body;
  try{body=await boundedJson(request);}catch{return json({error:'request_invalid'},400);}
  const admin=createClient(url,key,clientOptions);
- let digest:string;
- if(body?.action==='worker'){
+ let digest='',lease:string|undefined,workerJob:Record<string,unknown>|undefined;
+ if(['worker','worker_status','worker_retry'].includes(body?.action)){
   const expected=Deno.env.get('ACCOUNT_DELETION_WORKER_TOKEN'),supplied=request.headers.get('x-driveit-deletion-worker');
   if(!expected||!/^[0-9a-f]{64}$/.test(expected)||!supplied||supplied.length!==expected.length)return json({error:'unauthorized'},401);
   let difference=0;for(let i=0;i<expected.length;i++)difference|=expected.charCodeAt(i)^supplied.charCodeAt(i);
   if(difference!==0)return json({error:'unauthorized'},401);
+  if(body.action==='worker_status'){
+   const status=await admin.rpc('account_deletion_worker_status');return status.error?json({error:'worker_unavailable'},503):json(status.data);
+  }
+  if(body.action==='worker_retry'){
+   if(!uuid.test(body.jobId??''))return json({error:'job_invalid'},400);
+   const retried=await admin.rpc('account_deletion_worker_retry',{p_id:body.jobId});return retried.error?json({error:'worker_unavailable'},503):json({state:retried.data});
+  }
   const pruned=await admin.rpc('account_deletion_prune_receipts');
   if(pruned.error)return json({error:'worker_unavailable'},503);
-  const next=await admin.rpc('account_deletion_worker_jobs');
-  if(next.error||!Array.isArray(next.data))return json({error:'worker_unavailable'},503);
-  if(next.data.length===0)return json({state:'idle'});
-  body={action:'run',requestId:next.data[0].id};digest=next.data[0].receipt_hash;
+  lease=crypto.randomUUID();
+  const next=await admin.rpc('account_deletion_worker_claim',{p_lease:lease});
+  if(next.error||!next.data)return json({error:'worker_unavailable'},503);
+  if(next.data.state==='idle')return json({state:'idle'});
+  workerJob=next.data;body={action:'run',requestId:next.data.id};
  }else{
   if(!body||!uuid.test(body.requestId??'')||!/^[0-9a-f]{64}$/.test(body.receiptToken??''))return json({error:'receipt_invalid'},400);
   digest=await hash(body.receiptToken);
  }
  const rpc=async(name:string,args:Record<string,unknown>)=>{const r=await admin.rpc(name,args);if(r.error)throw Error(r.error.code??'rpc_failed');return r.data;};
- let lease:string|undefined;
  try{
   if(body.action==='request'){
    if(!/^[0-9a-f]{64}$/.test(Deno.env.get('ACCOUNT_DELETION_WORKER_TOKEN')??''))return json({error:'recovery_not_configured'},503);
@@ -65,43 +72,57 @@ Deno.serve(async request=>{
    return json({state:result.state},202);
   }
   if(body.action!=='run')return json({error:'action_invalid'},400);
-  lease=crypto.randomUUID();
-  const job=await rpc('account_deletion_claim',{p_id:body.requestId,p_hash:digest,p_lease:lease});
+  lease??=crypto.randomUUID();
+  const job=workerJob??await rpc('account_deletion_claim',{p_id:body.requestId,p_hash:digest,p_lease:lease});
   if(job.state==='completed')return json({state:'completed'});
   if(job.state==='busy')return json({state:'busy'},202);
+  await rpc('account_deletion_progress',{p_id:body.requestId,p_lease:lease,p_phase:'storage'});
   const files=await rpc('account_deletion_objects',{p_id:body.requestId,p_lease:lease});
   if(!Array.isArray(files))throw Error('object_listing_invalid');
   const buckets=new Map<string,string[]>();
   for(const f of files){if(typeof f.bucket!=='string'||typeof f.name!=='string')throw Error('object_listing_invalid');buckets.set(f.bucket,[...(buckets.get(f.bucket)??[]),f.name]);}
   const firstBucket=buckets.entries().next();
   if(!firstBucket.done){const [bucket,paths]=firstBucket.value;if((await admin.storage.from(bucket).remove(paths)).error)throw Error('storage_remove_failed');}
+  if((await rpc('account_deletion_objects',{p_id:body.requestId,p_lease:lease})).length)return json({state:'pending'},202);
   // Never discard incumbent ownership without reconstructing the survivors.
-  const context=await rpc('account_deletion_planet_context',{p_id:body.requestId,p_lease:lease}) as RebuildContext;
+  const replay=await rpc('account_deletion_replay_load',{p_id:body.requestId,p_lease:lease});
+  const context=replay.context as RebuildContext;
   if(context.state==='blocked_planet'){
    await rpc('account_deletion_planet_block',{p_id:body.requestId,p_lease:lease});
    return json({state:'blocked_planet'},202);
   }
   if(context.state==='rebuild'){
-   let traces;
+   let advanced,transient=false;
    try{
     let downloaded=0;
-    traces=await rebuildPlanet(context,{
+    advanced=await advancePlanetReplay(context,{
      metadata:async(ids)=>context.sources.filter(s=>ids.includes(s.source.id)).map(s=>s.source),
      download:async(path)=>{
-      const response=await fetch(`${url}/storage/v1/object/authenticated/world-drive-sources/${path.split('/').map(encodeURIComponent).join('/')}`,{
-       headers:{apikey:key,authorization:`Bearer ${key}`},signal:AbortSignal.timeout(15000),
-      });
-      const result=await readPlanetSource(response,16777216-downloaded);downloaded+=result.bytes;return result.source;
+      let response:Response;
+      try{response=await fetch(`${url}/storage/v1/object/authenticated/world-drive-sources/${path.split('/').map(encodeURIComponent).join('/')}`,{
+        headers:{apikey:key,authorization:`Bearer ${key}`},signal:AbortSignal.timeout(15000),
+       });}catch{transient=true;throw Error('planet_source_retry');}
+      if(response.status>=500||response.status===429)transient=true;
+      try{
+       const result=await readPlanetSource(response,16777216-downloaded);downloaded+=result.bytes;return result.source;
+      }catch(e){
+       if(e instanceof TypeError||(e instanceof DOMException&&['AbortError','TimeoutError'].includes(e.name)))transient=true;
+       throw e;
+      }
      },
-    });
+    },{next:replay.next,traces:replay.traces});
    }catch{
+    if(transient)throw Error('planet_source_retry');
     await rpc('account_deletion_planet_block',{p_id:body.requestId,p_lease:lease});
     return json({state:'blocked_planet'},202);
    }
-   await rpc('account_deletion_planet_commit',{p_id:body.requestId,p_lease:lease,p_fingerprint:context.fingerprint,p_traces:traces});
+   if(advanced.next>replay.next)await rpc('account_deletion_replay_save',{p_id:body.requestId,p_lease:lease,p_fingerprint:context.fingerprint,p_version:replay.version,p_next:advanced.next,p_traces:advanced.traces});
+   if(advanced.next<context.sources.length)return json({state:'pending'},202);
+   await rpc('account_deletion_replay_finish',{p_id:body.requestId,p_lease:lease});
   }else if(context.state!=='ready'&&context.state!=='not_required')throw Error('planet_context_invalid');
   const state=await rpc('account_deletion_purge',{p_id:body.requestId,p_lease:lease});
   if(state!=='purged')return json({state},202);
+  await rpc('account_deletion_progress',{p_id:body.requestId,p_lease:lease,p_phase:'auth'});
   // Database and Storage are empty before Auth removal. If this boundary fails, the job remains retryable.
   const removed=await admin.auth.admin.deleteUser(job.owner);
   if(removed.error){

@@ -18,8 +18,14 @@ async function target(){
  check(candidates.length===1,'one DB in pinned stack');
  // Container names are ephemeral; physical identity below never changes.
  container=candidates[0];
- const r=await new Deno.Command('docker',{args:['inspect','--format','{{range .HostConfig.Mounts}}{{if eq .Target "/var/lib/postgresql/data"}}{{.VolumeOptions.Subpath}}{{end}}{{end}}',container],stdout:'piped',stderr:'piped'}).output();
- check(r.success&&new TextDecoder().decode(r.stdout).trim()===Deno.env.get('PGR6_SUBPATH'),'physical identity');
+ const r=await new Deno.Command('docker',{args:['inspect','--format','{{json .HostConfig.Mounts}}',container],stdout:'piped',stderr:'piped'}).output();
+ let mounts:Array<{Target?:string;VolumeOptions?:{Subpath?:string}}> = [];
+ try{mounts=JSON.parse(new TextDecoder().decode(r.stdout));}catch{/* Fail closed below. */}
+ const dataMounts=mounts.filter(m=>m.Target==='/var/lib/postgresql/data');
+ check(r.success,'physical identity inspection failed');
+ check(dataMounts.length===1,'physical identity requires exactly one PostgreSQL data mount');
+ const actualSubpath=dataMounts[0].VolumeOptions?.Subpath??'',expectedSubpath=Deno.env.get('PGR6_SUBPATH')??'';
+ check(actualSubpath===expectedSubpath,`physical identity mismatch (expected length ${expectedSubpath.length}, actual length ${actualSubpath.length})`);
  check(await sql('select system_identifier from pg_control_system();')===Deno.env.get('PGR6_SYSTEM'),'system identity');
  const settings=await fetch(`${url}/auth/v1/settings`,{headers:{apikey:anon},signal:AbortSignal.timeout(10000)});
  check(settings.ok&&(await settings.json()).disable_signup===true,'test signup remains closed');

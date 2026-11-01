@@ -1,4 +1,4 @@
-param([switch]$Initialize,[switch]$BootstrapEmpty,[switch]$PrepareOnly,[switch]$RestartLocal,[string]$Filter='',
+param([switch]$Initialize,[switch]$BootstrapEmpty,[switch]$PrepareOnly,[switch]$RestartLocal,[switch]$SupportTest,[string]$Filter='',
  [ValidateSet('test','once','status','retry')][string]$WorkerMode='test',[string]$ReviewJob='')
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -10,12 +10,23 @@ function Set-LocalWorkerEnvironment([string]$work){
  Set-Content ($work+'/.gitignore') '*'
  $path=$work+'/supabase/functions/.env'
  if(!(Test-Path -LiteralPath $path)){
-  $bytes=New-Object byte[] 32;[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-  [IO.File]::WriteAllText((Join-Path (Get-Location) $path),'ACCOUNT_DELETION_WORKER_TOKEN='+[Convert]::ToHexString($bytes).ToLowerInvariant())
+  $bytes=New-Object byte[] 32;$rng=[Security.Cryptography.RandomNumberGenerator]::Create();try{$rng.GetBytes($bytes)}finally{$rng.Dispose()}
+  $workerHex=[BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant()
+  [IO.File]::WriteAllText((Join-Path (Get-Location) $path),'ACCOUNT_DELETION_WORKER_TOKEN='+$workerHex)
  }
  $env:ACCOUNT_DELETION_WORKER_TOKEN=((Get-Content $path -Raw)-split '=',2)[1].Trim()
  $config=$work+'/supabase/config.toml';$text=Get-Content $config -Raw
  if($text -notmatch '\[edge_runtime.secrets\]'){Add-Content $config "`n[edge_runtime.secrets]`nACCOUNT_DELETION_WORKER_TOKEN = `"env(ACCOUNT_DELETION_WORKER_TOKEN)`""}
+}
+function Get-PostgresDataIdentity([string]$containerName){
+ $raw=docker inspect --format '{{json .HostConfig.Mounts}}' $containerName
+ if($LASTEXITCODE -ne 0){throw 'Database mount inspection failed'}
+ $targetCount=([regex]::Matches($raw,'"Target":"/var/lib/postgresql/data"')).Count
+ $sourceMatch=[regex]::Match($raw,'"Source":"([^"]+)","Target":"/var/lib/postgresql/data"')
+ $subpathMatch=[regex]::Match($raw,'"Target":"/var/lib/postgresql/data","VolumeOptions":\{"Subpath":"([^"]+)"\}')
+ if($targetCount -ne 1 -or !$sourceMatch.Success){throw 'PostgreSQL data mount is ambiguous'}
+ $subpath='';if($subpathMatch.Success){$subpath=$subpathMatch.Groups[1].Value}
+ return $sourceMatch.Groups[1].Value+'|'+$subpath
 }
 try {
  $env:SUPABASE_EXPERIMENTAL_STACK='1'
@@ -52,10 +63,10 @@ try {
  $containers=@(docker ps --format '{{.Names}}'|Where-Object {$_ -match ('^supabase-'+[regex]::Escape($descriptor.name)+'-'+[regex]::Escape($descriptor.name)+'-database-[a-f0-9]+$')})
  if($containers.Count -ne 1){throw 'Ambiguous deletion test DB'}
  $container=$containers[0]
- $mount=docker inspect --format '{{range .HostConfig.Mounts}}{{if eq .Target "/var/lib/postgresql/data"}}{{.VolumeOptions.Subpath}}{{end}}{{end}}' $container
- if($LASTEXITCODE -ne 0 -or !$mount.StartsWith('instance-'+$descriptor.id+'-')){throw 'Physical isolation mismatch'}
+ $mount=Get-PostgresDataIdentity $container
+ if(!$mount -or !$mount.Contains('|')){throw 'Physical isolation mismatch'}
  foreach($other in @(docker ps --format '{{.Names}}'|Where-Object {$_ -match 'database-' -and $_ -ne $container})){
-  $otherMount=docker inspect --format '{{range .HostConfig.Mounts}}{{if eq .Target "/var/lib/postgresql/data"}}{{.VolumeOptions.Subpath}}{{end}}{{end}}' $other
+  $otherMount=Get-PostgresDataIdentity $other
   if($mount -ceq $otherMount){throw 'Shared physical PGDATA'}
  }
  $system=docker exec $container psql -U postgres -d postgres -X -At -c 'select system_identifier from pg_control_system();'
@@ -72,7 +83,7 @@ try {
   if($state.identity.id -cne $descriptor.id -or $state.identity.name -cne $descriptor.name -or $state.env.API_URL -cne $previousApi){throw 'Restart changed target identity/endpoints'}
   $matches=@(docker ps --format '{{.Names}}'|Where-Object {$_ -match ('^supabase-'+[regex]::Escape($descriptor.name)+'-'+[regex]::Escape($descriptor.name)+'-database-[a-f0-9]+$')})
   if($matches.Count -ne 1){throw 'Restart DB ambiguous'};$container=$matches[0]
-  $restartedMount=docker inspect --format '{{range .HostConfig.Mounts}}{{if eq .Target "/var/lib/postgresql/data"}}{{.VolumeOptions.Subpath}}{{end}}{{end}}' $container
+  $restartedMount=Get-PostgresDataIdentity $container
   $restartedSystem=docker exec $container psql -U postgres -d postgres -X -At -c 'select system_identifier from pg_control_system();'
   if($LASTEXITCODE -ne 0 -or $restartedMount -cne $descriptor.subpath -or $restartedSystem -cne $descriptor.system){throw 'Restart physical identity changed'}
   'Local isolated stack restarted; pinned PGDATA/system identity preserved'
@@ -223,7 +234,9 @@ try {
  foreach($file in @('world_scoring.generated.js','world_scoring.manifest.json')){
   Copy-Item ('supabase/functions/process-world-publish/'+$file) ($descriptor.work+'/supabase/functions/process-world-publish/'+$file) -Force
  }
- $values=@{PGR6_LOCAL_URL=$state.env.API_URL;PGR6_CONTAINER=$container;PGR6_SUBPATH=$mount;PGR6_SYSTEM=$system;PGR6_ANON=$state.env.ANON_KEY;PGR6_SERVICE=$state.env.SERVICE_ROLE_KEY;PGR6_WORKER_TOKEN=$workerToken}
+ $separator=$mount.IndexOf('|');if($separator -lt 0 -or $separator -ge ($mount.Length-1)){throw 'Pinned PostgreSQL subpath unavailable'}
+ $rawSubpath=$mount.Substring($separator+1)
+ $values=@{PGR6_LOCAL_URL=$state.env.API_URL;PGR6_CONTAINER=$container;PGR6_SUBPATH=$rawSubpath;PGR6_SYSTEM=$system;PGR6_ANON=$state.env.ANON_KEY;PGR6_SERVICE=$state.env.SERVICE_ROLE_KEY;PGR6_WORKER_TOKEN=$workerToken;PGR6F_MAILPIT_URL='http://127.0.0.1:63124'}
  foreach($key in $values.Keys){$saved[$key]=[Environment]::GetEnvironmentVariable($key);[Environment]::SetEnvironmentVariable($key,$values[$key])}
  if($PrepareOnly){'Isolated deletion test environment prepared; credentials suppressed';return}
  if($WorkerMode -cne 'test'){
@@ -240,7 +253,7 @@ try {
  }
  $arguments=@('test','--allow-env','--allow-net','--allow-run=docker,pwsh')
  if($Filter){$arguments+=@('--filter',$Filter)}
- $arguments+='supabase/prod/tests/account_deletion_test.ts'
+ if($SupportTest){$arguments+='supabase/account-deletion/tests/support_operator_test.ts'}else{$arguments+='supabase/prod/tests/account_deletion_test.ts'}
  & 'C:\Users\PC\.deno\bin\deno.exe' @arguments
  if($LASTEXITCODE -ne 0){throw 'Account deletion acceptance failed'}
 }finally{foreach($key in $saved.Keys){[Environment]::SetEnvironmentVariable($key,$saved[$key])};$env:ACCOUNT_DELETION_WORKER_TOKEN=$savedWorker;Pop-Location}

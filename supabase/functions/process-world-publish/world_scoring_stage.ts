@@ -1,6 +1,6 @@
 import { sourceMatches, type PublishSourceMetadata, type PublishedSource } from "./source_contract.ts";
 import { rules } from "./world_validation.ts";
-import { evaluateScoring, type ScoringResult, type WinningRegion } from "./world_scoring.ts";
+import { evaluateReliableSourceEligibility, evaluateScoring, type ScoringResult, type WinningRegion } from "./world_scoring.ts";
 import type { Coverage, Road } from "./world_road_overlap.ts";
 
 export type SourceRow = PublishSourceMetadata & {
@@ -8,7 +8,8 @@ export type SourceRow = PublishSourceMetadata & {
 };
 export type SourceFailure = "world_source_lookup_failed" | "world_source_missing" |
   "world_source_mismatch" | "world_source_invalid" | "world_source_download_failed" |
-  "world_score_version_unsupported";
+  "world_score_version_unsupported" | "world_score_mixed_source_modes" |
+  "world_score_telemetry_insufficient";
 export class ScoringSourceError extends Error {
   constructor(readonly code: SourceFailure) { super(code); }
 }
@@ -36,7 +37,7 @@ export class RequestSourceLoader {
       return Promise.reject(new ScoringSourceError("world_source_mismatch"));
     }
     if (row.drive_score_algorithm_version !== rules.driveScoreAlgorithmVersion ||
-      row.telemetry_version !== rules.telemetryVersion || row.source_schema_version !== rules.sourceSchemaVersion ||
+      row.telemetry_version !== rules.telemetryVersion || ![1, 2].includes(row.source_schema_version ?? 0) ||
       row.world_rules_version !== rules.worldRulesVersion) {
       return Promise.reject(new ScoringSourceError("world_score_version_unsupported"));
     }
@@ -78,6 +79,17 @@ export async function analyzeWorldScoring(challengerPublishId: string, challenge
         if (!incumbent || incumbent.driveId !== coverage.trace.sourceDriveId) throw new Error("identity");
         const first = await loader.load(coverage.trace.sourcePublishId, incumbent.driveId);
         const second = await loader.load(challengerPublishId, challenger.driveId);
+        if (first.schema_version !== second.schema_version) {
+          throw new ScoringSourceError("world_score_mixed_source_modes");
+        }
+        const reliable = first.schema_version === 2;
+        if (reliable) {
+          const firstEligibility = evaluateReliableSourceEligibility(first);
+          const secondEligibility = evaluateReliableSourceEligibility(second);
+          if (!firstEligibility.scoreEligible || !secondEligibility.scoreEligible) {
+            throw new ScoringSourceError("world_score_telemetry_insufficient");
+          }
+        }
         const match = { ...coverage.match,
           firstStartOffsetMeters: coverage.activeStartOffsetMeters,
           firstEndOffsetMeters: coverage.activeEndOffsetMeters,
@@ -85,7 +97,8 @@ export async function analyzeWorldScoring(challengerPublishId: string, challenge
           secondEndOffsetMeters: coverage.challengerEndOffsetMeters,
           commonDistanceMeters: coverage.commonDistanceMeters,
           comparisonEligible: coverage.comparisonEligible };
-        scoring = evaluateScoring({ algorithmVersion: rules.driveScoreAlgorithmVersion, match,
+        scoring = evaluateScoring({ algorithmVersion: rules.driveScoreAlgorithmVersion,
+          calculationMode: reliable ? "reliable_intervals" : "legacy_v1", match,
           firstRoad: incumbent, secondRoad: challenger,
           firstTelemetry: first.canonical_telemetry, secondTelemetry: second.canonical_telemetry });
       }

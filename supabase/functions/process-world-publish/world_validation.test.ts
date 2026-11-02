@@ -161,6 +161,31 @@ test("disconnected sections stay separate; permanent chunk error is partial", as
   assert.equal(result.sections[0].id, "t0:c0:m0");
 });
 
+test("schema 2 raw-route break markers split Mapbox traces instead of bridging GPS gaps", async () => {
+  const route: Coordinate[] = [
+    { latitude: 40, longitude: 29 },
+    { latitude: 40, longitude: 29.001 },
+    { latitude: 40.1, longitude: 29.1, break_before: true },
+    { latitude: 40.1, longitude: 29.101 },
+  ];
+  const preprocessed = preprocess(route);
+  assert.equal(preprocessed.traces.length, 2);
+  assert.deepEqual(preprocessed.traces.map((trace) => trace.points.length), [2, 2]);
+  const submitted: string[] = [];
+  const result = await matchRoad(route, [], "test-token", async (_uri, form) => {
+    submitted.push(form.get("coordinates")!);
+    return { status: 200, body: ok({
+      geometry: form.get("coordinates")!.split(";").map((pair) => pair.split(",").map(Number)),
+      confidence: 0.9,
+    }) };
+  });
+  assert.equal(submitted.length, 2);
+  assert.ok(submitted[0].includes("29,40;29.001,40"));
+  assert.ok(submitted[1].includes("29.1,40.1;29.101,40.1"));
+  assert.equal(result.sections.length, 2);
+  assert.notEqual(result.sections[0].sourceTraceIndex, result.sections[1].sourceTraceIndex);
+});
+
 test("multiple matchings retain sections and weighted overall confidence", async () => {
   const route = [{ latitude: 40, longitude: 29 }, { latitude: 40, longitude: 29.002 }];
   const result = await matchRoad(route, [], "test-token", async () => ({

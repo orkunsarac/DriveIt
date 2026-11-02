@@ -15,6 +15,7 @@ import '../lib/features/my_world/services/common_road_telemetry_extractor.dart';
 import '../lib/features/my_world/services/local_winning_road_region_service.dart';
 import '../lib/features/my_world/services/active_world_coverage.dart';
 import '../lib/models/canonical_telemetry_point.dart';
+import '../lib/services/drive_time_analysis.dart';
 
 typedef Json = Map<String, dynamic>;
 Json? evaluateActiveCoverage(Json input) {
@@ -88,6 +89,12 @@ List<CanonicalTelemetryPoint> telemetry(List values) => values.map((v) {
     accuracyMeters: number(p, 'accuracy_meters'),
     distanceFromPreviousMeters: number(p, 'distance_from_previous_meters'),
     accelerationMps2: number(p, 'acceleration_mps2'),
+    breakBefore: p['break_before'] == true,
+    gapDurationMicros: p['gap_duration_micros'] is num
+        ? (p['gap_duration_micros'] as num).toInt()
+        : 0,
+    speedSource: p['speed_source'] as String? ?? 'legacy',
+    accelerationReliable: p['acceleration_reliable'] != false,
   );
 }).toList();
 Json score(DriveScoreResult? s) => s == null
@@ -96,6 +103,11 @@ Json score(DriveScoreResult? s) => s == null
         'totalScore': s.totalScore,
         'displayScore': s.displayScore,
         'algorithmVersion': s.algorithmVersion,
+        if (s.calculationMode == 'reliable_intervals') ...{
+          'calculationMode': s.calculationMode,
+          'calculationVersion': s.calculationVersion,
+          'reliabilityPolicyVersion': s.reliabilityPolicyVersion,
+        },
         'overallConfidence': s.overallConfidence,
         'categories': s.categories.map(
           (key, v) => MapEntry(key, {
@@ -134,6 +146,30 @@ Json subset(CommonRoadTelemetrySubset s) => {
 };
 
 Json evaluateWorldScoring(Json input) {
+  if (input['operation'] == 'reliableEligibility') {
+    final metadata = input['telemetryReliability'];
+    if (metadata is! Json ||
+        metadata['reliabilityPolicyVersion'] != 1 ||
+        metadata['startedAtMicros'] is! int ||
+        metadata['stopRequestedAtMicros'] is! int) {
+      return {'status': 'invalidReliabilityMetadata', 'scoreEligible': false};
+    }
+    final points = telemetry(input['firstTelemetry'] as List);
+    final analysis = DriveTimeAnalysis.analyze(
+      points,
+      metadata: {
+        'startedAtMicros': metadata['startedAtMicros'],
+        'stopRequestedAtMicros': metadata['stopRequestedAtMicros'],
+      },
+    );
+    return {
+      'status': 'evaluated',
+      'scoreEligible': analysis.scoreEligible,
+      'coverageSufficient': analysis.coverageSufficient,
+      'movementSufficient': analysis.movementSufficient,
+      'coverage': analysis.coverage,
+    };
+  }
   final version = input['algorithmVersion'];
   if (version != DriveScoreAlgorithmVersion.v1.value) {
     return {
@@ -166,7 +202,14 @@ Json evaluateWorldScoring(Json input) {
       secondRoad = road(input['secondRoad']);
   final first = telemetry(input['firstTelemetry']),
       second = telemetry(input['secondTelemetry']);
-  return analyzeScoring(match, firstRoad, secondRoad, first, second);
+  return analyzeScoring(
+    match,
+    firstRoad,
+    secondRoad,
+    first,
+    second,
+    reliableIntervalsOnly: input['calculationMode'] == 'reliable_intervals',
+  );
 }
 
 CommonRoadMatch decodeMatch(Json m) => CommonRoadMatch(
@@ -197,6 +240,7 @@ Json analyzeScoring(
   List<CanonicalTelemetryPoint> first,
   List<CanonicalTelemetryPoint> second, {
   CommonRoadLocalScoreService service = const CommonRoadLocalScoreService(),
+  bool reliableIntervalsOnly = false,
 }) {
   // Strict outer clipping prevents the window service's +/-5m tolerance from
   // reading outside an active trace or the Stage 2A clipped common span.
@@ -223,6 +267,7 @@ Json analyzeScoring(
     secondRoad: secondRoad,
     secondTelemetry: pair.second.telemetry,
     algorithmVersion: DriveScoreAlgorithmVersion.v1,
+    reliableIntervalsOnly: reliableIntervalsOnly,
   );
   final analysis = LocalWinningRoadRegionService(localScoreService: service)
       .analyze(
@@ -232,6 +277,7 @@ Json analyzeScoring(
         challengerRoad: secondRoad,
         challengerTelemetry: pair.second.telemetry,
         algorithmVersion: DriveScoreAlgorithmVersion.v1,
+        reliableIntervalsOnly: reliableIntervalsOnly,
       );
   return {
     'status': analysis.status.name,

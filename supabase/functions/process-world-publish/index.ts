@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { sourceMatches } from "./source_contract.ts";
 import { publishColumns, publishLookupFailure, resolveAdminKey } from "./admin_client.ts";
-import { planEmptyWorld } from "./active_world_empty_planner.ts";
+import { commitEmptyWorldPlan, planEmptyWorld } from "./active_world_empty_planner.ts";
 import { sectionCoordinates, sectionDistanceMeters } from "./validated_section_geojson.ts";
 import { evaluateCandidateSnapshot } from "./active_world_overlap_stage.ts";
 import { analyzeWorldScoring, RequestSourceLoader, type SourceRow } from "./world_scoring_stage.ts";
@@ -172,17 +172,11 @@ async function activateEmptyWorld(admin: SupabaseClient, publishId: string, loca
   });
   logWorldStage("empty_world_plan_built", publishId);
   logWorldStage("activate_empty_world_rpc", publishId);
-  const { data: activated, error: activationError } = await admin.rpc(
-    "activate_empty_world_publish",
-    {
-      p_publish_id: publishId,
-      p_expected_generation: plan.baseGeneration,
-      p_drive_score_algorithm_version: plan.driveScoreAlgorithmVersion,
-      p_world_rules_version: plan.validatedRoadProcessingVersion,
-      p_expected_plan: plan,
-    },
-  );
-  if (activationError || !activated) {
+  let activated: Record<string, unknown>;
+  try {
+    activated = await commitEmptyWorldPlan(publishId, plan,
+      async (name, args) => admin.rpc(name, args));
+  } catch (activationError) {
     logWorldStageFailure("active_world_commit", publishId, "active_world_commit_failed", activationError);
     return error("active_world_commit_failed", 503);
   }
@@ -286,7 +280,7 @@ Deno.serve(async (request) => {
   if (publish.source_path !== `${userId}/${publish.id}.json`) {
     return await fail("source_mismatch", false, 422);
   }
-  if (publish.source_schema_version !== rules.sourceSchemaVersion ||
+  if (![rules.sourceSchemaVersion, 2].includes(publish.source_schema_version ?? 0) ||
       publish.telemetry_version !== rules.telemetryVersion ||
       publish.world_rules_version !== rules.worldRulesVersion ||
       publish.drive_score_algorithm_version !== rules.driveScoreAlgorithmVersion) {

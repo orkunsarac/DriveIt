@@ -1,7 +1,7 @@
 {
   "compiler": "Dart SDK version: 3.12.2 (stable) (Tue Jun 9 01:11:39 2026 -0700) on \"windows_x64\"",
-  "artifact_sha256": "47d0564b1450d5c49c26a2e50d3fed05d937e7a4f8f35de9a8e66a7503580870",
-  "boundary_artifact_sha256": "8c42f1eb5f0856e4892751b533d3cd305709d9cbcb342c800075e95d31004102",
+  "artifact_sha256": "1fd37c38a3ab0b1dcb53daa98cd8a98955bdad9cb2e465984feb9edd770c38c6",
+  "boundary_artifact_sha256": "9b93235ab53cb9a1ec5bc3e0aa77d9a91f6ad2a5c4108af52d0f83cebd7dcd24",
   "sources": {
     "lib/features/drive_score/config/acceleration_performance_calibration.dart": "70bdbe51bfb4e1b7111be43b90ab55a9fdc64c8f2d1e86bc0086625b2c13bd25",
     "lib/features/drive_score/config/braking_score_calibration.dart": "e893641be1bc5963a49b2a639c3168893c35b8d54d9f20ceaea6857efc64a514",
@@ -44,10 +44,10 @@
     "lib/features/my_world/models/world_index_snapshot.dart": "b70f709b3e68fc04ec5e993d921910ef732a47a9f2bb77545471d0c3177db6db",
     "lib/features/my_world/models/world_trace_overlap_analysis.dart": "9652f2328b4c05a905692c85f50ea04291313663a3477ad5557427798ca12011",
     "lib/features/my_world/services/active_world_coverage.dart": "5bee1c9b4d395ee73b36559fc18d86c131d0102da9e3071d3c2fda227829efd1",
-    "lib/features/my_world/services/common_road_local_score_service.dart": "3aa59eb979bcfc442e02874a609e479dcf28e1e728223263fcfc0990261e085e",
+    "lib/features/my_world/services/common_road_local_score_service.dart": "d9854c7300cdb1d97d266eb71281fbdf9958e98388ffa506b9af66abdb97a239",
     "lib/features/my_world/services/common_road_telemetry_extractor.dart": "75ee9a53ff967d9b32d68747fe464e7fcbfab59140ba3271a91bba2800620fbc",
     "lib/features/my_world/services/geo_distance.dart": "57b3e35247b4128937cbbc0542ac9761100ccabcac63afe4dcacae449426cdfe",
-    "lib/features/my_world/services/local_winning_road_region_service.dart": "8499fefda0b9cde50cb6860474eef9195d52966c70a31235a22d6c2a67c032dc",
+    "lib/features/my_world/services/local_winning_road_region_service.dart": "d25f0837523d7ee4d7de07e4d6a2df30a1698c039c3948644dc7813838d3697c",
     "lib/features/my_world/services/world_index_mutation_planner.dart": "89c162a62c63c0796172ef77381702c30d5d38c24db96077eb5e8e60ce767cff",
     "lib/features/my_world/services/world_section_offset_mapper.dart": "dcd7dd41d3a54a066c0113533acd96e8c56150fbddd13cf4692af46a555c270f",
     "lib/models/canonical_telemetry_point.dart": "3bc7ed4edfcca60a2649c115f1701dffd4631cd44e8b7e9cd308f83024bbc0a6",
@@ -55,7 +55,7 @@
     "lib/services/drive_time_analysis.dart": "1dd71d598e7f6d222caa34587128a566d396a19e7b3c39b194f47b1e559fb51d",
     "lib/services/gps_gap_policy.dart": "ccbc57d6d4ea66d6bbbcac40c8ed777ee00f26bb9d46559d01f278301bddc1b2",
     "tool/world_mutation_adapter.dart": "4640bdf7400f723ee8d6b99d4376e51d7081fd7518496f8d560549468afd1afb",
-    "tool/world_scoring_adapter.dart": "15ba6b33d8593a71f62ecdea5ca764b9fcdae30f29f7aedef1b8cc6e92da7c34",
+    "tool/world_scoring_adapter.dart": "e3160c94152e33a419bfbb86b748a53fdb59b868780c798937a2d5d1ed626d9c",
     "tool/world_scoring_boundary_adapter.dart": "266d45bf2822864588e6037ad1e20226993e1fe8789d5004f74efd473bfa7eb9",
     "tool/world_scoring_boundary_js.dart": "644aa622f3b0dc226b00c659d8abe191632bf3c55d4de47075cfc5e4c8045d00",
     "tool/world_scoring_js.dart": "b564716abe812553e6cbaea097c16578ab5cb467b0bef5af95e8129cc87eee10"

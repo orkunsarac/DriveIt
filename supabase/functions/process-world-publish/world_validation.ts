@@ -18,7 +18,7 @@ export const rules = Object.freeze({
   mapMatchingTimeoutMs: 15000,
 });
 
-export type Coordinate = { latitude: number; longitude: number };
+export type Coordinate = { latitude: number; longitude: number; break_before?: boolean };
 export type TelemetryPoint = Coordinate & { timestamp: string };
 export type Trace = { index: number; points: Coordinate[] };
 export type Chunk = { traceIndex: number; chunkIndex: number; points: Coordinate[] };
@@ -126,6 +126,12 @@ export function preprocess(
   }
   for (let routeIndex = 0; routeIndex < route.length; routeIndex++) {
     const point = route[routeIndex];
+    // Schema 2 encodes acquired GPS gaps explicitly. Never let Mapbox
+    // preprocessing connect route points across one of those boundaries.
+    if (point.break_before === true && current.length) {
+      closeTrace();
+      previousAcceptedRouteIndex = null;
+    }
     if (!valid(point)) {
       invalid++;
       closeTrace();

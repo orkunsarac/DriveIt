@@ -291,9 +291,18 @@ function reliableFixture(gapSeconds = 0) {
     };
   });
   const end = start + (179 + gapSeconds) * 1000;
+  const hasGap = gapSeconds > 0;
   const reliable = {
     ...source,
-    raw_route: source.raw_route.map((p) => ({ ...p, break_before: false })),
+    raw_route: hasGap
+      ? [
+        { ...source.raw_route[0], break_before: false },
+        { latitude: points[90].latitude,
+          longitude: points[90].longitude,
+          break_before: true },
+        { ...source.raw_route[1], break_before: false },
+      ]
+      : source.raw_route.map((p) => ({ ...p, break_before: false })),
     schema_version: 2,
     score_calculation_mode: "reliable_intervals",
     score_calculation_version: 1,
@@ -311,6 +320,7 @@ function reliableFixture(gapSeconds = 0) {
     publish: {
       ...context.publish,
       source_schema_version: 2,
+      raw_route_point_count: reliable.raw_route.length,
       telemetry_point_count: 180,
     },
   };

@@ -5,6 +5,7 @@ import type { CanonicalSourcePoint } from "./source_contract.ts";
 import type { Match, Road } from "./world_road_overlap.ts";
 
 export type Score = { totalScore: number; displayScore: number; algorithmVersion: number;
+  calculationMode?: string; calculationVersion?: number; reliabilityPolicyVersion?: number | null;
   overallConfidence: number; categories: Record<string, { score: number; maximum: number;
     applicable: boolean; sampleSufficient: boolean }>;
   contributions: Record<string, { contribution: number; source: string }> };
@@ -28,10 +29,20 @@ export type ScoringResult = { status: "success" | "notEligible" | "insufficientC
   secondExtraction?: { status: string; count: number; startIndex: number; endIndex: number; timestamps: string[] } };
 export type ScoringInput = { algorithmVersion: number; match: Match;
   firstRoad: Road; secondRoad: Road; firstTelemetry: CanonicalSourcePoint[];
-  secondTelemetry: CanonicalSourcePoint[] };
+  secondTelemetry: CanonicalSourcePoint[]; calculationMode?: "legacy_v1" | "reliable_intervals" };
 export function evaluateScoring(input: ScoringInput): ScoringResult {
   const bridge = (globalThis as unknown as { driveItWorldScoring: (s: string) => string }).driveItWorldScoring;
   return JSON.parse(bridge(JSON.stringify(input)));
+}
+export function evaluateReliableSourceEligibility(source: {
+  canonical_telemetry: CanonicalSourcePoint[];
+  telemetry_reliability?: { reliabilityPolicyVersion: number;
+    startedAtMicros: number; stopRequestedAtMicros: number };
+}): { scoreEligible: boolean; coverageSufficient: boolean; movementSufficient: boolean } {
+  const bridge = (globalThis as unknown as { driveItWorldScoring: (s: string) => string }).driveItWorldScoring;
+  return JSON.parse(bridge(JSON.stringify({ operation: "reliableEligibility",
+    firstTelemetry: source.canonical_telemetry,
+    telemetryReliability: source.telemetry_reliability ?? null })));
 }
 export type ActiveCoverage = { firstStartOffsetMeters: number; firstEndOffsetMeters: number;
   secondStartOffsetMeters: number; secondEndOffsetMeters: number;

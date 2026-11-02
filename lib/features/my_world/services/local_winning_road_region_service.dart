@@ -23,6 +23,7 @@ class LocalWinningRoadRegionService {
     required ValidatedRoad challengerRoad,
     required Iterable<CanonicalTelemetryPoint> challengerTelemetry,
     DriveScoreAlgorithmVersion algorithmVersion = DriveScoreAlgorithmVersion.v1,
+    bool reliableIntervalsOnly = false,
   }) {
     if (!match.comparisonEligible) {
       return _empty(
@@ -56,11 +57,13 @@ class LocalWinningRoadRegionService {
       challengerRoad: challengerRoad,
       challengerTelemetry: bounded.second.telemetry,
       algorithmVersion: algorithmVersion,
+      reliableIntervalsOnly: reliableIntervalsOnly,
     );
     final regions = _winningRegions(
       match: match,
       windows: windows,
       algorithmVersion: algorithmVersion,
+      reliableIntervalsOnly: reliableIntervalsOnly,
     );
     return LocalWinningRoadRegionAnalysis(
       status: LocalRoadRegionAnalysisStatus.success,
@@ -78,6 +81,7 @@ class LocalWinningRoadRegionService {
     required ValidatedRoad challengerRoad,
     required Iterable<CanonicalTelemetryPoint> challengerTelemetry,
     required DriveScoreAlgorithmVersion algorithmVersion,
+    required bool reliableIntervalsOnly,
   }) {
     final windows = <LocalRoadScoreWindow>[];
     var commonStart = 0.0;
@@ -97,6 +101,7 @@ class LocalWinningRoadRegionService {
         secondRoad: challengerRoad,
         secondTelemetry: challengerTelemetry,
         algorithmVersion: algorithmVersion,
+        reliableIntervalsOnly: reliableIntervalsOnly,
         requireComparisonEligibility: false,
         firstStartOffsetMeters: existingStart,
         firstEndOffsetMeters: existingEnd,
@@ -126,6 +131,7 @@ class LocalWinningRoadRegionService {
     required CommonRoadMatch match,
     required List<LocalRoadScoreWindow> windows,
     required DriveScoreAlgorithmVersion algorithmVersion,
+    required bool reliableIntervalsOnly,
   }) {
     final regions = <LocalWinningRoadRegion>[];
     _WinningCandidate? candidate;
@@ -143,6 +149,13 @@ class LocalWinningRoadRegionService {
     }
 
     for (final window in windows) {
+      if (reliableIntervalsOnly &&
+          window.state == LocalRoadWindowState.invalid) {
+        // Missing or malformed telemetry is a hard region boundary for the
+        // reliable contract. Legacy v1 keeps its historical gap behavior.
+        finalize();
+        continue;
+      }
       if (window.state == LocalRoadWindowState.challengerBetter) {
         if (candidate == null) {
           candidate = _WinningCandidate.fromWindow(window);

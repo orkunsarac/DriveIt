@@ -1,4 +1,4 @@
-import { type Coordinate, rules } from "./world_validation.ts";
+import { distanceMeters, type Coordinate, rules } from "./world_validation.ts";
 
 export type CanonicalSourcePoint = Coordinate & {
   timestamp: string;
@@ -8,8 +8,29 @@ export type CanonicalSourcePoint = Coordinate & {
   accuracy_meters: number;
   distance_from_previous_meters: number;
   acceleration_mps2: number;
+  break_before?: boolean;
+  gap_duration_micros?: number;
+  speed_source?: string;
+  acceleration_reliable?: boolean;
+  timestamp_micros?: string;
 };
 export type PublishedSource = {
+  schema_version: number;
+  publish_id: string;
+  local_drive_id: string;
+  telemetry_version: number;
+  drive_score_algorithm_version: number;
+  world_rules_version: number;
+  started_at: string;
+  ended_at: string;
+  recorded_distance_meters: number;
+  score_calculation_mode?: string;
+  score_calculation_version?: number;
+  telemetry_reliability?: {
+    reliabilityPolicyVersion: number;
+    startedAtMicros: number;
+    stopRequestedAtMicros: number;
+  };
   raw_route: Coordinate[];
   canonical_telemetry: CanonicalSourcePoint[];
 };
@@ -85,7 +106,26 @@ export function sourceMatches(
     return false;
   }
   if (value.schema_version === 2) {
-    if (!value.raw_route.every((p) => typeof p.break_before === "boolean")) {
+    if (!value.raw_route.every((p) => typeof p.break_before === "boolean" &&
+      p.latitude >= -90 && p.latitude <= 90 &&
+      p.longitude >= -180 && p.longitude <= 180)) {
+      return false;
+    }
+    const rawBoundaries = (value.raw_route as Coordinate[]).filter((p) => p.break_before === true);
+    const telemetryBoundaries = (value.canonical_telemetry as CanonicalSourcePoint[]).filter(
+      (p) => p.break_before === true,
+    );
+    const hasBoundary = (point: { latitude: number; longitude: number }, candidates: unknown[]) =>
+      candidates.some((candidate) => {
+        if (!candidate || typeof candidate !== "object") return false;
+        const value = candidate as Record<string, unknown>;
+        return typeof value.latitude === "number" &&
+          typeof value.longitude === "number" &&
+          distanceMeters(point, value as Coordinate) <=
+            rules.canonicalRouteAlignmentToleranceMeters;
+      });
+    if (rawBoundaries.some((point) => !hasBoundary(point, telemetryBoundaries)) ||
+        telemetryBoundaries.some((point) => !hasBoundary(point, rawBoundaries))) {
       return false;
     }
     if (
@@ -104,9 +144,22 @@ export function sourceMatches(
       !Number.isSafeInteger(policy.stopRequestedAtMicros) ||
       Number(policy.stopRequestedAtMicros) <= Number(policy.startedAtMicros)
     ) return false;
+    const timestampMicros = (timestamp: string): bigint => {
+      const fraction = (timestamp.match(/\.(\d+)Z$/)?.[1] ?? "").padEnd(6, "0");
+      return BigInt(Date.parse(timestamp)) * 1000n + BigInt(fraction.slice(3) || "0");
+    };
+    if (timestampMicros(value.started_at).toString() !==
+        String(policy.startedAtMicros) ||
+        timestampMicros(value.ended_at).toString() !==
+        String(policy.stopRequestedAtMicros)) return false;
     let previous: bigint | undefined;
     for (const raw of value.canonical_telemetry) {
       const p = raw as Record<string, unknown>;
+      const speed = p.speed_mps as number;
+      const heading = p.heading_degrees as number;
+      const altitude = p.altitude_meters as number;
+      const accuracy = p.accuracy_meters as number;
+      const distance = p.distance_from_previous_meters as number;
       if (
         typeof p.break_before !== "boolean" ||
         typeof p.acceleration_reliable !== "boolean" ||
@@ -119,12 +172,20 @@ export function sourceMatches(
         typeof p.timestamp !== "string" ||
         !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z$/.test(p.timestamp)
       ) return false;
-      const fraction = (p.timestamp.match(/\.(\d+)Z$/)?.[1] ?? "").padEnd(
-        6,
-        "0",
-      );
-      const micros = BigInt(Date.parse(p.timestamp)) * 1000n +
-        BigInt(fraction.slice(3) || "0");
+      if (
+        speed < 0 || speed > 100 ||
+        heading < -1 || heading > 360 ||
+        altitude < -1000 || altitude > 10000 ||
+        accuracy < 0 || accuracy > 1000 ||
+        distance < 0 ||
+        !Number.isSafeInteger(p.gap_duration_micros) ||
+        Number(p.gap_duration_micros) < 0 ||
+        !["native", "geometry_estimate", "held_estimate", "unavailable"]
+          .includes(p.speed_source as string)
+      ) return false;
+      if (typeof p.timestamp_micros !== "string" ||
+          !/^\d{1,16}$/.test(p.timestamp_micros)) return false;
+      const micros = timestampMicros(p.timestamp);
       if (
         micros.toString() !== p.timestamp_micros ||
         (previous !== undefined && micros <= previous) ||

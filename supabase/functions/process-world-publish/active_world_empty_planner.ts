@@ -88,6 +88,28 @@ export function planEmptyWorld(input: {
   };
 }
 
+// Thin server-side commit boundary shared by the production handler and its
+// synthetic acceptance tests. The database RPC remains authoritative for
+// generation/idempotency and never receives source telemetry or score data.
+export async function commitEmptyWorldPlan(
+  publishId: string,
+  plan: EmptyWorldPlan,
+  invoke: (name: string, args: Record<string, unknown>) =>
+    Promise<{ data: unknown; error: unknown }>,
+): Promise<Record<string, unknown>> {
+  const result = await invoke("activate_empty_world_publish", {
+    p_publish_id: publishId,
+    p_expected_generation: plan.baseGeneration,
+    p_drive_score_algorithm_version: plan.driveScoreAlgorithmVersion,
+    p_world_rules_version: plan.validatedRoadProcessingVersion,
+    p_expected_plan: plan,
+  });
+  if (result.error || !result.data || typeof result.data !== "object") {
+    throw new Error("active_world_commit_failed");
+  }
+  return result.data as Record<string, unknown>;
+}
+
 function geometryLength(points: ActiveWorldSection["geometry"]): number {
   let length = 0;
   for (let index = 1; index < points.length; index++) {

@@ -1,0 +1,9 @@
+# R4 Android callback test checkpoint
+
+Android callback acceptance remains incomplete. On emulator-5554 (API 36), `flutter test --no-pub -d emulator-5554 integration_test/auth_callback_android_test.dart --dart-define=DRIVEIT_ISOLATED_ANDROID_TEST=true` built and installed package `com.example.driveit_project.isolated_test`. With that test running, `adb -s emulator-5554 shell am start -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d 'com.example.driveit-project.isolated-test://auth/callback?code=synthetic-warm' com.example.driveit_project.isolated_test` delivered the intent to the existing activity and the test passed (1/1). The test uses actual Android app_links delivery and Supabase SDK with synthetic HTTP; it is an isolated harness, not the production app composition or a real email.
+
+A cold start was attempted. The integration runner removed the test package after completion; the first cold Intent could not resolve. After verifying the APK applicationId, it was installed again only on emulator-5554 and launched with a synthetic cold Intent. Android started the activity, but no integration-test driver was attached to report the exchange; cold PKCE completion is NOT VERIFIED. Do not interpret activity launch as cold acceptance.
+
+The app now queries the plugin's most recent in-memory link after subscribing and after the owner runtime is ready. This covers a warm intent arriving before subscription in addition to the initial link; duplicate suppression remains in OwnerAuthCallbackDelivery. Multiple earlier links are not durably queued; no callback or credential is written to disk. Real Android startup and production composition remain to be tested.
+
+No production Auth, signup, Group Drive, real email, signing or A55 application/data changes were made. Session restore, controlled refresh and recovery remain pending and were not activated.

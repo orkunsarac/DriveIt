@@ -423,6 +423,17 @@ class _DriveItAppState extends State<DriveItApp> {
             })
             .catchError((Object _) {}),
       );
+      // A warm intent can arrive after Android attaches the plugin but before
+      // this owner runtime subscribes. app_links retains the latest intent in
+      // memory; delivery deduplicates it against the initial/stream event.
+      unawaited(
+        links
+            .getLatestLink()
+            .then((uri) {
+              if (uri != null) return delivery.deliver(uri);
+            })
+            .catchError((Object _) {}),
+      );
     }
     if (SupabaseBootstrap.isInitialized) {
       _authCallbackSubscription = Supabase

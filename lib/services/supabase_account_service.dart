@@ -248,6 +248,7 @@ class SupabaseAccountService extends ChangeNotifier
         owner == null ||
         !identical(owner.lease, lease) ||
         lease.owner.kind != GpsOwnerKind.account ||
+        !lease.cloudDeletionEnabled ||
         lease.owner.userId == null) {
       throw StateError('Planet publication owner context unavailable');
     }
@@ -346,7 +347,66 @@ class SupabaseAccountService extends ChangeNotifier
     if (owner == null || !owner.gate.enabled) {
       throw StateError('Safe account deletion owner runtime unavailable');
     }
+    if (SupabaseBootstrap.isPlayPackage) {
+      final lease = requireAccountDeletionLease();
+      await owner.authorizeIdentityChange(() async {
+        lease.requireCurrent();
+        if (_client?.auth.currentUser?.id != lease.owner.userId) {
+          throw StateError('Account deletion owner changed');
+        }
+        await action();
+      });
+      return;
+    }
     await owner.authorizeIdentityChange(action);
+  }
+
+  /// Captures the only Play owner context allowed to start a destructive
+  /// request. Receipt-only recovery deliberately does not use this method.
+  LocalOwnerLease requireAccountDeletionLease([String? expectedOwner]) {
+    final client = _client;
+    final owner = _controlledOwner;
+    if (!SupabaseBootstrap.isPlayPackage || client == null || owner == null) {
+      throw StateError('Play account deletion owner unavailable');
+    }
+    final lease = owner.lease;
+    final uid = lease.owner.userId;
+    if (!lease.isCurrent ||
+        lease.owner.kind != GpsOwnerKind.account ||
+        !lease.cloudDeletionEnabled ||
+        uid == null ||
+        client.auth.currentUser?.id != uid ||
+        (expectedOwner != null && expectedOwner != uid)) {
+      throw StateError('Play account deletion owner mismatch');
+    }
+    return lease;
+  }
+
+  /// A per-request client pins this lease's owner, epoch and current Auth
+  /// credential. It cannot follow a later SDK session mutation.
+  OwnerProfileGateway requireAccountDeletionGateway({
+    required LocalOwnerLease lease,
+  }) {
+    final owner = _controlledOwner;
+    final client = _client;
+    if (!SupabaseBootstrap.isPlayPackage ||
+        owner == null ||
+        client == null ||
+        !identical(owner.lease, lease) ||
+        lease.owner.kind != GpsOwnerKind.account ||
+        lease.owner.userId == null) {
+      throw StateError('Play account deletion gateway unavailable');
+    }
+    lease.requireCurrent();
+    return OwnerProfileGateway(
+      authClient: client,
+      url: SupabaseConfig.url,
+      publicKey: SupabaseConfig.publishableKey,
+      applicationId: 'com.osaracx.driveit',
+      approvedOwner: () => lease.owner.userId,
+      approvedEpoch: () => lease.epoch,
+      isLeaseCurrent: (epoch) => epoch == lease.epoch && lease.isCurrent,
+    );
   }
 
   StreamSubscription<AuthState>? _identitySubscription;

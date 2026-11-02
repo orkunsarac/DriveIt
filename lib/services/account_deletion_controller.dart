@@ -28,6 +28,7 @@ class AccountDeletionController extends ChangeNotifier {
     required this.send,
     required this.currentOwner,
     required this.guard,
+    this.resumeGuard,
     required this.signOutLocal,
     required this.endpoint,
   });
@@ -35,6 +36,11 @@ class AccountDeletionController extends ChangeNotifier {
   final Future<AccountDeletionReply> Function(Map<String, dynamic>) send;
   final String? Function() currentOwner;
   final Future<void> Function(Future<void> Function()) guard;
+
+  /// Receipt-only recovery can outlive the Auth session that created it.
+  /// Production Play uses an unauthenticated receipt transport for `run`;
+  /// callers must still bind the receipt to its endpoint and owner.
+  final Future<void> Function(Future<void> Function())? resumeGuard;
   final Future<void> Function(String owner) signOutLocal;
   final String endpoint;
   AccountDeletionState state = AccountDeletionState.idle;
@@ -108,7 +114,7 @@ class AccountDeletionController extends ChangeNotifier {
       return;
     }
     await _drain(receipt);
-  });
+  }, actionGuard: guard);
   Future<void> resume() => _single(() async {
     final receipt = await store.read(currentOwner());
     if (receipt == null) {
@@ -119,7 +125,7 @@ class AccountDeletionController extends ChangeNotifier {
     _validate(receipt, owner);
     _assertOwner(owner);
     await _drain(receipt);
-  });
+  }, actionGuard: resumeGuard ?? guard);
   void _validate(Map<String, dynamic> r, String owner) {
     if (r['owner'] != owner ||
         r['endpoint'] != endpoint ||
@@ -170,11 +176,14 @@ class AccountDeletionController extends ChangeNotifier {
     }
   }
 
-  Future<void> _single(Future<void> Function() action) {
+  Future<void> _single(
+    Future<void> Function() action, {
+    required Future<void> Function(Future<void> Function()) actionGuard,
+  }) {
     if (_flight != null) return _flight!;
     final flight = Future<void>(() async {
       try {
-        await guard(action);
+        await actionGuard(action);
       } catch (_) {
         _set(AccountDeletionState.failed);
       }

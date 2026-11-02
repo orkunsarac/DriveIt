@@ -35,7 +35,14 @@ try {
  $auth=Read-Prod '/config/auth'
  $data=Read-Prod '/database/query' "select json_build_object('authUsers',(select count(*) from auth.users),'migrationCount',(select count(*) from supabase_migrations.schema_migrations),'gate',(select enabled from public.phase8_group_rollout where singleton),'publicTables',(select count(*) from pg_class where relnamespace='public'::regnamespace and relkind='r'),'deletionInstalled',to_regclass('public.account_deletion_jobs') is not null) as evidence;"
  $functions=Read-Prod '/functions'
- [pscustomobject]@{projectRef=$ref;status=$project.status;disableSignup=$auth.disable_signup;evidence=@($data)[0].evidence;functions=@($functions|Select-Object slug,status,verify_jwt)}|ConvertTo-Json -Depth 7
+ $storage=Read-Prod '/database/query' "select id,public from storage.buckets where id in ('world-drive-sources','phase8-drive-staging') order by id;"
+ $cron=Read-Prod '/database/query' "select to_regclass('cron.job') is not null as installed;"
+ $activeDeletionSchedules=0
+ if(@($cron)[0].installed){
+  $jobs=Read-Prod '/database/query' "select count(*) as active from cron.job where active and (command ilike '%delete-account%' or command ilike '%account_deletion%');"
+  $activeDeletionSchedules=@($jobs)[0].active
+ }
+ [pscustomobject]@{projectRef=$ref;status=$project.status;disableSignup=$auth.disable_signup;anonymousSignup=$auth.external_anonymous_users_enabled;emailConfirmationRequired=(!$auth.mailer_autoconfirm);smtpConfigured=(![string]::IsNullOrWhiteSpace($auth.smtp_host));evidence=@($data)[0].evidence;privateBuckets=@($storage);activeDeletionSchedules=$activeDeletionSchedules;functions=@($functions|Select-Object slug,status,verify_jwt)}|ConvertTo-Json -Depth 7
 } finally {
  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
  $token=$null;$headers=$null;$secret=$null;$record=$null

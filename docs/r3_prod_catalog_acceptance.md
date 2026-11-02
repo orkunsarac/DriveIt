@@ -1,0 +1,123 @@
+# R3 — 50 migration PROD katalog karşılaştırması
+
+Yalnız katalog metadata: public tablo RLS/rol GRANT, public/storage/realtime policy komut/rol/USING/WITH CHECK, tüm public fonksiyon imzası/gövdesi/SECURITY DEFINER/search_path/EXECUTE yetkileri yerel referansla birebir karşılaştırıldı. Gerçek kullanıcı satırı sorgulanmadı.
+
+## tables
+- PASS account_deletion_erasure_audit
+- PASS account_deletion_events
+- PASS account_deletion_jobs
+- PASS account_deletion_replays
+- PASS phase8_drive_cancellations
+- PASS phase8_drive_changes
+- PASS phase8_drive_leases
+- PASS phase8_drive_manifests
+- PASS phase8_drive_owner_sequences
+- PASS phase8_drive_snapshots
+- PASS phase8_drive_tombstones
+- PASS phase8_drive_upload_intents
+- PASS phase8_group_memberships
+- PASS phase8_group_rollout
+- PASS phase8_groups
+- PASS profiles
+- PASS world_active_world_generations
+- PASS world_active_world_state
+- PASS world_active_world_traces
+- PASS world_publishes
+- PASS world_validated_road_sections
+- PASS world_validated_roads
+
+## policies
+- PASS Authenticated users can read profiles
+- PASS Users can update own profile
+- PASS account_deletion_profile_fence
+- PASS Users can create own pending world publishes
+- PASS Users can read own world publishes
+- PASS account_deletion_publish_fence
+- PASS Users can read own validated road sections
+- PASS account_deletion_section_fence
+- PASS Users can read own validated roads
+- PASS account_deletion_road_fence
+- PASS phase8_group_current_member_fence
+- PASS phase8_group_current_member_read
+- PASS phase8_group_no_client_publish
+- PASS Users can upload own world drive sources
+- PASS account_deletion_storage_fence
+- PASS phase8_drive_stage_insert
+
+## functions
+- PASS public.account_deletion_active(uuid)
+- PASS public.account_deletion_assert_active(uuid)
+- PASS public.account_deletion_capture_erasure_event()
+- PASS public.account_deletion_capture_subject()
+- PASS public.account_deletion_claim(uuid,text,uuid)
+- PASS public.account_deletion_complete(uuid,uuid)
+- PASS public.account_deletion_erase_auth_residue(uuid,text)
+- PASS public.account_deletion_failed(uuid,uuid)
+- PASS public.account_deletion_objects(uuid,uuid)
+- PASS public.account_deletion_phase_complete()
+- PASS public.account_deletion_planet_block(uuid,uuid)
+- PASS public.account_deletion_planet_commit(uuid,uuid,text,jsonb)
+- PASS public.account_deletion_planet_context(uuid,uuid)
+- PASS public.account_deletion_planet_guard()
+- PASS public.account_deletion_planet_hidden_roads()
+- PASS public.account_deletion_planet_write_fence()
+- PASS public.account_deletion_previous_topic_authorized()
+- PASS public.account_deletion_previous_trace_context(text)
+- PASS public.account_deletion_progress(uuid,uuid,text)
+- PASS public.account_deletion_prune_receipts()
+- PASS public.account_deletion_purge(uuid,uuid)
+- PASS public.account_deletion_record_event()
+- PASS public.account_deletion_reject_audit_mutation()
+- PASS public.account_deletion_release(uuid,uuid)
+- PASS public.account_deletion_replay_cleanup()
+- PASS public.account_deletion_replay_finish(uuid,uuid)
+- PASS public.account_deletion_replay_load(uuid,uuid)
+- PASS public.account_deletion_replay_save(uuid,uuid,text,bigint,integer,jsonb)
+- PASS public.account_deletion_replay_validate(uuid,jsonb,jsonb)
+- PASS public.account_deletion_request(uuid,uuid,text)
+- PASS public.account_deletion_worker_claim(uuid)
+- PASS public.account_deletion_worker_jobs()
+- PASS public.account_deletion_worker_retry(uuid)
+- PASS public.account_deletion_worker_status()
+- PASS public.account_deletion_write_fence()
+- PASS public.activate_empty_world_publish(uuid,bigint,integer,integer,jsonb)
+- PASS public.attach_world_publish_source(uuid,integer,integer,integer,integer,integer)
+- PASS public.claim_world_publish_validation(uuid,uuid)
+- PASS public.commit_active_world_mutation(uuid,bigint,jsonb)
+- PASS public.fail_world_publish_validation(uuid,uuid,uuid,boolean,text)
+- PASS public.finish_world_publish_validation(uuid,uuid,uuid,jsonb,jsonb)
+- PASS public.get_active_world_mutation_snapshot(uuid)
+- PASS public.get_active_world_overlap_candidates(uuid)
+- PASS public.get_world_validated_road_sections_for_processing_exact(uuid)
+- PASS public.get_world_validated_road_sections_for_processing(uuid)
+- PASS public.handle_new_user()
+- PASS public.is_username_available(text)
+- PASS public.phase8_begin_drive_snapshot(uuid)
+- PASS public.phase8_begin_drive_upload(uuid,text,uuid,text,smallint,text,text,integer)
+- PASS public.phase8_can_access_staging_object(text)
+- PASS public.phase8_cancel_staged_drive(uuid,uuid,uuid,uuid,text,jsonb)
+- PASS public.phase8_claim_drive_orphans(integer)
+- PASS public.phase8_delete_drive(uuid,uuid,uuid,bigint,text,jsonb)
+- PASS public.phase8_drive_lease(uuid,uuid,uuid,text,text,bigint)
+- PASS public.phase8_drive_sync_capabilities(uuid)
+- PASS public.phase8_expire_drive_orphan(uuid)
+- PASS public.phase8_finalize_drive_upload_fenced(uuid,uuid,text,text,text,integer,uuid,text,bigint)
+- PASS public.phase8_finalize_drive_upload(uuid,uuid,text,text,text,integer)
+- PASS public.phase8_group_accept_location(uuid,uuid,uuid,uuid,bigint,double precision,double precision,double precision,bigint,timestamp with time zone)
+- PASS public.phase8_group_command(text,uuid,text,uuid,boolean)
+- PASS public.phase8_group_enabled()
+- PASS public.phase8_group_topic_authorized()
+- PASS public.phase8_m1_begin_drive_upload(uuid,text,uuid,text,smallint,text,text,integer)
+- PASS public.phase8_m1_finalize_drive_upload(uuid,uuid,text,text,text,integer)
+- PASS public.phase8_m1_read_drive_snapshot_page(uuid,uuid,bigint,integer)
+- PASS public.phase8_m2_lock(uuid,uuid)
+- PASS public.phase8_read_drive_snapshot_page(uuid,uuid,bigint,integer)
+- PASS public.phase8_reject_immutable_mutation()
+- PASS public.read_planet_trace_detail_context(text)
+- PASS public.read_planet_viewport(double precision,double precision,double precision,double precision,double precision)
+- PASS public.set_updated_at()
+- PASS public.world_map_clip_geometry(extensions.geometry,double precision,double precision)
+- PASS public.world_map_section_prefix(uuid,integer)
+- PASS public.world_section_geometry_length_meters(extensions.geometry)
+
+Sonuç: PASS; uyuşmazlık 0.

@@ -1,5 +1,7 @@
 # R3 — onaylı dağıtım önkontrolü
 
+Tarihsel önkontrol kaydıdır. Mapbox tokenı daha sonra kullanıcıdan güvenli alınarak dağıtım tamamlandı; güncel sonuç `r3_deployment_acceptance.md` içindedir.
+
 Kullanıcı ek 25 migration ve güncel 10 Function dağıtımını açıkça onayladı. Signup, Group Drive ve worker/cron aktivasyonu kapsam dışındadır. Hukuki onboarding kapısı korunur.
 
 ## Yerel kabul

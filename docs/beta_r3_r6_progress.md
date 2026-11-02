@@ -1,7 +1,9 @@
 # Kapalı beta — R3/R4 hazırlık checkpoint'i
 
 Başlangıç: `84bf5aa366c875bb97c99cf51e8b5bd042c4e8b3`.
-Bu belge tüm kapalı beta kabulü değildir. Hosted aktivasyon yapılmadı.
+Bu belge tüm kapalı beta kabulü değildir. İlk hazırlık checkpoint'inde hosted aktivasyon yapılmamıştı.
+
+Güncelleme: kullanıcı onayıyla R3 backend upgrade ve Function dağıtımı tamamlandı; `r3_deployment_acceptance.md` güncel dağıtım kaydıdır. Aşağıdaki ilk hazırlık bulguları tarihsel checkpoint'i anlatır. Signup, istemci Auth/cloud ve worker/cron aktivasyonu hâlâ kapalıdır.
 
 ## Uygulanan değişiklikler
 

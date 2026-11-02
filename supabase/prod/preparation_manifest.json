@@ -16,7 +16,8 @@
     "phase8-drive-download",
     "phase8-drive-finalize",
     "phase8-drive-lease",
-    "phase8-group-publish"
+    "phase8-group-publish",
+    "delete-account"
   ],
   "files": [
     {
@@ -147,7 +148,7 @@
     {
       "kind": "source",
       "path": "supabase/functions/planet-trace-detail/detail.ts",
-      "sha256": "C4845B81710FD22D405EBBC36C258316FB1D0694765BBBE1C91297FC25AF4E49"
+      "sha256": "EAC35009BA071D7817E2DA24028FD3BF2C5ED05F22EF9A8A49ED479C15D8BE29"
     },
     {
       "kind": "source",
@@ -157,17 +158,17 @@
     {
       "kind": "source",
       "path": "supabase/functions/planet-trace-detail/score.generated.js",
-      "sha256": "D44D2D11A6BC42F7A5C43D828BDE193D5CBFA63786BCFF317421EBC3F34EC9A3"
+      "sha256": "AF0A1DBA9110259781166F138D79ADF478BE9238E74D5A7FFBCEC9E75D27A9C2"
     },
     {
       "kind": "source",
       "path": "supabase/functions/planet-trace-detail/score.manifest.json",
-      "sha256": "D6FDB9A343473C54994378F59246631220D6570177AEA4E27A7CF56F93667C76"
+      "sha256": "437844D252805329C3F5417F5868BDAA1B51FF433EC3D07457844761275EA060"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/active_world_empty_planner.ts",
-      "sha256": "FF04A814FC2CE59E55CC4F26F114A84598CCEDD4B08C839D48403B3CC6487847"
+      "sha256": "7AEC2C88B43BD8077A426B6BEA63EC23BC499BC9508778E91C41AA699B7D7563"
     },
     {
       "kind": "source",
@@ -182,12 +183,12 @@
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/index.ts",
-      "sha256": "72FE805CBBE90EE7C0190A8EAE736BC5CE1CC434E77C9F6B8AE805B2686CB9D3"
+      "sha256": "7AC03007EE80D4933527407D7A4B0A8D208CF89CE3304608F9C104C860E08F92"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/source_contract.ts",
-      "sha256": "5CA741DBF1692EFA095D47853CECFB96212C6249F5680D376D5429D99CC17C51"
+      "sha256": "CFC48F7B5B1CB7697F308F44D60B03915321DE9AB269176D34A1B5EE47DCDA83"
     },
     {
       "kind": "source",
@@ -212,27 +213,27 @@
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring_stage.ts",
-      "sha256": "634F6B62C4D1F29CBA988D4702AF18A858B829543DF3946474D867B17A5DE29A"
+      "sha256": "2E01DA7F76E6EBB2F0810FFF71A7749A97085A0669047BD025627A842AC68EDC"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring.generated.js",
-      "sha256": "F7A3FD0150E2B424FF282C2EBE20C93508FCBA8CB31613E2D86B13F458022395"
+      "sha256": "1FD37C38A3AB0B1DCB53DAA98CD8A98955BDAD9CB2E465984FEB9EDD770C38C6"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring.manifest.json",
-      "sha256": "F3BDF9D16FC69AE8270639F34F33022D142D7D994E9FDBE81B9F65B05FCA93B4"
+      "sha256": "5867357243D35A51A806FC88B01B14FEC5B17D02C142EB56F0C93CBEA58658E1"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_scoring.ts",
-      "sha256": "201CECA82E22209AB070A859BA7AFB1B78EEA8D8ECFA493D8A863DFB71A1B3D4"
+      "sha256": "1E048D58A99CD6F3A1E0CFC50870C5F2F711C1AE685764C7C2A323584EB9F2AB"
     },
     {
       "kind": "source",
       "path": "supabase/functions/process-world-publish/world_validation.ts",
-      "sha256": "4CC9C3F2372797BA8602F4215B19AE0D6A794E252068299720BAE2CD1DB9E88B"
+      "sha256": "FC7F889D10FE2E1258459B322F02059A8F32C3F40BC2618B57F2A336D54381AF"
     },
     {
       "kind": "source",
@@ -292,7 +293,17 @@
     {
       "kind": "source",
       "path": "supabase/prod/config.toml",
-      "sha256": "8D38A1F5AEE95F0A8B5755FAAC19D9FA85C2239F0357D47A61C562633CE4E948"
+      "sha256": "A06B3C5D1816BAE2C924C619B885066D9E5C898B80D413AC0F5C99B98D00BA7C"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/delete-account/index.ts",
+      "sha256": "BA58D42A6F04691493A1766E1E82EB48B2B659176BD5DD9239DC993ECA1A6C7B"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/functions/delete-account/planet_rebuild.ts",
+      "sha256": "E66A4CA66F1AF7D41ED10C8512B8BA61EDEC25DE4FC66931CDABCA64D09ADEEA"
     }
   ],
   "canonicalSchemaVerified": true,

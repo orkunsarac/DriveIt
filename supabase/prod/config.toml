@@ -18,5 +18,10 @@ verify_jwt = true
 [functions.phase8-drive-cleanup]
 # Endpoint independently requires PHASE8_CLEANUP_TOKEN; do not schedule without it.
 verify_jwt = false
+[functions.delete-account]
+# Receipt-based run/resume is authorized by the server-side hashed receipt claim;
+# request still verifies the user JWT, exact Auth UID, and current password.
+# Worker actions still require ACCOUNT_DELETION_WORKER_TOKEN.
+verify_jwt = false
 [functions.phase8-group-publish]
 verify_jwt = true

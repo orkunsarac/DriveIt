@@ -6,6 +6,8 @@ import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/services/local_owner_lifecycle.dart';
 import 'package:driveit_project/services/gps_session_ownership.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
+import 'package:driveit_project/services/owner_auth_callback_delivery.dart';
+import 'package:driveit_project/config/driveit_auth_callback.dart';
 import 'package:driveit_project/services/legacy_owner_consent.dart';
 import 'package:driveit_project/widgets/local_owner_boundary.dart';
 import 'package:driveit_project/widgets/legacy_owner_consent_panel.dart';
@@ -205,6 +207,39 @@ void main() {
     expect(called, false);
     expect(runtime.lease.owner.userId, accountA);
   });
+  test(
+    'cold and warm callback delivery validates and deduplicates codes',
+    () async {
+      DriveItAuthCallback.configureForApplicationId('com.osaracx.driveit');
+      await runtime.start();
+      var calls = 0;
+      final delivery = OwnerAuthCallbackDelivery(
+        owner: runtime,
+        exchange: (uri) async {
+          await runtime.authorizeIdentityChange(() async {
+            calls++;
+            auth.change(accountA);
+          }, revokeBeforeChange: true);
+        },
+      );
+      final cold = Uri.parse('com.osaracx.driveit://auth/callback?code=cold');
+      await Future.wait([delivery.deliver(cold), delivery.deliver(cold)]);
+      expect(calls, 1);
+      expect(runtime.lease.owner.userId, accountA);
+      await delivery.deliver(Uri.parse('com.evil://auth/callback?code=wrong'));
+      await delivery.deliver(
+        Uri.parse('com.osaracx.driveit://auth/callback?code=warm'),
+      );
+      expect(calls, 2);
+      active = true;
+      await delivery.deliver(
+        Uri.parse('com.osaracx.driveit://auth/callback?code=blocked'),
+      );
+      expect(calls, 2);
+      expect(runtime.lease.owner.userId, accountA);
+      delivery.close();
+    },
+  );
   test(
     'identity change revokes lease before SDK action and restores on failure',
     () async {

@@ -48,6 +48,8 @@
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme"/>
+            <!-- Auth links are delivered by app_links, never Flutter routes. -->
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

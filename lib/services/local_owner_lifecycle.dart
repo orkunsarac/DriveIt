@@ -1772,6 +1772,8 @@ class LocalOwnerLifecycle extends ChangeNotifier {
         throw StateError('GPS session must finish before account change');
       }
       if (!revokeBeforeChange) return change();
+      // Recheck inside the serialized boundary, after waiting for GPS state.
+      lease.requireCurrent();
       _requested = null;
       _invalidate(LocalOwnerState.preparing);
       try {

@@ -155,6 +155,12 @@ void main() {
       expect(manifest, contains(r'android:scheme="${driveItAuthScheme}"'));
       expect(manifest, contains('android:host="auth"'));
       expect(manifest, contains('android:path="/callback"'));
+      expect(
+        manifest,
+        contains(
+          'android:name="flutter_deeplinking_enabled" android:value="false"',
+        ),
+      );
       expect(manifest, isNot(contains('android:autoVerify="true"')));
       final gradle = File('android/app/build.gradle.kts').readAsStringSync();
       expect(

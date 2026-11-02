@@ -7,6 +7,8 @@ Güncelleme: kullanıcı onayıyla R3 backend upgrade ve Function dağıtımı t
 
 Hosted kullanıcı kabulü öncesinde road-processing sürüm uyuşmazlığı bulundu ve yerelde düzeltildi; `hosted_acceptance_road_version_correction.md` yeni blokaj ve test kanıtıdır. PROD 50 migration'da ve sıfır kullanıcıyla bekler; iki yeni migration ve delete-account güncellemesi ayrıca onay bekler.
 
+Son güncelleme: bu iki correction ayrıca onaylanıp uygulandı. PROD52 ve kontrollü hosted servis kabulü PASS; `hosted_acceptance_result.md` güncel kayıttır. Site URL localhost, gerçek e-posta/cihaz ve hukuki onay engelleri devam eder.
+
 ## Uygulanan değişiklikler
 
 - R3: `upgrade_manifest.json` hesap silme sisteminin mevcut 25 ileri migration'ını LF-normalize SHA-256 ile listeler. `build_prod_upgrade.ts` temel 25 migration'ın hash/sırasını doğrular; mevcut veritabanında tam temel geçmişi, henüz silme şeması bulunmamasını ve Group Drive FALSE şartını arayan ek transaction üretir. 25 yeni geçmiş satırı ve final güvenlik kontrolleri aynı transaction içindedir. Bu artifact boş veritabanına doğrudan uygulanmaz: önce temel `atomic.sql`, sonra `upgrade.sql` gerekir. Tekrar çalıştırma belirsizliğinde geçmiş okunmadan yeniden uygulanamaz.

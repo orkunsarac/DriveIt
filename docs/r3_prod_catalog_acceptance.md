@@ -1,4 +1,4 @@
-# R3 — 50 migration PROD katalog karşılaştırması
+# R3 — 52 migration PROD katalog karşılaştırması
 
 Yalnız katalog metadata: public tablo RLS/rol GRANT, public/storage/realtime policy komut/rol/USING/WITH CHECK, tüm public fonksiyon imzası/gövdesi/SECURITY DEFINER/search_path/EXECUTE yetkileri yerel referansla birebir karşılaştırıldı. Gerçek kullanıcı satırı sorgulanmadı.
 

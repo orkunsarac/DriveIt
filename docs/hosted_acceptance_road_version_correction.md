@@ -1,6 +1,6 @@
 # Hosted kabul öncesi — Planet silme sürüm düzeltmesi
 
-İki sentetik PROD hesabı ile test için kullanıcı onayı alındı. Hesap oluşturmadan yapılan kaynak karşılaştırmasında bir üretim sözleşmesi hatası bulundu. **Bu çalışma sırasında PROD'da test hesabı/verisi oluşturulmadı; yeni migration veya Function dağıtılmadı.**
+İki sentetik PROD hesabı ile test için kullanıcı onayı alındı. Hesap oluşturmadan yapılan kaynak karşılaştırmasında bir üretim sözleşmesi hatası bulundu. İlk teşhis sırasında PROD değişmedi. Daha sonra ayrı kullanıcı onayıyla iki correction ve yalnız delete-account dağıtıldı; güncel sonuç `hosted_acceptance_result.md` içindedir.
 
 ## Kanıt ve etki
 
@@ -23,4 +23,4 @@
 - Yerel SQL test çalıştırıcısında Türkçe kültürün case-insensitive COMMIT eşleşmesini etkilemesi tespit edildi. İlk test başarısızlığı saklanmadı; etkilenen referans korundu, yeni fiziksel referansta generated uppercase transaction artifact'ıyla birleşik rollback/commit kabulü tamamlandı.
 - Önceki ara servis turu 26/27 kaldı (consent). Tekil tekrar 1/1 geçti; bu tek başına tam kabul sayılmadı. İki ileri düzeltme ve güncel assertion'larla son tam servis paketi **27/27 PASS**, exit 0, 5m47s. Son test sentetik temizlik ve kapalı gate'leri doğruladı. Bu sonuç önceki aralıklı başarısızlıkların tüm kök nedenlerinin çözüldüğü iddiası değildir.
 
-Hosted kabul hâlâ NOT TESTED. Yeni test hesabı oluşturmadan önce bu iki ileri migration ve yalnız delete-account Function düzeltmesi için ayrı deployment onayı gerekir. Signup/Group Drive/worker cron ve hukuki onboarding kapıları korunur.
+Bu kaydın ardından ayrı deployment onayı alındı ve düzeltme uygulandı. Hosted servis kabulü tamamlandı; `hosted_acceptance_result.md` sonuç ve sınırlamaları gösterir. Signup/Group Drive/worker cron ve hukuki onboarding kapıları korunur.

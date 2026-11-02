@@ -42,7 +42,11 @@ try {
   $jobs=Read-Prod '/database/query' "select count(*) as active from cron.job where active and (command ilike '%delete-account%' or command ilike '%account_deletion%');"
   $activeDeletionSchedules=@($jobs)[0].active
  }
- [pscustomobject]@{projectRef=$ref;status=$project.status;disableSignup=$auth.disable_signup;anonymousSignup=$auth.external_anonymous_users_enabled;emailConfirmationRequired=(!$auth.mailer_autoconfirm);smtpConfigured=(![string]::IsNullOrWhiteSpace($auth.smtp_host));evidence=@($data)[0].evidence;privateBuckets=@($storage);activeDeletionSchedules=$activeDeletionSchedules;functions=@($functions|Select-Object slug,status,verify_jwt)}|ConvertTo-Json -Depth 7
+ $allowlist=if($auth.PSObject.Properties['uri_allow_list']){[string]$auth.uri_allow_list}else{''}
+ $allowed=@($allowlist -split '[,\r\n]'|ForEach-Object {$_.Trim()})
+ $siteLocal=$false
+ try{$siteLocal=([uri]$auth.site_url).Host -in @('localhost','127.0.0.1','::1')}catch{$siteLocal=$true}
+ [pscustomobject]@{projectRef=$ref;status=$project.status;disableSignup=$auth.disable_signup;anonymousSignup=$auth.external_anonymous_users_enabled;emailConfirmationRequired=(!$auth.mailer_autoconfirm);smtpConfigured=(![string]::IsNullOrWhiteSpace($auth.smtp_host));playCallbackAllowlisted=($allowed -ccontains 'com.osaracx.driveit://auth/callback');siteUrlIsLocalhost=$siteLocal;evidence=@($data)[0].evidence;privateBuckets=@($storage);activeDeletionSchedules=$activeDeletionSchedules;functions=@($functions|Select-Object slug,status,verify_jwt)}|ConvertTo-Json -Depth 7
 } finally {
  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
  $token=$null;$headers=$null;$secret=$null;$record=$null

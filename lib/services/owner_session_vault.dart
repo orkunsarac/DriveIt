@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'local_owner_lifecycle.dart';
 
 /// Android-backed session vault. It never enables SDK automatic persistence.
 /// The caller must separately fence and authenticate a restored session.
@@ -82,4 +83,53 @@ class OwnerSessionVault {
   }
 
   Future<void> clear() => storage.clear();
+}
+
+/// Runs before personal UI and foreground attachment. Server verification is
+/// mandatory; JWT parsing in the vault is not an authentication decision.
+Future<void> restoreVerifiedOwnerSession({
+  required LocalOwnerLifecycle owner,
+  required SupabaseClient client,
+  required OwnerSessionVault vault,
+}) async {
+  if (client.auth.currentSession != null) {
+    throw StateError('Unexpected session before restore');
+  }
+  String? restoredOwner;
+  await owner.authorizeIdentityChange(() async {
+    final restoreEpoch = owner.epoch;
+    void requireUnchanged() {
+      if (owner.epoch != restoreEpoch ||
+          owner.state != LocalOwnerState.preparing ||
+          client.auth.currentSession != null) {
+        throw StateError('Restore context changed');
+      }
+    }
+
+    requireUnchanged();
+    final stored = await vault.load();
+    requireUnchanged();
+    if (stored == null) return;
+    if (stored.expiresAt == null || stored.isExpired) {
+      throw StateError('Stored session expired');
+    }
+    final verified = await client.auth.getUser(stored.accessToken);
+    requireUnchanged();
+    if (verified.user?.id != stored.user.id ||
+        verified.user?.isAnonymous != false ||
+        client.auth.currentSession != null ||
+        stored.isExpired) {
+      throw StateError('Stored session verification failed');
+    }
+    final verifiedSession = stored.copyWith(user: verified.user!);
+    await client.auth.recoverSession(jsonEncode(verifiedSession.toJson()));
+    if (client.auth.currentSession?.user.id != stored.user.id ||
+        client.auth.currentSession?.accessToken != stored.accessToken) {
+      throw StateError('Restored session changed');
+    }
+    restoredOwner = stored.user.id;
+  }, revokeBeforeChange: true);
+  if (restoredOwner != null && owner.lease.owner.userId != restoredOwner) {
+    throw StateError('Restored owner mismatch');
+  }
 }

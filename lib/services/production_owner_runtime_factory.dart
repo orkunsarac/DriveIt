@@ -19,6 +19,7 @@ import 'local_owner_lifecycle.dart';
 import 'owned_foreground_bootstrap.dart';
 import 'owner_scoped_local_store.dart';
 import 'supabase_local_owner_auth.dart';
+import 'owner_session_vault.dart';
 import 'supabase_owner_drive_sync_adapter.dart';
 import 'owner_profile_gateway.dart';
 import '../config/supabase_environment_policy.dart';
@@ -111,6 +112,13 @@ abstract final class ProductionOwnerRuntimeFactory {
 
     final dependencies = ControlledOwnershipDependencies(
       restoreAuth: () async => auth,
+      restoreSession: hasCloudAuth && SupabaseBootstrap.isPlayPackage
+          ? (owner) => restoreVerifiedOwnerSession(
+              owner: owner,
+              client: Supabase.instance.client,
+              vault: OwnerSessionVault(const AndroidOwnerSessionStorage()),
+            )
+          : null,
       descriptor: descriptor,
       databaseFactory: databaseFactory,
       openStore: (owner) =>

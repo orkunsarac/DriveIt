@@ -10,6 +10,7 @@ import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
 import 'gps_session_ownership.dart';
 import 'owner_profile_gateway.dart';
+import 'owner_session_vault.dart';
 
 /// Cloud identity is deliberately separate from the existing local profile.
 class DriveItAccountProfile {
@@ -130,9 +131,19 @@ class SupabaseAccountService extends ChangeNotifier
   SupabaseAccountService._();
 
   @visibleForTesting
-  SupabaseAccountService.forTesting(this._testClient, this._testGateway);
+  SupabaseAccountService.forTesting(
+    this._testClient,
+    this._testGateway, {
+    OwnerSessionVault? sessionVault,
+  }) : _testSessionVault = sessionVault;
   SupabaseClient? _testClient;
   OwnerProfileGateway? _testGateway;
+  OwnerSessionVault? _testSessionVault;
+  OwnerSessionVault? get _sessionVault =>
+      _testSessionVault ??
+      (SupabaseBootstrap.isPlayPackage
+          ? OwnerSessionVault(const AndroidOwnerSessionStorage())
+          : null);
   int? _profileEpoch;
 
   bool get _requiresScopedProfile =>
@@ -338,10 +349,27 @@ class SupabaseAccountService extends ChangeNotifier
     )) {
       throw StateError('Play Auth owner runtime unavailable');
     }
-    return _controlledOwner?.authorizeIdentityChange(
-          action,
-          revokeBeforeChange: true,
-        ) ??
+    return _controlledOwner?.authorizeIdentityChange(() async {
+          // A failed switch must not resurrect a prior stored account.
+          final vault = _sessionVault;
+          if (vault != null) await vault.clear();
+          final result = await action();
+          if (vault != null) {
+            final current = _client?.auth.currentSession;
+            if (current == null) {
+              await vault.clear();
+            } else {
+              await vault.save(current);
+              if (_client?.auth.currentSession?.accessToken !=
+                      current.accessToken ||
+                  _client?.auth.currentUser?.id != current.user.id) {
+                await vault.clear();
+                throw StateError('Session changed during storage');
+              }
+            }
+          }
+          return result;
+        }, revokeBeforeChange: true) ??
         action();
   }
 
@@ -628,6 +656,7 @@ class SupabaseAccountService extends ChangeNotifier
   Future<void> _signOut() async {
     final client = _client;
     if (client == null) throw const AccountServiceException.unavailable();
+    await _sessionVault?.clear();
     await client.auth.signOut();
   }
 

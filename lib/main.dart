@@ -116,6 +116,7 @@ Future<ControlledOwnershipRuntime?> startDriveIt({
     worldRoadMatching: controlled.worldRoadMatching,
     groupDriveServiceForTesting: controlled.groupDriveServiceForTesting,
     groupDriveService: controlled.groupDriveService,
+    restoreSession: controlled.restoreSession,
   );
   final runtime = (await LocalOwnershipBootstrap.run(
     gate: gate,

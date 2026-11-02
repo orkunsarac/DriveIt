@@ -34,6 +34,7 @@ class ControlledOwnershipDependencies {
     this.automaticCloudDeletionRetry = true,
     this.cloudDeletionEnabled = false,
     this.transferSources,
+    this.restoreSession,
   });
   final Future<LocalOwnerAuth> Function() restoreAuth;
   final OwnedForegroundBootstrap descriptor;
@@ -52,6 +53,7 @@ class ControlledOwnershipDependencies {
   /// Opt-in test composition only. Android activation is independently
   /// guarded by the isolated package and native manifest in startDriveIt.
   final FakeGroupDriveService? groupDriveServiceForTesting;
+
   /// Real backend adapter is supplied only by an explicit post-acceptance build.
   final GroupDriveService? groupDriveService;
   final GpsOwner? deviceGuestOwner;
@@ -61,6 +63,7 @@ class ControlledOwnershipDependencies {
   final bool automaticCloudDeletionRetry;
   final bool cloudDeletionEnabled;
   final AccountDriveTransferSources? transferSources;
+  final Future<void> Function(LocalOwnerLifecycle)? restoreSession;
 }
 
 class ControlledOwnershipRuntime {
@@ -161,6 +164,12 @@ abstract final class LocalOwnershipBootstrap {
       await runtime.start();
       if (runtime.state != LocalOwnerState.ready) {
         throw StateError('Owner recovery not ready');
+      }
+      if (controlled.restoreSession != null) {
+        await controlled.restoreSession!(runtime);
+        if (runtime.state != LocalOwnerState.ready) {
+          throw StateError('Restored owner not ready');
+        }
       }
       final bridge = LocalOwnerGpsBridge(
         runtime: runtime,

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:driveit_project/config/local_ownership_gate.dart';
 import 'package:driveit_project/config/supabase_bootstrap.dart';
 import 'package:driveit_project/config/supabase_public_key_policy.dart';
@@ -8,6 +11,7 @@ import 'package:driveit_project/services/account_deletion_runtime.dart';
 import 'package:driveit_project/services/drive_route_projection.dart';
 import 'package:driveit_project/services/drive_time_analysis.dart';
 import 'package:driveit_project/services/gps_hive_transfer_sink.dart';
+import 'package:driveit_project/services/gps_session_transfer.dart';
 import 'package:driveit_project/services/local_ownership_bootstrap.dart';
 import 'package:driveit_project/services/owned_foreground_bootstrap.dart';
 import 'package:driveit_project/services/owner_scoped_local_store.dart';
@@ -15,7 +19,6 @@ import 'package:driveit_project/services/owner_session_vault.dart';
 import 'package:driveit_project/services/supabase_account_service.dart';
 import 'package:driveit_project/services/supabase_local_owner_auth.dart';
 import 'package:driveit_project/services/supabase_owner_drive_sync_adapter.dart';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -144,6 +147,10 @@ void main() {
         isTrue,
         reason: 'Drive Score persisted for A',
       );
+      final originalManifest = driveTransferManifest(
+        runtime.owner.lease.requireDrive(driveId),
+      );
+      final originalTelemetry = runtime.owner.lease.telemetry(driveId)!;
       _stage('gps_fixture_saved');
 
       await runtime.owner.lease.checkManualCloudConnection();
@@ -177,6 +184,36 @@ void main() {
           downloadedA.applied == 1,
           isTrue,
           reason: 'A downloads own server record',
+        );
+        expect(
+          jsonEncode(
+                driveTransferManifest(
+                  runtime.owner.lease.requireDrive(driveId),
+                ),
+              ) ==
+              jsonEncode(originalManifest),
+          isTrue,
+          reason: 'Drive fields round-trip without mutation',
+        );
+        final downloadedTelemetry = runtime.owner.lease.telemetry(driveId)!;
+        expect(
+          downloadedTelemetry.points.length,
+          originalTelemetry.points.length,
+          reason: 'Telemetry point count round-trips',
+        );
+        expect(
+          jsonEncode(
+                downloadedTelemetry.points
+                    .map(GpsSessionTransfer.pointContent)
+                    .toList(),
+              ) ==
+              jsonEncode(
+                originalTelemetry.points
+                    .map(GpsSessionTransfer.pointContent)
+                    .toList(),
+              ),
+          isTrue,
+          reason: 'Telemetry points round-trip byte-for-value',
         );
         _stage('drive_uploaded_and_downloaded');
       } else {
@@ -460,6 +497,12 @@ void main() {
         _stage('temporary_account_deletion_blocked_function_unavailable');
       }
       deletion.dispose();
+      expect(
+        uploaded,
+        isTrue,
+        reason:
+            'Upload must receive a real DEV finalize ACK before test passes',
+      );
     } finally {
       account.detachOwnerForTesting(runtime.owner);
       account.dispose();

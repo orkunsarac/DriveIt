@@ -166,7 +166,8 @@ export async function validateV2DriveEnvelope(
     if (!score || typeof score !== "object" || Array.isArray(score) ||
         score.driveId !== drive.id || score.algorithm !== 1 ||
         score.telemetryVersion !== telemetry.version || !validDate(score.calculatedAt) ||
-        !finite(score.total) || Number(score.total) < 0 || Number(score.total) > 100 ||
+        // Drive Score v1 is a 0–1000 sum across its seven weighted categories.
+        !finite(score.total) || Number(score.total) < 0 || Number(score.total) > 1000 ||
         !finite(score.confidence) || Number(score.confidence) < 0 ||
         Number(score.confidence) > 1 || !Array.isArray(score.categories)) {
       throw new Error("score_restore_schema_invalid");

@@ -47,3 +47,15 @@ Test paketi: `com.example.driveit_project.isolated_test`
 - `tool/run_android_integration_test.ps1` ile A55 üzerinde gerçek Flutter/Gradle derlemesi, izole kurulum ve hedefli entegrasyon: **1 test PASS**. Çıktıdaki aşamalar Auth, gerçek runtime restore, refresh, A/B Storage ayrımı, GPS owner fence ve silme Function yokluğunu içerdi.
 - Testte runtime/SDK yeniden oluşturuldu; Android uygulama süreci ADB ile force-stop edilip yeniden başlatılmadı. Gerçek OS process-death kabulü ayrı test olarak kalır.
 - Tam R6 regresyonu yapılmadı.
+
+## R6-A upload kök neden kanıtı
+
+- A55 testinin Supabase DEV private Storage'a koyduğu gerçek staged envelope indirildi ve aynı `validateV2DriveEnvelope()` fonksiyonuna yerel olarak verildi. Baytlar canonical JSON idi. Önceki validator sonucu `score_restore_schema_invalid` oldu.
+- Aynı mutation'daki Drive Score `total`, ürünün [Drive Score anayasasındaki](drive_score_constitution.md) 0–1000 aralığında; önceki sunucu kuralındaki 0–100 aralığının dışındaydı. Provenance, skor kimliği/algoritma/zaman, schema2, telemetri ve fingerprint kuralları geçerliydi. Tek yerel değişiklik skor üst sınırını 100'den 1000'e hizaladı; kaynak GPS veya skor üretimi değiştirilmedi.
+- DEV'den Supabase CLI `functions download --use-api` ile alınan finalize entrypoint'i ve `_shared/common.ts`, yerel sürümle birebir aynıydı. DEV Function envanteri `phase8-drive-finalize` v3, `phase8-drive-download` v2 gösteriyor. Deployed shared validator hash'i `C4A65AA1EF186B3A463D759D19B880A47E5FE49E4DAD75F185B73EE0CF1225AF`; düzeltilmiş yerel hash `091DAD2116DC5F80905920218A14D16379298A839D2ED5604DBD457179866DCB`. Download entrypoint'i de yerel ile birebir aynı; bu nedenle ortak validator değişikliği iki Function bundle'ında da dağıtılmalıdır.
+- Yeni Deno sözleşme testleri: 0 ve 1000 sınırları kabul; negatif ve 1000 üzeri skorlar reddedilir; score schema, proven provenance, timestamp, schema2 ve fingerprint reddetmeleri korunur. Canonical ve sözleşme testleri **4/4 PASS**. A55'ten indirilen aynı staged object düzeltilmiş yerel validator'dan **PASS** geçti. Flutter hedef analiz **PASS**.
+- R6-A test raporu artık upload gerçek finalize ACK almadan başarılı olamaz. En son A55 tekrarında test tüm bağımsız Auth/restore/refresh/A-B/GPS kontrollerini koşturdu, upload'dan sonra **başarısız** sonuçlandı; bu beklenen kanıttır.
+
+### R6-A kalan dağıtım kapısı
+
+Gerçek DEV upload → ACK → A download → veri bütünlüğü ve B'nin finalized kayıt erişim reddi henüz PASS değildir. Deployed iki Edge Function eski 0–100 validator bundle'ını çalıştırıyor. Bu, sadece DEV'e `phase8-drive-finalize` ve `phase8-drive-download` Function güncellemesiyle çözülür; migration gerekmez. Bu görevde DEV deploy yapılmadı. Ayrı açık onaydan sonra iki Function dağıtılıp aynı A55 kabulü tekrar çalıştırılmalıdır. PROD'a dokunulmadı.

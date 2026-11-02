@@ -2,6 +2,8 @@
 
 **Overall: BLOCKED on security-catalog parity and full Edge/Storage acceptance.** No DEV or PROD SQL, deployment, or account operation was performed.
 
+**R6-B4 follow-up:** The six narrower DEV privileges were compared with current DEV defaults and exercised through the official runtime; a separate real local HTTP Auth/Storage/deletion test passed. The managed RLS event-trigger and extension-schema ACL restore gaps discovered during that follow-up remain relevant to recovery and deployment review. See [R6-B4 evidence](r6b4_security_http_acceptance.md).
+
 ## Planet bootstrap parity — PASS
 
 A new local reference was built from the two hash-checked Planet bootstrap files followed by the 22 existing migrations. `tool/r6b2_planet_catalog.sql` and `tool/r6b2_planet_parity.ps1` compared 122 catalog records with a fresh DEV backup restore: all matched. The comparison covers the four bootstrap tables, columns and collations, constraints, indexes, four bootstrap functions and effective ACLs, triggers, RLS and policies. Function line endings and equivalent default ACL ordering are normalized. The bootstrap files were never applied to the DEV restore copy.

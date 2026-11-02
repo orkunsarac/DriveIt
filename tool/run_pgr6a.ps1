@@ -35,13 +35,13 @@ try {
   $work='tmp/'+$name
   New-Item -ItemType Directory -Path "$work/supabase/functions" -Force|Out-Null
   $config=(Get-Content supabase/prod/config.toml -Raw) -replace 'project_id = "driveit-prod-reviewed-bundle"',('project_id = "'+$name+'"')
-  $config+="`n[db.migrations]`nenabled = false`n[auth]`nenable_signup = false`n[functions.delete-account]`nverify_jwt = false`n"
+  $config+="`n[db.migrations]`nenabled = false`n[auth]`nenable_signup = false`n"
   Set-Content "$work/supabase/config.toml" $config -Encoding utf8
   $manifest=Get-Content supabase/prod/preparation_manifest.json -Raw|ConvertFrom-Json
   foreach($entry in $manifest.files){if($entry.path -match '^supabase/(?:phase8-dev/supabase/)?functions/(.+)$'){
    $dest="$work/supabase/functions/"+$Matches[1];New-Item -ItemType Directory -Path (Split-Path $dest) -Force|Out-Null;Copy-Item $entry.path $dest
   }}
-  New-Item -ItemType Directory "$work/supabase/functions/delete-account"|Out-Null
+  New-Item -ItemType Directory "$work/supabase/functions/delete-account" -Force|Out-Null
   Copy-Item supabase/functions/delete-account/index.ts "$work/supabase/functions/delete-account/index.ts"
   Copy-Item supabase/functions/delete-account/planet_rebuild.ts "$work/supabase/functions/delete-account/planet_rebuild.ts"
   Set-LocalWorkerEnvironment $work

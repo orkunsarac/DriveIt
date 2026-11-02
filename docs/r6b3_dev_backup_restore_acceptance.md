@@ -2,6 +2,8 @@
 
 **Status: PASS for the encrypted backup and isolated database restore.**
 
+**R6-B4 qualification:** The restored SQL/data and Storage bytes remain verified, but subsequent catalog inspection found that the captured SQL omitted event-trigger definitions and `extensions` schema grants. Current DEV has the `ensure_rls` event trigger and service-role USAGE on `extensions`, neither present in the restored test database. The exact DEV event-trigger state at backup time was not separately recorded. This backup alone is therefore not a complete security-configuration restore; see [R6-B4 evidence](r6b4_security_http_acceptance.md).
+
 Scope was limited to DEV project `viqngnjfgknpxtoapzcg`. No DEV or PROD write, migration, Function deployment, account change, or plan change was performed.
 
 ## Encrypted artifact

@@ -52,3 +52,7 @@ Onay sonrası tek kapsamlı sıra: **DEV 25-artifact taban parity ve Group gate 
 - `supabase/prod/upgrade_manifest.json` ve `supabase/prod/correction_manifest.json` — gerekli base/candidate artifact ve hash envanteri.
 - `supabase/account-deletion/README.md` — request/receipt/worker güvenlik sözleşmesi.
 - `docs/r6_supabase_a55_acceptance.md` — Account A'nın sentetik/temizlenmemiş olduğu ve `ON DELETE RESTRICT` engeli kaydı.
+
+## R6-B2 önkoşul sonucu (3 Kasım 2026)
+
+DEV `viqngnjfgknpxtoapzcg` için `supabase backups list` salt okunur sonucu `backups=[]`, `pitr_enabled=false` oldu. Geri yüklenebilir uzak backup/snapshot kanıtı olmadığından bu checkpoint'te dağıtım **BLOCKED**. Şema/migration/Function/secret/hesap üzerinde bu görev kapsamında hiçbir uzak yazma yapılmadı. Dağıtım değerlendirmesine dönmeden önce DEV için doğrulanabilir ve geri yükleme yolu kabul edilmiş backup/snapshot sağlanmalıdır.

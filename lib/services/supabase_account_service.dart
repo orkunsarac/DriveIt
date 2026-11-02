@@ -345,6 +345,22 @@ class SupabaseAccountService extends ChangeNotifier
         action();
   }
 
+  /// Exchange only an exact PKCE callback while the existing owner/GPS fence
+  /// has already revoked personal leases. Delivery and recovery UI must wait
+  /// until this method has returned and the new owner is ready.
+  Future<AuthSessionUrlResponse> exchangeOwnerCallback(Uri uri) async {
+    final client = _client;
+    if (client == null ||
+        _controlledOwner == null ||
+        !DriveItAuthCallback.accepts(uri) ||
+        uri.queryParameters['code']?.isNotEmpty != true ||
+        uri.queryParametersAll['code']?.length != 1 ||
+        uri.hasFragment) {
+      throw StateError('Auth callback unavailable');
+    }
+    return _identityChange(() => client.auth.getSessionFromUrl(uri));
+  }
+
   /// Account deletion must never fall back to an unfenced legacy/GPS composition.
   Future<void> authorizeAccountDeletion(Future<void> Function() action) async {
     final owner = _controlledOwner;

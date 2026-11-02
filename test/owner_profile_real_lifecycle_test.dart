@@ -16,6 +16,20 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:driveit_project/config/driveit_auth_callback.dart';
+
+class MemoryPkce extends GotrueAsyncStorage {
+  final values = <String, String>{};
+  @override
+  Future<String?> getItem({required String key}) async => values[key];
+  @override
+  Future<void> setItem({required String key, required String value}) async =>
+      values[key] = value;
+  @override
+  Future<void> removeItem({required String key}) async {
+    values.remove(key);
+  }
+}
 
 const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -41,6 +55,7 @@ void main() {
   late Completer<void> profileEntered;
   late Completer<void> profileRelease;
   late List<({String? auth, String path, String method})> requests;
+  late MemoryPkce pkce;
 
   setUp(() async {
     root = await Directory.systemTemp.createTemp('driveit_real_owner_sdk_');
@@ -54,9 +69,15 @@ void main() {
     profileEntered = Completer<void>();
     profileRelease = Completer<void>();
     requests = [];
+    pkce = MemoryPkce();
     sdk = SupabaseClient(
       url,
       'sb_publishable_synthetic',
+      authOptions: AuthClientOptions(
+        authFlowType: AuthFlowType.pkce,
+        pkceAsyncStorage: pkce,
+        autoRefreshToken: false,
+      ),
       httpClient: MockClient((r) async {
         if (r.url.path.endsWith('/logout')) return http.Response('{}', 200);
         return http.Response(
@@ -172,6 +193,40 @@ void main() {
   }
 
   test(
+    'PKCE callback uses owner fence and replay cannot exchange twice',
+    () async {
+      DriveItAuthCallback.configureForApplicationId('com.osaracx.driveit');
+      await signIn();
+      await owner.start();
+      account.attachOwnerForTesting(owner);
+      await sdk.auth.resetPasswordForEmail('synthetic@example.invalid');
+      final old = owner.lease;
+      var observed = false;
+      // ignore: invalid_use_of_internal_member
+      final sub = sdk.auth.onAuthStateChangeSync.listen((event) {
+        if (event.session?.user.id == b) {
+          observed = true;
+          expect(old.isCurrent, isFalse);
+        }
+      });
+      nextUser = b;
+      token = 'synthetic-b';
+      final uri = Uri.parse(
+        'com.osaracx.driveit://auth/callback?code=synthetic',
+      );
+      await account.exchangeOwnerCallback(uri);
+      expect(observed, isTrue);
+      expect(owner.lease.owner.userId, b);
+      await expectLater(
+        account.exchangeOwnerCallback(uri),
+        throwsA(isA<AuthException>()),
+      );
+      await sub.cancel();
+      account.detachOwnerForTesting(owner);
+    },
+  );
+
+  test(
     'coordinated SDK account switch revokes old lease before session changes',
     () async {
       await signIn();
@@ -200,6 +255,28 @@ void main() {
       account.detachOwnerForTesting(owner);
     },
   );
+
+  test('PKCE callback is refused before exchange during active GPS', () async {
+    DriveItAuthCallback.configureForApplicationId('com.osaracx.driveit');
+    await signIn();
+    await owner.start();
+    account.attachOwnerForTesting(owner);
+    await sdk.auth.resetPasswordForEmail('synthetic@example.invalid');
+    final savedVerifier = Map<String, String>.of(pkce.values);
+    final drive = await gps.start(startNative: (_, _) async {});
+    nextUser = b;
+    token = 'synthetic-b';
+    await expectLater(
+      account.exchangeOwnerCallback(
+        Uri.parse('com.osaracx.driveit://auth/callback?code=synthetic'),
+      ),
+      throwsStateError,
+    );
+    expect(sdk.auth.currentUser?.id, a);
+    expect(pkce.values, savedVerifier);
+    expect((await gps.requireBinding(drive.id)).owner.userId, a);
+    account.detachOwnerForTesting(owner);
+  });
 
   test(
     'real lease fences SDK A to B, delayed profile, updates, logout and restore',

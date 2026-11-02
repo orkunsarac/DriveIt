@@ -20,7 +20,10 @@ const transferA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const transferB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const transferSource = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-Future<void> seedTransferGuest(OwnerScopedLocalStore store) async {
+Future<void> seedTransferGuest(
+  OwnerScopedLocalStore store, {
+  double scoreTotal = 80,
+}) async {
   final original = data.fixture('guest-drive');
   final first = original.drive.route.first;
   original.drive.route[0] = RoutePoint(
@@ -73,7 +76,7 @@ Future<void> seedTransferGuest(OwnerScopedLocalStore store) async {
       algorithmVersion: 1,
       telemetryDataVersion: 1,
       calculatedAt: telemetry.createdAt,
-      totalScore: 80,
+      totalScore: scoreTotal,
       overallConfidence: .9,
       categories: const [],
     ),
@@ -544,6 +547,26 @@ void main() {
         hasLength(1),
       );
       expect(await target.worldSources(target.owner).getPendingJobs(), isEmpty);
+    },
+  );
+
+  test(
+    'Guest transfer accepts the canonical 0–1000 Drive Score range',
+    () async {
+      await seedTransferGuest(guest, scoreTotal: 1000);
+      expect((await transfer.transferGuest()).transferred, 1);
+      final transferredDriveId =
+          target.keys(target.owner, 'drives').single as String;
+      expect(
+        target
+            .read<DriveScoreRecord>(
+              target.owner,
+              'drive_scores',
+              DriveScoreStorageService.keyFor(transferredDriveId, 1),
+            )
+            ?.totalScore,
+        1000,
+      );
     },
   );
 

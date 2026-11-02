@@ -151,6 +151,7 @@ void main() {
         runtime.owner.lease.requireDrive(driveId),
       );
       final originalTelemetry = runtime.owner.lease.telemetry(driveId)!;
+      final originalScore = runtime.owner.lease.score(driveId)!;
       _stage('gps_fixture_saved');
 
       await runtime.owner.lease.checkManualCloudConnection();
@@ -179,43 +180,67 @@ void main() {
         }
       }
       if (uploaded) {
-        final downloadedA = await runtime.owner.lease.downloadManualCloudPage();
+        final downloadAdapter = SupabaseOwnerDriveSyncAdapter(
+          client: client,
+          ownerId: uidA,
+          requireCurrent: runtime.owner.lease.requireCurrent,
+        );
+        final downloadedPage = await downloadAdapter.download(
+          ownerId: uidA,
+          afterCursor: '',
+          limit: 100,
+        );
+        final uploadedChange = downloadedPage.changes
+            .where(
+              (change) =>
+                  (change.mutation.payload['drive'] as Map?)?['id'] == driveId,
+            )
+            .single;
+        final downloadedPayload = uploadedChange.mutation.payload;
         expect(
-          downloadedA.applied == 1,
+          downloadedPage.ownerId == uidA,
           isTrue,
-          reason: 'A downloads own server record',
+          reason: "A downloads only its authenticated owner's page",
         );
         expect(
-          jsonEncode(
-                driveTransferManifest(
-                  runtime.owner.lease.requireDrive(driveId),
-                ),
-              ) ==
-              jsonEncode(originalManifest),
+          _sameJson(downloadedPayload['drive'], originalManifest),
           isTrue,
           reason: 'Drive fields round-trip without mutation',
         );
-        final downloadedTelemetry = runtime.owner.lease.telemetry(driveId)!;
+        final downloadedTelemetry = downloadedPayload['telemetry'] as Map;
+        final downloadedPoints = downloadedTelemetry['points'] as List;
         expect(
-          downloadedTelemetry.points.length,
+          downloadedPoints.length,
           originalTelemetry.points.length,
           reason: 'Telemetry point count round-trips',
         );
         expect(
-          jsonEncode(
-                downloadedTelemetry.points
-                    .map(GpsSessionTransfer.pointContent)
-                    .toList(),
-              ) ==
-              jsonEncode(
-                originalTelemetry.points
-                    .map(GpsSessionTransfer.pointContent)
-                    .toList(),
-              ),
+          _sameJson(
+            downloadedPoints,
+            originalTelemetry.points
+                .map(GpsSessionTransfer.pointContent)
+                .toList(),
+          ),
           isTrue,
           reason: 'Telemetry points round-trip byte-for-value',
         );
-        _stage('drive_uploaded_and_downloaded');
+        final downloadedScore = downloadedPayload['score'] as Map;
+        expect(
+          downloadedScore['total'],
+          originalScore.totalScore,
+          reason: 'Drive Score total round-trips',
+        );
+        expect(
+          _sameJson(
+            downloadedScore['categories'],
+            originalScore.categories
+                .map((category) => category.toMap())
+                .toList(),
+          ),
+          isTrue,
+          reason: 'Drive Score categories round-trip',
+        );
+        _stage('drive_uploaded_and_downloaded_data_integrity_verified');
       } else {
         // Continue independent owner/GPS/logout/deletion checks even if the
         // remote validator rejects this upload. The final acceptance assertion
@@ -552,6 +577,30 @@ Future<(ControlledOwnershipRuntime, SupabaseAccountService)> _startRuntime(
 }
 
 void _stage(String value) => debugPrint('R6_TEST_STAGE=$value');
+
+bool _sameJson(Object? left, Object? right) =>
+    jsonEncode(_normalizeJson(left)) == jsonEncode(_normalizeJson(right));
+
+Object? _normalizeJson(Object? value) {
+  if (value is Map) {
+    final entries =
+        value.entries
+            .map(
+              (entry) => MapEntry<String, Object?>(
+                entry.key.toString(),
+                _normalizeJson(entry.value),
+              ),
+            )
+            .toList()
+          ..sort((left, right) => left.key.compareTo(right.key));
+    return Map<String, Object?>.fromEntries(entries);
+  }
+  if (value is List) return value.map(_normalizeJson).toList();
+  if (value is num && value.isFinite && value == value.roundToDouble()) {
+    return value.toInt();
+  }
+  return value;
+}
 
 void _diagnoseEnvelope(Map mutation, Map payload) {
   final drive = payload['drive'];

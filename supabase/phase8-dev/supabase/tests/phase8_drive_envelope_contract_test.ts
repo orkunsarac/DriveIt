@@ -91,7 +91,9 @@ function makePayload(scoreTotal: number): Record<string, unknown> {
   };
 }
 
-async function makeMutation(scoreTotal: number): Promise<Record<string, unknown>> {
+async function makeMutation(
+  scoreTotal: number,
+): Promise<Record<string, unknown>> {
   const payload = makePayload(scoreTotal);
   const scope = ownerScope(userId);
   return {
@@ -115,7 +117,9 @@ async function validate(mutation: Record<string, unknown>) {
   });
 }
 
-async function expectRejected(mutation: Record<string, unknown>): Promise<void> {
+async function expectRejected(
+  mutation: Record<string, unknown>,
+): Promise<void> {
   let rejected = false;
   try {
     await validate(mutation);
@@ -138,20 +142,24 @@ Deno.test("schema2 Drive Score accepts the canonical 0–1000 range", async () =
 
 Deno.test("schema2 score, provenance, telemetry, and fingerprint remain strict", async () => {
   const wrongScore = await makeMutation(250);
-  ((wrongScore.payload as Record<string, any>).score).algorithm = 2;
+  (wrongScore.payload as Record<string, any>).score.algorithm = 2;
   wrongScore.payloadFingerprint = await canonicalSha256(wrongScore.payload);
   await expectRejected(wrongScore);
 
   const wrongProvenance = await makeMutation(250);
-  ((wrongProvenance.payload as Record<string, any>).sourceProvenance)
+  (wrongProvenance.payload as Record<string, any>).sourceProvenance
     .sourceIdentity = "33333333-3333-4333-8333-333333333333";
-  wrongProvenance.payloadFingerprint = await canonicalSha256(wrongProvenance.payload);
+  wrongProvenance.payloadFingerprint = await canonicalSha256(
+    wrongProvenance.payload,
+  );
   await expectRejected(wrongProvenance);
 
   const wrongTimestamp = await makeMutation(250);
-  ((wrongTimestamp.payload as Record<string, any>).telemetry.points[0])
+  (wrongTimestamp.payload as Record<string, any>).telemetry.points[0]
     .timeMicros += 1000;
-  wrongTimestamp.payloadFingerprint = await canonicalSha256(wrongTimestamp.payload);
+  wrongTimestamp.payloadFingerprint = await canonicalSha256(
+    wrongTimestamp.payload,
+  );
   await expectRejected(wrongTimestamp);
 
   const wrongSchema = await makeMutation(250);

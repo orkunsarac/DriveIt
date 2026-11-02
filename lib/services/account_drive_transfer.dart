@@ -202,7 +202,7 @@ class AccountDriveTransfer {
         storedScore != null &&
             storedScore.totalScore.isFinite &&
             storedScore.totalScore >= 0 &&
-            storedScore.totalScore <= 100 &&
+            storedScore.totalScore <= 1000 &&
             storedScore.overallConfidence.isFinite &&
             storedScore.overallConfidence >= 0 &&
             storedScore.overallConfidence <= 1
@@ -705,7 +705,7 @@ class AccountDriveTransfer {
             score.telemetryDataVersion != telemetry.dataVersion ||
             !score.totalScore.isFinite ||
             score.totalScore < 0 ||
-            score.totalScore > 100 ||
+            score.totalScore > 1000 ||
             !score.overallConfidence.isFinite ||
             score.overallConfidence < 0 ||
             score.overallConfidence > 1)) {

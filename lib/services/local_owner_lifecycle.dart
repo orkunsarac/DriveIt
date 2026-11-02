@@ -1758,18 +1758,32 @@ class LocalOwnerLifecycle extends ChangeNotifier {
     }
   }
 
-  /// Call before user-requested login/logout/switch, not after changing Auth.
-  /// This is not installed into the existing production Auth service yet.
-  Future<T> authorizeIdentityChange<T>(Future<T> Function() change) async {
+  /// Quiesce personal access before the SDK can replace its session. The
+  /// current GPS/owner fence remains held until the Auth operation returns.
+  Future<T> authorizeIdentityChange<T>(
+    Future<T> Function() change, {
+    bool revokeBeforeChange = false,
+  }) async {
     if (!gate.enabled) {
       return change();
     }
-    return _exclusive(() async {
+    final result = await _exclusive(() async {
       if (_closed || await driveInProgress()) {
         throw StateError('GPS session must finish before account change');
       }
-      return change();
+      if (!revokeBeforeChange) return change();
+      _requested = null;
+      _invalidate(LocalOwnerState.preparing);
+      try {
+        return await change();
+      } finally {
+        // Auth events may be delivered later than the SDK session mutation.
+        // Reconcile even on failure; no stored drive is rewritten or deleted.
+        _request(auth.userId);
+      }
     });
+    await settled;
+    return result;
   }
 
   Future<void> retry() async {

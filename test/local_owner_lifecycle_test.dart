@@ -206,6 +206,32 @@ void main() {
     expect(runtime.lease.owner.userId, accountA);
   });
   test(
+    'identity change revokes lease before SDK action and restores on failure',
+    () async {
+      auth.userId = accountA;
+      await runtime.start();
+      await runtime.lease.put('drive_names', 'saved', 'A');
+      final old = runtime.lease;
+      final entered = Completer<void>();
+      final release = Completer<void>();
+      final pending = runtime.authorizeIdentityChange(() async {
+        expect(old.isCurrent, isFalse);
+        expect(() => runtime.lease, throwsStateError);
+        entered.complete();
+        await release.future;
+        throw StateError('synthetic auth failure');
+      }, revokeBeforeChange: true);
+      await entered.future;
+      final rejected = expectLater(pending, throwsStateError);
+      release.complete();
+      await rejected;
+      await runtime.settled;
+      expect(runtime.lease.owner.userId, accountA);
+      expect(runtime.lease.read('drive_names', 'saved'), 'A');
+      expect(old.isCurrent, isFalse);
+    },
+  );
+  test(
     'external Auth change during GPS hides data; recovery waits for completion',
     () async {
       auth.userId = accountA;

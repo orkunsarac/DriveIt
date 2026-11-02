@@ -21,6 +21,16 @@ class _MemoryPkce extends GotrueAsyncStorage {
 }
 
 void main() {
+  test(
+    'Play auth options disable unattended callback, restore and refresh',
+    () {
+      final options = SupabaseBootstrap.playAuthOptions;
+      expect(options.authFlowType, AuthFlowType.pkce);
+      expect(options.detectSessionInUri, isFalse);
+      expect(options.persistSession, isFalse);
+      expect(options.autoRefreshToken, isFalse);
+    },
+  );
   test('recovery uses configured PKCE S256 and exact callback', () async {
     final storage = _MemoryPkce();
     final transport = MockClient((request) async {

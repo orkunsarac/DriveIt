@@ -338,7 +338,11 @@ class SupabaseAccountService extends ChangeNotifier
     )) {
       throw StateError('Play Auth owner runtime unavailable');
     }
-    return _controlledOwner?.authorizeIdentityChange(action) ?? action();
+    return _controlledOwner?.authorizeIdentityChange(
+          action,
+          revokeBeforeChange: true,
+        ) ??
+        action();
   }
 
   /// Account deletion must never fall back to an unfenced legacy/GPS composition.

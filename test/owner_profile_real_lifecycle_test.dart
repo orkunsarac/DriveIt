@@ -172,6 +172,36 @@ void main() {
   }
 
   test(
+    'coordinated SDK account switch revokes old lease before session changes',
+    () async {
+      await signIn();
+      await owner.start();
+      account.attachOwnerForTesting(owner);
+      final oldLease = owner.lease;
+      var observed = false;
+      // ignore: invalid_use_of_internal_member
+      final sub = sdk.auth.onAuthStateChangeSync.listen((event) {
+        if (event.event == AuthChangeEvent.signedIn &&
+            event.session?.user.id == b) {
+          observed = true;
+          expect(oldLease.isCurrent, isFalse);
+          expect(() => owner.lease, throwsStateError);
+        }
+      });
+      nextUser = b;
+      token = 'synthetic-b';
+      await account.signIn(
+        email: 'synthetic@example.invalid',
+        password: 'synthetic',
+      );
+      expect(observed, isTrue);
+      expect(owner.lease.owner.userId, b);
+      await sub.cancel();
+      account.detachOwnerForTesting(owner);
+    },
+  );
+
+  test(
     'real lease fences SDK A to B, delayed profile, updates, logout and restore',
     () async {
       await signIn();

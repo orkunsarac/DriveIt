@@ -47,6 +47,16 @@ abstract final class SupabaseBootstrap {
     detectSessionInUriPredicate: DriveItAuthCallback.accepts,
   );
 
+  // Until controlled delivery/restore exists, even a future accidental gate
+  // change must not attach the SDK's automatic link or persistence handlers.
+  static FlutterAuthClientOptions get playAuthOptions =>
+      const FlutterAuthClientOptions(
+        authFlowType: AuthFlowType.pkce,
+        detectSessionInUri: false,
+        persistSession: false,
+        autoRefreshToken: false,
+      );
+
   static Future<bool> initializeIfConfigured() async {
     if (_initialized) return true;
     if (isIsolatedAndroidTest) {
@@ -89,7 +99,9 @@ abstract final class SupabaseBootstrap {
       await Supabase.initialize(
         url: SupabaseConfig.url,
         publishableKey: SupabaseConfig.publishableKey,
-        authOptions: authOptions,
+        authOptions: package.packageName == 'com.osaracx.driveit'
+            ? playAuthOptions
+            : authOptions,
         // Supabase's debug callback logger can include incoming URI details.
         // Keep Auth codes and callback parameters out of application logs.
         debug: false,

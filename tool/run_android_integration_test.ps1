@@ -3,7 +3,12 @@ param(
     [string] $TestFile,
 
     [Parameter(Mandatory = $true)]
-    [string] $DeviceSerial
+    [string] $DeviceSerial,
+
+    [string[]] $DartDefine = @(),
+
+    [ValidateRange(60, 900)]
+    [int] $TimeoutSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,11 +33,22 @@ $relativeTest = [IO.Path]::GetRelativePath($repoRoot, $candidate).Replace('\', '
 Write-Host "Running isolated Android integration test: $relativeTest on $DeviceSerial"
 Write-Host 'Gradle enforces the .isolated_test applicationId before Flutter can install the APK.'
 
+$defines = @('--dart-define=DRIVEIT_ISOLATED_ANDROID_TEST=true')
+foreach ($value in $DartDefine) {
+    if ([string]::IsNullOrWhiteSpace($value) -or $value.Contains("`n") -or $value.Contains("`r")) {
+        throw 'Dart defines must be non-empty single-line values.'
+    }
+    if ($value -match '^DRIVEIT_ISOLATED_ANDROID_TEST=') {
+        throw 'The isolated integration-test kill switch is managed by this runner.'
+    }
+    $defines += "--dart-define=$value"
+}
+
 & flutter test $relativeTest `
     -d $DeviceSerial `
     --no-pub `
     --no-uninstall `
-    --timeout=2m `
+    "--timeout=${TimeoutSeconds}s" `
     --reporter=expanded `
-    --dart-define=DRIVEIT_ISOLATED_ANDROID_TEST=true
+    @defines
 exit $LASTEXITCODE

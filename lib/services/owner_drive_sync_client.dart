@@ -1741,6 +1741,11 @@ class OwnerDriveSyncClient {
           );
 
   static Map<String, Object?> _scoreMap(DriveScoreRecord value) => {
+    if (value.calculationMode != 'unspecified') ...{
+      'calculationMode': value.calculationMode,
+      'calculationVersion': value.calculationVersion,
+      'reliabilityPolicyVersion': value.reliabilityPolicyVersion,
+    },
     'driveId': value.driveId,
     'algorithm': value.algorithmVersion,
     'telemetryVersion': value.telemetryDataVersion,

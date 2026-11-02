@@ -83,14 +83,34 @@ export function summarize(source: unknown, context: Context): Summary {
   let score: unknown;
   try {
     const raw = JSON.parse(
-      bridge(JSON.stringify({ canonical_telemetry: s.canonical_telemetry })),
+      bridge(JSON.stringify(s)),
     );
-    score = raw == null ? null : {
+    if (
+      (s as { schema_version?: number }).schema_version === 2 &&
+      (raw?.calculationMode !== "reliable_intervals" ||
+        raw?.calculationVersion !== 1 ||
+        raw?.reliabilityPolicyVersion !== 1 || raw?.algorithmVersion !== 1 ||
+        typeof raw?.scoreEligible !== "boolean")
+    ) {
+      throw new DetailFailure("score_version_unsupported", 422);
+    }
+    score = raw == null || raw.scoreEligible === false ? null : {
       displayScore: raw.displayScore,
       totalScore: raw.totalScore,
       categories: raw.categories,
+      ...((s as { schema_version?: number }).schema_version === 2
+        ? {
+          overallConfidence: raw.overallConfidence,
+          algorithmVersion: raw.algorithmVersion,
+          calculationMode: raw.calculationMode,
+          calculationVersion: raw.calculationVersion,
+          reliabilityPolicyVersion: raw.reliabilityPolicyVersion,
+          contributions: raw.contributions,
+        }
+        : {}),
     };
-  } catch {
+  } catch (e) {
+    if (e instanceof DetailFailure) throw e;
     throw new DetailFailure("score_unavailable", 422);
   }
   return {
@@ -122,7 +142,7 @@ export async function readDetail(
     throw new DetailFailure("source_unavailable", 422);
   }
   const summary = await cache.get(
-    `${p.id}:${p.source_ready_at}:${p.drive_score_algorithm_version}`,
+    `${p.id}:${p.source_ready_at}:${p.source_schema_version}:${p.drive_score_algorithm_version}`,
     async () => summarize(await gateway.download(p.source_path), context),
   );
   // Revalidate after expensive work: ownership may have changed while reading.
@@ -130,6 +150,10 @@ export async function readDetail(
   if (!current) throw new DetailFailure("trace_retired", 410);
   if (
     current.publish.id !== p.id ||
+    current.publish.source_schema_version !== p.source_schema_version ||
+    current.publish.source_ready_at !== p.source_ready_at ||
+    current.publish.drive_score_algorithm_version !==
+      p.drive_score_algorithm_version ||
     current.ownership_distance_meters !== context.ownership_distance_meters
   ) {
     throw new DetailFailure("trace_changed", 409);

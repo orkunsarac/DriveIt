@@ -272,3 +272,147 @@ Deno.test("generated score bundle matches normalized Dart dependency hashes", as
     );
   }
 });
+
+function reliableFixture(gapSeconds = 0) {
+  const { context, source } = fixture();
+  const start = Date.parse("2026-01-01T00:00:00Z");
+  const points = Array.from({ length: 180 }, (_, i) => {
+    const time = start + (i + (i >= 90 ? gapSeconds : 0)) * 1000;
+    return {
+      ...source.canonical_telemetry[0],
+      timestamp: new Date(time).toISOString(),
+      timestamp_micros: (BigInt(time) * 1000n).toString(),
+      speed_mps: 10,
+      distance_from_previous_meters: i ? 10 : 0,
+      break_before: i === 90 && gapSeconds > 0,
+      gap_duration_micros: i === 90 ? gapSeconds * 1000000 : 0,
+      speed_source: "native",
+      acceleration_reliable: i !== 90 || gapSeconds === 0,
+    };
+  });
+  const end = start + (179 + gapSeconds) * 1000;
+  const reliable = {
+    ...source,
+    raw_route: source.raw_route.map((p) => ({ ...p, break_before: false })),
+    schema_version: 2,
+    score_calculation_mode: "reliable_intervals",
+    score_calculation_version: 1,
+    canonical_telemetry: points,
+    ended_at: new Date(end).toISOString(),
+    telemetry_reliability: {
+      reliabilityPolicyVersion: 1,
+      startedAtMicros: start * 1000,
+      stopRequestedAtMicros: end * 1000,
+    },
+    score: { displayScore: 999999 },
+  };
+  const reliableContext = {
+    ...context,
+    publish: {
+      ...context.publish,
+      source_schema_version: 2,
+      telemetry_point_count: 180,
+    },
+  };
+  return { context: reliableContext, source: reliable };
+}
+Deno.test("schema2 computes reliable score on server, exposes version/confidence, never trusts submitted score", async () => {
+  const { context, source } = reliableFixture(10);
+  const response = await readDetail(context.trace_id, {
+    context: async () => context,
+    download: async () => source,
+  }, new SummaryCache());
+  const result = response.score as {
+    displayScore: number;
+    calculationMode: string;
+    calculationVersion: number;
+    overallConfidence: number;
+  };
+  assert(
+    result.displayScore !== 999999 &&
+      result.calculationMode === "reliable_intervals" &&
+      result.calculationVersion === 1,
+  );
+  assert(Number.isFinite(result.overallConfidence));
+});
+Deno.test("schema2 refuses missing quality/mode/version and unsupported schemas", async () => {
+  const { context, source } = reliableFixture();
+  for (
+    const key of [
+      "score_calculation_mode",
+      "score_calculation_version",
+      "telemetry_reliability",
+    ]
+  ) {
+    const bad = { ...source } as Record<string, unknown>;
+    delete bad[key];
+    try {
+      summarize(bad, context);
+      throw new Error("unexpected acceptance");
+    } catch (e) {
+      assert(e instanceof DetailFailure && e.code === "source_invalid");
+    }
+  }
+  for (
+    const field of [
+      "speed_source",
+      "acceleration_reliable",
+      "break_before",
+      "gap_duration_micros",
+      "timestamp_micros",
+    ]
+  ) {
+    const bad = JSON.parse(JSON.stringify(source));
+    delete bad.canonical_telemetry[0][field];
+    try {
+      summarize(bad, context);
+      throw new Error("unexpected acceptance");
+    } catch (e) {
+      assert(e instanceof DetailFailure && e.code === "source_invalid");
+    }
+  }
+  const bad = { ...source, score_calculation_version: 99 };
+  try {
+    summarize(bad, context);
+    throw new Error("unexpected acceptance");
+  } catch (e) {
+    assert(e instanceof DetailFailure && e.code === "source_invalid");
+  }
+});
+Deno.test("large-gap reliable raw score is recomputed and coverage failure cannot expose numeric score", () => {
+  const { context, source } = reliableFixture(120);
+  const bridge = (globalThis as unknown as {
+    driveItPlanetDetailScore: (s: string) => string;
+  }).driveItPlanetDetailScore;
+  const result = JSON.parse(bridge(JSON.stringify(source)));
+  assert(result.displayScore === 711);
+  const legacy = JSON.parse(bridge(JSON.stringify({schema_version: 1, canonical_telemetry: source.canonical_telemetry})));
+  assert(legacy.displayScore === 694);
+  assert(
+    result.calculationMode === "reliable_intervals" &&
+      result.scoreEligible === false,
+  );
+  assert(summarize(source, context).score === null);
+});
+
+Deno.test("schema2 refuses a stale legacy-only server bundle", () => {
+  const { context, source } = reliableFixture();
+  const global = globalThis as unknown as {
+    driveItPlanetDetailScore: (s: string) => string;
+  };
+  const original = global.driveItPlanetDetailScore;
+  global.driveItPlanetDetailScore = () =>
+    JSON.stringify({ displayScore: 999, totalScore: 999, categories: {} });
+  try {
+    try {
+      summarize(source, context);
+      throw new Error("legacy bundle accepted");
+    } catch (e) {
+      assert(
+        e instanceof DetailFailure && e.code === "score_version_unsupported",
+      );
+    }
+  } finally {
+    global.driveItPlanetDetailScore = original;
+  }
+});

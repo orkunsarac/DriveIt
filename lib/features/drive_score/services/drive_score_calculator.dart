@@ -77,7 +77,19 @@ class DriveScoreCalculator {
     if (points.any((p) => !p.hasValidCoordinate)) {
       throw const InvalidDriveScoreTelemetryException();
     }
-    return _calculateV1(points, true);
+    final result = _calculateV1(points, true);
+    return DriveScoreResult(
+      totalScore: result.totalScore,
+      overallConfidence: result.overallConfidence,
+      displayScore: result.displayScore,
+      algorithmVersion: result.algorithmVersion,
+      categories: result.categories,
+      contributions: result.contributions,
+      diagnostics: result.diagnostics,
+      calculationMode: 'reliable_intervals',
+      calculationVersion: 1,
+      reliabilityPolicyVersion: 1,
+    );
   }
 
   DriveScoreResult _calculateV1(

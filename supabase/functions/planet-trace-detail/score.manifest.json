@@ -1,5 +1,5 @@
 {
-  "artifact_sha256": "af274e3a1b1c6b3131651ea08cfdce4e3b1353c958dd172fc0c4913ca5b61fb2",
+  "artifact_sha256": "46fea93f7488738fae736de598503762fce32a72227d79d41b86015afe431120",
   "sources": {
     "lib/features/drive_score/config/acceleration_performance_calibration.dart": "70bdbe51bfb4e1b7111be43b90ab55a9fdc64c8f2d1e86bc0086625b2c13bd25",
     "lib/features/drive_score/config/braking_score_calibration.dart": "e893641be1bc5963a49b2a639c3168893c35b8d54d9f20ceaea6857efc64a514",
@@ -13,7 +13,7 @@
     "lib/features/drive_score/models/braking_score_models.dart": "1ffd418257abf1e42652b3c8c0abd4797b56e8502c945f793da6d90f339044c6",
     "lib/features/drive_score/models/cornering_score_models.dart": "67af823dacb6b03a7f3c7261f9eaa1a44da2cb83c4f7d3d91d3ac15d55948586",
     "lib/features/drive_score/models/drive_score_algorithm_version.dart": "68a2694fb0786ce679e0754a17208866c13cbb0f1fcfe3ee70b46a22bbcc4c45",
-    "lib/features/drive_score/models/drive_score_result.dart": "1f6dce7263ecef9a9b96fe7f9de664813aa81aac19931ab2c471ff64a36fd3c3",
+    "lib/features/drive_score/models/drive_score_result.dart": "f75fef94994ae996cdab1789726ca41de0135abf3a2f005c4a71c7f01d7e3163",
     "lib/features/drive_score/models/driving_analysis_models.dart": "9b9996f5674e44d3d097d0e0d5b1b4f9b16b8c0fc735ab360b3ec9f036f91b2c",
     "lib/features/drive_score/models/endurance_score_models.dart": "ddc6cde8359c3b182f2d0172cb3f50a38d3c2921c2522f2a680088d75ee849ed",
     "lib/features/drive_score/models/flow_acceleration_transition_models.dart": "f87b2374cc75150a30276d67b27a527cb7ef4d1468e029d885453c51db4ed6ec",
@@ -23,10 +23,11 @@
     "lib/features/drive_score/services/cornering_score_engine.dart": "9b246ae80af4898857aaae9e61c5e543555d0a24f8c0a99b5eacc643f0ca3203",
     "lib/features/drive_score/services/drive_feature_extractor.dart": "228c2e9b6a856fff10b919244ec608337f4fd20569b43a9d5dca2075ad047334",
     "lib/features/drive_score/services/drive_phase_analyzer.dart": "d53b0f3564cb429ca518897e53323ca275695dc141492a16e65ab09c848b852c",
-    "lib/features/drive_score/services/drive_score_calculator.dart": "70819651df5a195254793d9655ece95f63f25384a6bbd7959f52cebb53b63199",
+    "lib/features/drive_score/services/drive_score_calculator.dart": "54979a4cd65491d0868752e78de2bb67664284a69f6187688d9030286dbb2d01",
     "lib/features/drive_score/services/drive_score_engine.dart": "defd64e699f816873f56bc0bbac51068b88cef44cd43227cdaee459cda5ccb84",
     "lib/features/drive_score/services/driving_smoothness_engine.dart": "4c125abc7871379e04d551e87d2de3c5fc214f869966aa50de7b6eade69caf2e",
     "lib/features/drive_score/services/endurance_score_engine.dart": "40acf12311111a5b9686cf642ca659419d933c4868d7d20f04b32eb4529b01b6",
+    "lib/features/drive_score/services/published_source_score_calculator.dart": "096d115bba3c0e04fb83e18a2c3eb0e1addaf523a70fefbaf542411e18ccec49",
     "lib/features/drive_score/services/tempo_performance_engine.dart": "26e54691465a84da7037f676e45e8ac2ec656acca65a11ef946a8da36b76d16a",
     "lib/features/drive_score/services/transition_control_engine.dart": "83e85efc4a54b39d6223da0dec53cd796c9a66a29d1a86ce1da4b0a8ea7aa085",
     "lib/features/my_world/config/my_world_rules.dart": "e51f22e0768992686822e8d9a95efd890522a05269d7f72ee1905127b63a7284",
@@ -44,11 +45,12 @@
     "lib/features/my_world/services/geo_distance.dart": "57b3e35247b4128937cbbc0542ac9761100ccabcac63afe4dcacae449426cdfe",
     "lib/features/my_world/services/local_winning_road_region_service.dart": "8499fefda0b9cde50cb6860474eef9195d52966c70a31235a22d6c2a67c032dc",
     "lib/features/my_world/services/world_section_offset_mapper.dart": "dcd7dd41d3a54a066c0113533acd96e8c56150fbddd13cf4692af46a555c270f",
+    "lib/features/world_publish/models/published_drive_source.dart": "a6126f5bea792f9b3fb7268ac73cd6ea7b8d3d57f1038a23abefe6fc72677822",
     "lib/models/canonical_telemetry_point.dart": "3bc7ed4edfcca60a2649c115f1701dffd4631cd44e8b7e9cd308f83024bbc0a6",
     "lib/services/canonical_telemetry_pipeline.dart": "35cc60ccb31cfae0c7a0fe3c4c0561bc05c39afb5d9e4987208b39469968bf62",
     "lib/services/drive_time_analysis.dart": "1dd71d598e7f6d222caa34587128a566d396a19e7b3c39b194f47b1e559fb51d",
     "lib/services/gps_gap_policy.dart": "ccbc57d6d4ea66d6bbbcac40c8ed777ee00f26bb9d46559d01f278301bddc1b2",
-    "tool/planet_detail_js.dart": "71765652c92b108be335f825cb6ef4cb6e95798604e514c8f26b990df3fb1192",
+    "tool/planet_detail_js.dart": "39e14f817df3c11e8a83e8c28b6536b9b8e1a2c62ece77471c3b7ce300746066",
     "tool/world_scoring_adapter.dart": "15ba6b33d8593a71f62ecdea5ca764b9fcdae30f29f7aedef1b8cc6e92da7c34"
   }
 }

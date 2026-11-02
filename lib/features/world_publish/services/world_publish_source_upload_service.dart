@@ -25,7 +25,8 @@ abstract interface class WorldPublishSourceGateway {
 class SupabaseWorldPublishSourceGateway implements WorldPublishSourceGateway {
   SupabaseClient? get _client =>
       SupabaseBootstrap.isInitialized && !SupabaseBootstrap.isPlayPackage
-          ? Supabase.instance.client : null;
+      ? Supabase.instance.client
+      : null;
 
   @override
   bool get isAvailable => _client != null;
@@ -172,6 +173,16 @@ class WorldPublishSourceUploadService {
       final attached = WorldPublish.fromRow(await _gateway.attach(params));
       if (attached.sourceReady &&
           attached.localDriveId == drive.id &&
+          (source.schemaVersion != 2 ||
+              (attached.sourceSchemaVersion == 2 &&
+                  attached.id == publish.id &&
+                  attached.sourcePath == path &&
+                  attached.telemetryVersion == source.telemetryVersion &&
+                  attached.driveScoreAlgorithmVersion ==
+                      source.driveScoreAlgorithmVersion &&
+                  attached.rawRoutePointCount == source.rawRoute.length &&
+                  attached.telemetryPointCount ==
+                      source.canonicalTelemetry.length)) &&
           attached.userId == userId) {
         return WorldPublishSourceUploadResult(
           WorldPublishSourceUploadStatus.success,
@@ -186,6 +197,16 @@ class WorldPublishSourceUploadService {
           final current = await reloadPublish(drive.id);
           if (current != null &&
               current.sourceReady &&
+              (source.schemaVersion != 2 ||
+                  (current.sourceSchemaVersion == 2 &&
+                      current.localDriveId == drive.id &&
+                      current.sourcePath == path &&
+                      current.telemetryVersion == source.telemetryVersion &&
+                      current.driveScoreAlgorithmVersion ==
+                          source.driveScoreAlgorithmVersion &&
+                      current.rawRoutePointCount == source.rawRoute.length &&
+                      current.telemetryPointCount ==
+                          source.canonicalTelemetry.length)) &&
               current.id == publish.id &&
               current.userId == userId) {
             return WorldPublishSourceUploadResult(

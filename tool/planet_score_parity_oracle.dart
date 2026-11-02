@@ -2,9 +2,11 @@
 import 'dart:convert';
 import 'world_scoring_adapter.dart' show telemetry, score;
 import '../lib/features/drive_score/services/drive_score_calculator.dart';
+import '../lib/features/world_publish/models/published_drive_source.dart';
+import '../lib/services/drive_time_analysis.dart';
+import '../lib/models/canonical_telemetry_point.dart';
 
-// Synthetic inputs only: the server entrypoint intentionally uses legacy v1,
-// not the opt-in local reliable-interval calculator.
+// Synthetic inputs: legacy v1 and explicit reliable schema 2 stay distinct.
 void main() {
   final cases = <Map<String, dynamic>>[];
   for (final name in [
@@ -17,6 +19,9 @@ void main() {
     'long',
     'single',
     'empty',
+    'unavailable',
+    'segments',
+    'short-gap',
   ]) {
     final count = name == 'long'
         ? 3600
@@ -38,7 +43,13 @@ void main() {
         'timestamp': DateTime.utc(2026)
             .add(
               Duration(
-                seconds: i + (name == 'gap' && i >= 90 ? 120 : 0),
+                seconds:
+                    i +
+                    (name == 'gap' && i >= 90
+                        ? 120
+                        : (name == 'segments' || name == 'short-gap') && i >= 90
+                        ? 10
+                        : 0),
                 microseconds: name == 'microseconds' ? i * 37 : 0,
               ),
             )
@@ -80,6 +91,98 @@ void main() {
       'localReliableDiffers': jsonEncode(reliable) != jsonEncode(expected),
       'localReliableExpected': reliable,
     });
+    if (points.length >= 2) {
+      final canonical = telemetry(points).asMap().entries.map((entry) {
+        final p = entry.value, i = entry.key;
+        final unknown = name == 'unavailable' && i >= 60 && i < 70;
+        final boundary = name == 'segments' && i == 90;
+        return CanonicalTelemetryPoint(
+          latitude: p.latitude,
+          longitude: p.longitude,
+          timestamp: p.timestamp,
+          speedMps: p.speedMps,
+          headingDegrees: p.headingDegrees,
+          altitudeMeters: p.altitudeMeters,
+          accuracyMeters: p.accuracyMeters,
+          distanceFromPreviousMeters: p.distanceFromPreviousMeters,
+          accelerationMps2: p.accelerationMps2,
+          speedSource: unknown ? 'unavailable' : 'native',
+          accelerationReliable: !unknown && !boundary,
+          breakBefore: boundary,
+          gapDurationMicros: boundary ? 10000000 : 0,
+        );
+      }).toList();
+      final reliableScore = score(
+        const DriveScoreCalculator().calculateReliable(telemetry: canonical),
+      );
+      final start = canonical.first.timestamp;
+      final end = canonical.last.timestamp;
+      final metadata = {
+        'reliabilityPolicyVersion': 1,
+        'startedAtMicros': start.microsecondsSinceEpoch,
+        'stopRequestedAtMicros': end.microsecondsSinceEpoch,
+      };
+      final source = PublishedDriveSource(
+        schemaVersion: 2,
+        publishId: 'synthetic',
+        localDriveId: 'synthetic',
+        telemetryVersion: 1,
+        driveScoreAlgorithmVersion: 1,
+        worldRulesVersion: 6,
+        startedAt: start,
+        endedAt: end,
+        recordedDistanceMeters: 10000,
+        calculationMode: 'reliable_intervals',
+        calculationVersion: 1,
+        telemetryReliability: metadata,
+        rawRoute: [
+          const PublishedRoutePoint(
+            latitude: 40,
+            longitude: 29,
+            breakBefore: false,
+          ),
+          const PublishedRoutePoint(
+            latitude: 40,
+            longitude: 29.01,
+            breakBefore: false,
+          ),
+        ],
+        canonicalTelemetry: canonical
+            .map(
+              (p) => PublishedTelemetryPoint(
+                latitude: p.latitude,
+                longitude: p.longitude,
+                timestamp: p.timestamp,
+                speedMps: p.speedMps,
+                headingDegrees: p.headingDegrees,
+                altitudeMeters: p.altitudeMeters,
+                accuracyMeters: p.accuracyMeters,
+                distanceFromPreviousMeters: p.distanceFromPreviousMeters,
+                accelerationMps2: p.accelerationMps2,
+                speedSource: p.speedSource,
+                breakBefore: p.breakBefore,
+                gapDurationMicros: p.gapDurationMicros,
+                accelerationReliable: p.accelerationReliable,
+              ),
+            )
+            .toList(),
+      );
+      cases.add({
+        'name': 'reliable-$name',
+        'input': source.toJson(),
+        'expected': {
+          ...reliableScore,
+          'calculationMode': 'reliable_intervals',
+          'calculationVersion': 1,
+          'reliabilityPolicyVersion': 1,
+          'scoreEligible': DriveTimeAnalysis.analyze(
+            canonical,
+            metadata: metadata,
+          ).scoreEligible,
+        },
+        'localReliableDiffers': false,
+      });
+    }
   }
   print(jsonEncode(cases));
 }

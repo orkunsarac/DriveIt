@@ -46,6 +46,11 @@ class LocalSourceBundle {
         : {
             'driveId': score!.driveId,
             'algorithm': score!.algorithmVersion,
+            if (score!.calculationMode != 'unspecified') ...{
+              'calculationMode': score!.calculationMode,
+              'calculationVersion': score!.calculationVersion,
+              'reliabilityPolicyVersion': score!.reliabilityPolicyVersion,
+            },
             'telemetryVersion': score!.telemetryDataVersion,
             'calculatedAt': score!.calculatedAt.toIso8601String(),
             'total': score!.totalScore,
@@ -53,8 +58,7 @@ class LocalSourceBundle {
             'categories': score!.categories.map((c) => c.toMap()).toList(),
           },
     'roads': roads.map(_roadMap).toList(),
-    if (sourceProvenance != null)
-      'sourceProvenance': sourceProvenance!.toMap(),
+    if (sourceProvenance != null) 'sourceProvenance': sourceProvenance!.toMap(),
   };
 
   factory LocalSourceBundle.fromMap(Map<String, dynamic> m) {
@@ -89,6 +93,9 @@ class LocalSourceBundle {
       score: s == null
           ? null
           : DriveScoreRecord(
+              calculationMode: s['calculationMode'] as String? ?? 'unspecified',
+              calculationVersion: s['calculationVersion'] as int? ?? 1,
+              reliabilityPolicyVersion: s['reliabilityPolicyVersion'] as int?,
               driveId: s['driveId'],
               algorithmVersion: s['algorithm'],
               telemetryDataVersion: s['telemetryVersion'],

@@ -27,12 +27,18 @@ class DriveScoreCategoryContribution {
 }
 
 class DriveScoreResult {
+  final String calculationMode;
+  final int calculationVersion;
+  final int? reliabilityPolicyVersion;
   final double totalScore, overallConfidence;
   final int displayScore, algorithmVersion;
   final Map<String, DriveScoreCategoryStatus> categories;
   final Map<String, DriveScoreCategoryContribution> contributions;
   final String diagnostics;
   const DriveScoreResult({
+    this.calculationMode = 'legacy_v1',
+    this.calculationVersion = 1,
+    this.reliabilityPolicyVersion,
     required this.totalScore,
     required this.displayScore,
     required this.overallConfidence,

@@ -92,6 +92,16 @@ class DriveScoreStorageService {
   }
 
   static void _validate(DriveScoreRecord record) {
+    if (![
+          'unspecified',
+          'legacy_v1',
+          'reliable_intervals',
+        ].contains(record.calculationMode) ||
+        record.calculationVersion != 1 ||
+        (record.calculationMode == 'reliable_intervals' &&
+            record.reliabilityPolicyVersion != 1)) {
+      throw ArgumentError('Unsupported score calculation contract');
+    }
     if (record.driveId.trim().isEmpty) {
       throw ArgumentError.value(
         record.driveId,
@@ -153,6 +163,9 @@ class DriveScoreRecordAdapter extends TypeAdapter<DriveScoreRecord> {
         .map(DriveScoreCategoryRecord.fromMap)
         .toList(growable: false);
     return DriveScoreRecord(
+      calculationMode: fields[7] as String? ?? 'unspecified',
+      calculationVersion: fields[8] as int? ?? 1,
+      reliabilityPolicyVersion: fields[9] as int?,
       driveId: fields[0] as String? ?? '',
       algorithmVersion: fields[1] as int? ?? 0,
       telemetryDataVersion: fields[2] as int? ?? 0,
@@ -167,7 +180,7 @@ class DriveScoreRecordAdapter extends TypeAdapter<DriveScoreRecord> {
   @override
   void write(BinaryWriter writer, DriveScoreRecord object) {
     writer
-      ..writeByte(7)
+      ..writeByte(10)
       ..writeByte(0)
       ..write(object.driveId)
       ..writeByte(1)
@@ -181,6 +194,12 @@ class DriveScoreRecordAdapter extends TypeAdapter<DriveScoreRecord> {
       ..writeByte(5)
       ..write(object.overallConfidence)
       ..writeByte(6)
-      ..write(object.categories.map((category) => category.toMap()).toList());
+      ..write(object.categories.map((category) => category.toMap()).toList())
+      ..writeByte(7)
+      ..write(object.calculationMode)
+      ..writeByte(8)
+      ..write(object.calculationVersion)
+      ..writeByte(9)
+      ..write(object.reliabilityPolicyVersion);
   }
 }

@@ -42,6 +42,19 @@ class DriveScorePersistenceCoordinator {
   }) async {
     if (existing != null) return existing;
     if (telemetry == null || telemetry.points.length < 2) return null;
+    final policy = telemetry.acquisitionMetadata['reliabilityPolicyVersion'];
+    if (policy != null && policy != 1) return null;
+    if (policy == 1 &&
+        telemetry.points.any(
+          (p) => ![
+            'native',
+            'geometry_estimate',
+            'held_estimate',
+            'unavailable',
+          ].contains(p.speedSource),
+        )) {
+      return null;
+    }
 
     // Existing snapshots were returned above unchanged. Only newly acquired
     // sessions carry this policy marker; unknown legacy timing is not invented.

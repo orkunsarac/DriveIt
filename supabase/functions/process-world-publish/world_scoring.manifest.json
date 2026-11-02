@@ -1,7 +1,7 @@
 {
   "compiler": "Dart SDK version: 3.12.2 (stable) (Tue Jun 9 01:11:39 2026 -0700) on \"windows_x64\"",
-  "artifact_sha256": "f7a3fd0150e2b424ff282c2ebe20c93508fcba8cb31613e2d86b13f458022395",
-  "boundary_artifact_sha256": "ff23d94fc999355508e2b0d289b0f66c836ec17063c21300dbcdd671333e188b",
+  "artifact_sha256": "47d0564b1450d5c49c26a2e50d3fed05d937e7a4f8f35de9a8e66a7503580870",
+  "boundary_artifact_sha256": "8c42f1eb5f0856e4892751b533d3cd305709d9cbcb342c800075e95d31004102",
   "sources": {
     "lib/features/drive_score/config/acceleration_performance_calibration.dart": "70bdbe51bfb4e1b7111be43b90ab55a9fdc64c8f2d1e86bc0086625b2c13bd25",
     "lib/features/drive_score/config/braking_score_calibration.dart": "e893641be1bc5963a49b2a639c3168893c35b8d54d9f20ceaea6857efc64a514",
@@ -15,7 +15,7 @@
     "lib/features/drive_score/models/braking_score_models.dart": "1ffd418257abf1e42652b3c8c0abd4797b56e8502c945f793da6d90f339044c6",
     "lib/features/drive_score/models/cornering_score_models.dart": "67af823dacb6b03a7f3c7261f9eaa1a44da2cb83c4f7d3d91d3ac15d55948586",
     "lib/features/drive_score/models/drive_score_algorithm_version.dart": "68a2694fb0786ce679e0754a17208866c13cbb0f1fcfe3ee70b46a22bbcc4c45",
-    "lib/features/drive_score/models/drive_score_result.dart": "1f6dce7263ecef9a9b96fe7f9de664813aa81aac19931ab2c471ff64a36fd3c3",
+    "lib/features/drive_score/models/drive_score_result.dart": "f75fef94994ae996cdab1789726ca41de0135abf3a2f005c4a71c7f01d7e3163",
     "lib/features/drive_score/models/driving_analysis_models.dart": "9b9996f5674e44d3d097d0e0d5b1b4f9b16b8c0fc735ab360b3ec9f036f91b2c",
     "lib/features/drive_score/models/endurance_score_models.dart": "ddc6cde8359c3b182f2d0172cb3f50a38d3c2921c2522f2a680088d75ee849ed",
     "lib/features/drive_score/models/flow_acceleration_transition_models.dart": "f87b2374cc75150a30276d67b27a527cb7ef4d1468e029d885453c51db4ed6ec",
@@ -25,7 +25,7 @@
     "lib/features/drive_score/services/cornering_score_engine.dart": "9b246ae80af4898857aaae9e61c5e543555d0a24f8c0a99b5eacc643f0ca3203",
     "lib/features/drive_score/services/drive_feature_extractor.dart": "228c2e9b6a856fff10b919244ec608337f4fd20569b43a9d5dca2075ad047334",
     "lib/features/drive_score/services/drive_phase_analyzer.dart": "d53b0f3564cb429ca518897e53323ca275695dc141492a16e65ab09c848b852c",
-    "lib/features/drive_score/services/drive_score_calculator.dart": "70819651df5a195254793d9655ece95f63f25384a6bbd7959f52cebb53b63199",
+    "lib/features/drive_score/services/drive_score_calculator.dart": "54979a4cd65491d0868752e78de2bb67664284a69f6187688d9030286dbb2d01",
     "lib/features/drive_score/services/drive_score_engine.dart": "defd64e699f816873f56bc0bbac51068b88cef44cd43227cdaee459cda5ccb84",
     "lib/features/drive_score/services/driving_smoothness_engine.dart": "4c125abc7871379e04d551e87d2de3c5fc214f869966aa50de7b6eade69caf2e",
     "lib/features/drive_score/services/endurance_score_engine.dart": "40acf12311111a5b9686cf642ca659419d933c4868d7d20f04b32eb4529b01b6",

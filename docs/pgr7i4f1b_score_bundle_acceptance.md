@@ -67,3 +67,7 @@ Sonuç: **FAIL / exit 1**, stop-start ve gap farkları. Normal server-v1 parity 
 ## Korunan sınırlar
 
 PROD/DEV bağlantısı, deployment, kayıt yeniden hesaplama, Auth/Planet aktivasyonu, cihaz işlemi yapılmadı. R1/signing ve ilgisiz yerel dosyalar korundu. Bundle/manifest düzeltmesi ile teşhis/test araçları bağımsız checkpoint'tir; reliable/local eşitliği tamamlandı sayılmaz. Sonraki aşamaya geçilmez.
+
+## 4F1C takip kaydı
+
+Yeni reliable kayıtlar için ayrı source schema 2 ve açık hesaplama modu/sürümü üretim koduna eklendi. Legacy ile reliable mod eşitlenmedi; her sözleşme kendi native Dart sonucuyla karşılaştırılıyor. Eski bu rapordaki çapraz-mod FAIL tarihsel bulgudur. Yeni sürümlü parity ve kapsam sınırları: `docs/pgr7i4f1c_reliable_score_contract.md`.

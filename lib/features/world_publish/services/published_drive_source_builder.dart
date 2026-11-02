@@ -7,6 +7,9 @@ import '../../my_world/config/my_world_rules.dart';
 import '../models/published_drive_source.dart';
 import '../models/world_publish.dart';
 import 'legacy_whole_drive_safety.dart';
+import '../../../models/drive_score_record.dart';
+import '../../../services/drive_score_storage_service.dart';
+import '../../../services/drive_time_analysis.dart';
 
 enum PublishedDriveSourceBuildStatus {
   success,
@@ -28,9 +31,13 @@ class PublishedDriveSourceBuildResult {
 class PublishedDriveSourceBuilder {
   const PublishedDriveSourceBuilder({
     this.telemetryLoader = DriveTelemetryStorageService.get,
+    this.scoreLoader = _loadScore,
   });
 
   final DriveTelemetryRecord? Function(String driveId) telemetryLoader;
+  final DriveScoreRecord? Function(String driveId) scoreLoader;
+  static DriveScoreRecord? _loadScore(String id) =>
+      DriveScoreStorageService.get(driveId: id);
 
   PublishedDriveSourceBuildResult build({
     required DriveSession drive,
@@ -64,23 +71,82 @@ class PublishedDriveSourceBuilder {
         PublishedDriveSourceBuildStatus.invalidCanonicalTelemetry,
       );
     }
-    if (!LegacyWholeDriveSafety.canBuild(drive, telemetry)) {
+    final savedScore = scoreLoader(drive.id);
+    final reliable = savedScore?.calculationMode == 'reliable_intervals';
+    if ((savedScore != null &&
+            (savedScore.driveId != drive.id ||
+                savedScore.algorithmVersion !=
+                    DriveScoreAlgorithmVersion.v1.value ||
+                savedScore.telemetryDataVersion != telemetry.dataVersion)) ||
+        (savedScore != null &&
+            ![
+              'unspecified',
+              'legacy_v1',
+              'reliable_intervals',
+            ].contains(savedScore.calculationMode)) ||
+        (reliable &&
+            (drive.route.any(
+                  (p) =>
+                      !p.latitude.isFinite ||
+                      !p.longitude.isFinite ||
+                      p.latitude.abs() > 90 ||
+                      p.longitude.abs() > 180,
+                ) ||
+                savedScore!.calculationVersion != 1 ||
+                savedScore.reliabilityPolicyVersion != 1 ||
+                telemetry.acquisitionMetadata['reliabilityPolicyVersion'] !=
+                    1 ||
+                !DriveTimeAnalysis.fromRecord(telemetry).scoreEligible ||
+                telemetry.points.any(
+                  (p) =>
+                      ![
+                        'native',
+                        'geometry_estimate',
+                        'held_estimate',
+                        'unavailable',
+                      ].contains(p.speedSource) ||
+                      p.gapDurationMicros < 0,
+                ))) ||
+        (!reliable && !LegacyWholeDriveSafety.canBuild(drive, telemetry))) {
       return const PublishedDriveSourceBuildResult(
         PublishedDriveSourceBuildStatus.invalidCanonicalTelemetry,
       );
     }
 
-    final endedAt = drive.date.toUtc();
+    final endedAt = reliable
+        ? DateTime.fromMicrosecondsSinceEpoch(
+            telemetry.acquisitionMetadata['stopRequestedAtMicros'] as int,
+            isUtc: true,
+          )
+        : drive.date.toUtc();
     return PublishedDriveSourceBuildResult(
       PublishedDriveSourceBuildStatus.success,
       source: PublishedDriveSource(
-        schemaVersion: PublishedDriveSourceSchema.currentVersion,
+        schemaVersion: reliable
+            ? PublishedDriveSourceSchema.reliableVersion
+            : PublishedDriveSourceSchema.currentVersion,
+        calculationMode: reliable ? 'reliable_intervals' : null,
+        calculationVersion: reliable ? 1 : null,
+        telemetryReliability: reliable
+            ? {
+                'reliabilityPolicyVersion': 1,
+                'startedAtMicros':
+                    telemetry.acquisitionMetadata['startedAtMicros'],
+                'stopRequestedAtMicros':
+                    telemetry.acquisitionMetadata['stopRequestedAtMicros'],
+              }
+            : null,
         publishId: publish.id,
         localDriveId: drive.id,
         telemetryVersion: telemetry.dataVersion,
         driveScoreAlgorithmVersion: DriveScoreAlgorithmVersion.v1.value,
         worldRulesVersion: MyWorldRules.worldRulesVersion,
-        startedAt: endedAt.subtract(Duration(seconds: drive.durationSeconds)),
+        startedAt: reliable
+            ? DateTime.fromMicrosecondsSinceEpoch(
+                telemetry.acquisitionMetadata['startedAtMicros'] as int,
+                isUtc: true,
+              )
+            : endedAt.subtract(Duration(seconds: drive.durationSeconds)),
         endedAt: endedAt,
         recordedDistanceMeters: drive.distance,
         rawRoute: [
@@ -88,6 +154,7 @@ class PublishedDriveSourceBuilder {
             PublishedRoutePoint(
               latitude: point.latitude,
               longitude: point.longitude,
+              breakBefore: reliable ? point.breakBefore : null,
             ),
         ],
         canonicalTelemetry: [
@@ -102,6 +169,12 @@ class PublishedDriveSourceBuilder {
               accuracyMeters: point.accuracyMeters,
               distanceFromPreviousMeters: point.distanceFromPreviousMeters,
               accelerationMps2: point.accelerationMps2,
+              breakBefore: reliable ? point.breakBefore : null,
+              gapDurationMicros: reliable ? point.gapDurationMicros : null,
+              speedSource: reliable ? point.speedSource : null,
+              accelerationReliable: reliable
+                  ? point.accelerationReliable
+                  : null,
             ),
         ],
       ),

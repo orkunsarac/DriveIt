@@ -8,6 +8,10 @@ class DriveScoreRecord {
   static const int currentAlgorithmVersion = 1;
 
   final String driveId;
+  // Missing historical mode is unknown, never inferred from the score value.
+  final String calculationMode;
+  final int calculationVersion;
+  final int? reliabilityPolicyVersion;
   final int algorithmVersion;
   final int telemetryDataVersion;
   final DateTime calculatedAt;
@@ -16,6 +20,9 @@ class DriveScoreRecord {
   final List<DriveScoreCategoryRecord> categories;
 
   const DriveScoreRecord({
+    this.calculationMode = 'unspecified',
+    this.calculationVersion = 1,
+    this.reliabilityPolicyVersion,
     required this.driveId,
     required this.algorithmVersion,
     required this.telemetryDataVersion,
@@ -31,22 +38,27 @@ class DriveScoreRecord {
     required DateTime calculatedAt,
     required DriveScoreResult result,
   }) {
-    final categories = result.categories.entries.map((entry) {
-      final contribution = result.contributions[entry.key];
-      if (contribution == null) {
-        throw ArgumentError('Missing contribution for ${entry.key}.');
-      }
-      return DriveScoreCategoryRecord(
-        categoryKey: entry.key,
-        rawScore: entry.value.score,
-        maximum: entry.value.maximum,
-        applicable: entry.value.applicable,
-        sampleSufficient: entry.value.sampleSufficient,
-        contributionUsed: contribution.contribution,
-        contributionSource: contribution.source,
-      );
-    }).toList(growable: false);
+    final categories = result.categories.entries
+        .map((entry) {
+          final contribution = result.contributions[entry.key];
+          if (contribution == null) {
+            throw ArgumentError('Missing contribution for ${entry.key}.');
+          }
+          return DriveScoreCategoryRecord(
+            categoryKey: entry.key,
+            rawScore: entry.value.score,
+            maximum: entry.value.maximum,
+            applicable: entry.value.applicable,
+            sampleSufficient: entry.value.sampleSufficient,
+            contributionUsed: contribution.contribution,
+            contributionSource: contribution.source,
+          );
+        })
+        .toList(growable: false);
     return DriveScoreRecord(
+      calculationMode: result.calculationMode,
+      calculationVersion: result.calculationVersion,
+      reliabilityPolicyVersion: result.reliabilityPolicyVersion,
       driveId: driveId,
       algorithmVersion: result.algorithmVersion,
       telemetryDataVersion: telemetryDataVersion,

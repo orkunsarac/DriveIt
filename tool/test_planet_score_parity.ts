@@ -48,10 +48,18 @@ console.log(
   }`,
 );
 if (
-  Deno.args.includes("--require-local-reliable") &&
+  Deno.args.includes("--require-legacy-equals-reliable") &&
   reliableDifferences.length > 0
 ) {
   throw new Error(
     "Local reliable score and Planet legacy v1 are different contracts; version/policy decision required",
   );
+}
+if (
+  Deno.args.includes("--require-local-reliable") &&
+  !fixtures.some((f: { input: { schema_version?: number } }) =>
+    f.input.schema_version === 2
+  )
+) {
+  throw new Error("Versioned reliable parity fixtures are required");
 }

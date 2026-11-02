@@ -299,25 +299,26 @@ async function seedPlanet(u:User,start:number,generation:number,active:boolean,m
  insert into public.world_publishes(id,user_id,local_drive_id,started_at,ended_at,distance_meters,world_rules_version,status,processed_at,source_path,source_ready_at,source_schema_version,telemetry_version,drive_score_algorithm_version,raw_route_point_count,telemetry_point_count)
  values('${publish}','${u.id}','${drive}','2026-01-01','2026-01-01 00:10:00+00',${meters},6,'published',now(),'${path}',now(),1,1,1,601,601);
  insert into public.world_validated_roads(id,publish_id,user_id,provider_id,processing_version,valid_distance_meters,validation_status,direction_key,section_count,geometry)
- values('${road}','${publish}','${u.id}','synthetic',6,${meters},'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(${start} 0,${end} 0)',4326)));
+ values('${road}','${publish}','${u.id}','synthetic',3,${meters},'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(${start} 0,${end} 0)',4326)));
  insert into public.world_validated_road_sections(validated_road_id,section_key,section_order,distance_meters,source_trace_index,source_chunk_index,geometry)
  values('${road}','section-0',0,${meters},0,0,extensions.ST_GeomFromText('LINESTRING(${start} 0,${end} 0)',4326));
  insert into public.world_active_world_generations(generation,base_generation,operation_id,operation_reason,source_publish_id,source_drive_session_id,drive_score_algorithm_version,validated_road_processing_version,valid_distance_meters,trace_count,created_at)
- values(${generation},${generation-1},'world:${drive}:v1','recordProcessing','${publish}','${drive}',1,6,${meters},${active?1:0},now());
+ values(${generation},${generation-1},'world:${drive}:v1','recordProcessing','${publish}','${drive}',1,3,${meters},${active?1:0},now());
  ${active?`insert into public.world_active_world_traces(trace_id,active_from_generation,source_publish_id,source_drive_session_id,validated_road_id,matched_section_id,start_offset_meters,end_offset_meters,direction_key,min_latitude,max_latitude,min_longitude,max_longitude,bounds,processing_version,created_at,updated_at)
- values('trace-${publish}',${generation},'${publish}','${drive}','${road}','section-0',0,${meters},'east',0,0,${start},${end},extensions.ST_MakeEnvelope(${start},0,${end},0,4326),6,now(),now());`:''}
+ values('trace-${publish}',${generation},'${publish}','${drive}','${road}','section-0',0,${meters},'east',0,0,${start},${end},extensions.ST_MakeEnvelope(${start},0,${end},0,4326),3,now(),now());`:''}
  update public.world_active_world_state set current_generation=${generation} where singleton;commit;`);
  return {publish,road,path,source};
 }
 
 Deno.test('Planet withdrawal: A/B/C overlap restores surviving winner without retaining A',()=>planetFixture(async(admin,a,b,c,r,rows,base)=>{
  await sql(`insert into public.world_active_world_traces(trace_id,active_from_generation,active_to_generation,source_publish_id,source_drive_session_id,validated_road_id,matched_section_id,start_offset_meters,end_offset_meters,direction_key,min_latitude,max_latitude,min_longitude,max_longitude,bounds,processing_version,created_at,updated_at)
- select 'synthetic-A-influenced-cut',${base+1},${base+3},source_publish_id,source_drive_session_id,'${rows[0].road}','section-0',1000,2000,'east',0,0,0,.06,extensions.ST_MakeEnvelope(0,0,.06,0,4326),6,now(),now()
+ select 'synthetic-A-influenced-cut',${base+1},${base+3},source_publish_id,source_drive_session_id,'${rows[0].road}','section-0',1000,2000,'east',0,0,0,.06,extensions.ST_MakeEnvelope(0,0,.06,0,4326),3,now(),now()
  from public.world_active_world_generations where generation=${base+1};`);
  const before=await sql(`select jsonb_agg(to_jsonb(p) order by id)::text from public.world_publishes p where user_id in('${b.id}','${c.id}');`);
  const geometryBefore=await sql(`select jsonb_agg(to_jsonb(r) order by id)::text from public.world_validated_roads r where user_id in('${b.id}','${c.id}');`);
  check((await request(a,r)).status===202,'withdrawal consent');
  const done=await call({...r,action:'run'});check(done.status===200&&done.body.state==='completed','shared withdrawal completes');
+ check(await sql('select validated_road_processing_version from public.world_active_world_generations where generation=(select current_generation from public.world_active_world_state where singleton);')==='3','replayed generation preserves canonical publication processing version');
  check(await sql(`select count(*) from public.world_active_world_traces where active_to_generation is null and source_publish_id='${rows[0].publish}';`)==='1','equal score restores earlier B source');
  check(await sql(`select count(*) from public.world_active_world_traces where source_publish_id='${rows[2].publish}';`)==='0','all A historical/current traces erased');
  check(await sql(`select count(*) from public.world_active_world_traces where trace_id='synthetic-A-influenced-cut';`)==='0','old survivor boundary influenced by A is not retained');
@@ -385,10 +386,18 @@ Deno.test('Planet withdrawal: stale snapshot, invalid plan rollback and lost com
 Deno.test('Planet withdrawal: contradictory road and publish ownership fails closed',()=>planetFixture(async(_admin,a,b,_c,r,rows)=>{
  await sql(`update public.world_validated_roads set user_id='${b.id}' where id='${rows[2].road}';`);
  check((await request(a,r)).status===202,'request accepted but ownership not assumed');
- const result=await call({...r,action:'run'});check(result.status===202&&result.body.state==='blocked_planet','ambiguous withdrawing source is not purged');
- check(await sql(`select count(*) from auth.users where id='${a.id}';`)==='1','Auth not removed with ambiguous provenance');
- check(await sql(`select count(*) from public.world_validated_roads where id='${rows[2].road}';`)==='1','contradictory geometry retained for review');
- check(await sql(`select count(*) from public.phase8_drive_manifests where owner_id='${b.id}';`)==='1','B private data preserved');
+ let blocked=false;
+ for(let attempt=0;attempt<3;attempt++){
+  const result=await call({...r,action:'run'});
+  // A transient Storage/Edge failure may precede Planet inspection. Retry the
+  // same receipt only while all protected records are demonstrably retained.
+  check(await sql(`select count(*) from auth.users where id='${a.id}';`)==='1','Auth not removed with ambiguous provenance');
+  check(await sql(`select count(*) from public.world_validated_roads where id='${rows[2].road}';`)==='1','contradictory geometry retained for review');
+  check(await sql(`select count(*) from public.phase8_drive_manifests where owner_id='${b.id}';`)==='1','B private data preserved');
+  if(result.status===202&&result.body.state==='blocked_planet'){blocked=true;break;}
+  check((result.status===503&&result.body.error==='deletion_not_completed')||(result.status===202&&['pending','busy'].includes(result.body.state)),`unexpected ambiguous-source result HTTP ${result.status}; state=${result.body.state??'none'}`);
+ }
+ check(blocked,'ambiguous withdrawing source must reach blocked_planet within three receipt attempts');
 }));
 
 async function worker(action='worker',jobId?:string){
@@ -521,7 +530,7 @@ Deno.test('P-GR6C worker: failed local component does not hide unrelated committ
 },false,false,false));
 
 Deno.test('P-GR6C worker: repeated expired leases stop for review and recover',()=>fixture(async(admin,create,receipt)=>{
- const a=await create(),b=await create(),r=receipt();check((await request(a,r)).status===202,'consent');
+ const a=await create(),b=await create(),r=receipt();const consent=await request(a,r);check(consent.status===202,`consent HTTP ${consent.status}; error=${consent.body.error??'none'}`);
  check(!(await admin.rpc('account_deletion_worker_claim',{p_lease:crypto.randomUUID()})).error,'first worker claim');
  for(let i=0;i<8;i++){
   await sql(`update public.account_deletion_jobs set lease_until=clock_timestamp()-interval '1 second',next_attempt_at=clock_timestamp()-interval '1 second' where id='${r.requestId}';`);
@@ -539,7 +548,7 @@ Deno.test('P-GR6C worker: oversized metadata retains review and global read fenc
  insert into public.world_publishes(user_id,local_drive_id,started_at,ended_at,distance_meters,world_rules_version)
  select '${b.id}','synthetic-oversize-'||n,now(),now(),6000,6 from generate_series(1,127)n;
  insert into public.world_validated_roads(publish_id,user_id,provider_id,processing_version,valid_distance_meters,validation_status,direction_key,section_count,geometry)
- select id,user_id,'synthetic',6,6000,'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(0 0,.06 0)',4326)) from public.world_publishes where user_id='${b.id}' and local_drive_id like 'synthetic-oversize-%';commit;`);
+ select id,user_id,'synthetic',3,6000,'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(0 0,.06 0)',4326)) from public.world_publishes where user_id='${b.id}' and local_drive_id like 'synthetic-oversize-%';commit;`);
  check((await request(a,r)).status===202,'consent');check((await worker()).body.state==='blocked_planet','metadata budget cannot be bypassed');
  const hidden=await admin.rpc('account_deletion_planet_hidden_roads');check(!hidden.error&&hidden.data===null,'unknown component proof is fail closed');
  const viewport=await b.client.rpc('read_planet_viewport',{p_south:-.01,p_north:.01,p_west:-.01,p_east:.1,p_zoom:15});
@@ -555,7 +564,7 @@ Deno.test('P-GR6C worker: private-only failure cannot block a large unrelated Pl
   await sql(`begin;insert into public.world_publishes(user_id,local_drive_id,started_at,ended_at,distance_meters,world_rules_version)
   select '${b.id}','synthetic-private-world-'||n,now(),now(),6000,6 from generate_series(1,128)n;
   insert into public.world_validated_roads(publish_id,user_id,provider_id,processing_version,valid_distance_meters,validation_status,direction_key,section_count,geometry)
-  select id,user_id,'synthetic',6,6000,'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(0 0,.06 0)',4326)) from public.world_publishes where user_id='${b.id}' and local_drive_id like 'synthetic-private-world-%';commit;`);
+  select id,user_id,'synthetic',3,6000,'validated','east',1,extensions.ST_Multi(extensions.ST_GeomFromText('LINESTRING(0 0,.06 0)',4326)) from public.world_publishes where user_id='${b.id}' and local_drive_id like 'synthetic-private-world-%';commit;`);
   check(!(await a.client.storage.from('world-drive-sources').upload(path,new Blob(['{}']))).error,'private failure fixture');
   await sql(`update storage.objects set owner_id='${b.id}',owner='${b.id}' where bucket_id='world-drive-sources' and name='${path}';`);
   check((await request(a,r)).status===202,'private-only consent');check((await worker()).status===503,'private Storage failure waits');

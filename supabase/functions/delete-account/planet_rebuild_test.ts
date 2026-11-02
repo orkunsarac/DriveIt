@@ -7,7 +7,7 @@ function context(distance='6000'):RebuildContext {
  return {state:'rebuild',generation:'3',fingerprint:'synthetic',sources:[{
   source:{id:'publish',local_drive_id:'drive',user_id:'owner',source_path:'owner/publish.json',source_ready_at:'2026-01-01',
    source_schema_version:1,telemetry_version:1,drive_score_algorithm_version:1,world_rules_version:6,raw_route_point_count:2,telemetry_point_count:2},
-  order:'1',replay_time:'2026-01-01T00:00:00Z',road:{id:'road',drive_id:'drive',direction_key:'east',processing_version:6,
+  order:'1',replay_time:'2026-01-01T00:00:00Z',road:{id:'road',drive_id:'drive',direction_key:'east',processing_version:3,
    sections:[{section_key:'section',section_order:0,distance_meters:distance,geometry:{type:'LineString',coordinates:[[0,0],[.06,0]]}}]},
  }]};
 }
@@ -51,6 +51,18 @@ function replayFixture(count:number,distance='6000'){
  }};
  return {c,gateway};
 }
+Deno.test('current publication processing version is accepted by withdrawal replay',async()=>{
+ const {c,gateway}=replayFixture(1);
+ c.sources[0].road.processing_version=3;
+ const result=await advancePlanetReplay(c,gateway,{next:0,traces:[]});
+ assert.equal(result.next,1);
+ assert.equal(result.traces.length,1);
+});
+Deno.test('world rules version is not a validated-road processing version',async()=>{
+ const {c,gateway}=replayFixture(1);
+ c.sources[0].road.processing_version=6;
+ await assert.rejects(()=>advancePlanetReplay(c,gateway,{next:0,traces:[]}),/planet_rebuild_unsupported_road/);
+});
 Deno.test('checkpoint replay equals uninterrupted planner after JSON round trips',async()=>{
  const {c,gateway}=replayFixture(6);
  const expected=await rebuildPlanet(c,gateway);let p:ReplayCheckpoint={next:0,traces:[]};

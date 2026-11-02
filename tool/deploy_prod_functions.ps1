@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$PackageDirectory,[switch]$ApplyApprovedFunctions)
+param([Parameter(Mandatory)][string]$PackageDirectory,[switch]$ApplyApprovedFunctions,[switch]$RoadVersionCorrection)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -18,6 +18,7 @@ try {
  }
  if((Get-FileHash (Join-Path $package 'supabase/config.toml')).Hash -cne (Get-FileHash supabase/prod/config.toml).Hash){throw 'Function config mismatch'}
  if(!$ApplyApprovedFunctions){'DRY RUN: verified ten Function sources/config; no network or write.';return}
+ if(!$RoadVersionCorrection -and (Test-Path supabase/prod/correction_manifest.json)){throw 'This candidate includes a pending road correction; deploy through the separately approved correction route only'}
  $ref='arwnbogcswisfesayosy'
  $record=Import-Clixml (Join-Path $env:USERPROFILE '.driveit-secrets/supabase-prod-pat.clixml')
  $secret=if($record -is [Management.Automation.PSCredential]){$record.Password}else{$record}
@@ -37,7 +38,8 @@ try {
   $project=Api '';if($project.id -cne $ref -or $project.status -cne 'ACTIVE_HEALTHY'){throw 'PROD identity/health mismatch'}
   if((Api '/config/auth').disable_signup -ne $true){throw 'Signup must remain closed'}
   $state=@(Api '/database/query' (@{read_only=$true;query="select (select count(*) from supabase_migrations.schema_migrations) as migrations,(select count(*) from auth.users) as users,(select enabled from public.phase8_group_rollout where singleton) as gate;"}|ConvertTo-Json -Compress))[0]
-  if($state.migrations -ne 50 -or $state.users -ne 0 -or $state.gate -ne $false){throw 'Upgraded closed empty PROD required'}
+  $requiredCount=if($RoadVersionCorrection){52}else{50}
+  if($state.migrations -ne $requiredCount -or $state.users -ne 0 -or $state.gate -ne $false){throw 'Expected exact closed empty PROD history'}
   $secrets=@(Api '/secrets')
   foreach($required in @('MAPBOX_ACCESS_TOKEN','PHASE8_CLEANUP_TOKEN')){if($secrets.name -notcontains $required){throw ('Required existing server secret missing: '+$required)}}
   if($secrets.name -notcontains 'ACCOUNT_DELETION_WORKER_TOKEN'){
@@ -52,7 +54,8 @@ try {
    'Server recovery secret configured; encrypted local copy retained. No worker invocation or schedule.'
   }
   $env:SUPABASE_ACCESS_TOKEN=$token
-  foreach($name in $manifest.functions){
+  $names=if($RoadVersionCorrection){@('delete-account')}else{@($manifest.functions)}
+  foreach($name in $names){
    $arguments=@('--no-install','supabase@2.120.0','functions','deploy',$name,'--project-ref',$ref,'--workdir',$package,'--use-api')
    if($name -in @('phase8-drive-cleanup','delete-account')){$arguments+='--no-verify-jwt'}
    $result=& npx @arguments 2>&1

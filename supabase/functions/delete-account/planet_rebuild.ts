@@ -4,6 +4,7 @@ import {parseCandidateSnapshot, type CandidateSnapshot} from '../process-world-p
 import {analyzeActiveCandidates} from '../process-world-publish/world_road_overlap.ts';
 import {RequestSourceLoader, analyzeWorldScoring, type SourceGateway, type SourceRow} from '../process-world-publish/world_scoring_stage.ts';
 import {planWorldMutation, type PlannedTrace, type PersistedTrace} from '../process-world-publish/world_mutation.ts';
+import {rules} from '../process-world-publish/world_validation.ts';
 
 export type RebuildContext = {state:string;generation:string;fingerprint:string;sources:{source:SourceRow;road:Record<string,unknown>;order:string;replay_time:string}[]};
 export async function readPlanetSource(response:Response,remaining:number):Promise<{source:unknown;bytes:number}>{
@@ -38,7 +39,7 @@ export async function advancePlanetReplay(context:RebuildContext,gateway:SourceG
  if(new Set(ids).size!==ids.length)throw Error('planet_rebuild_duplicate_source');
  if(new Set(roads.map(r=>r.driveId)).size!==roads.length)throw Error('planet_rebuild_ambiguous_drive_identity');
  for(let i=0;i<roads.length;i++){
-  if(roads[i].processingVersion!==6||!roads[i].sections.length||
+  if(roads[i].processingVersion!==rules.validatedRoadProcessingVersion||!roads[i].sections.length||
     roads[i].sections.some(s=>s.geometry.length<2||!Number.isFinite(s.distanceMeters)||s.distanceMeters<=0))throw Error('planet_rebuild_unsupported_road');
   if(i&&BigInt(context.sources[i].order)<=BigInt(context.sources[i-1].order))throw Error('planet_rebuild_order');
  }

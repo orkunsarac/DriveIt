@@ -1,0 +1,18 @@
+{
+  "projectRef": "arwnbogcswisfesayosy",
+  "deploymentReady": false,
+  "requiresBaseMigrationCount": 50,
+  "functions": [
+    "delete-account"
+  ],
+  "files": [
+    {
+      "path": "supabase/account-deletion/migrations/202611020001_account_deletion_road_version.sql",
+      "sha256": "B71B6F8955F7508766B28BB9D5172F65BE94B710B491F3110149B580FF506E44"
+    },
+    {
+      "sha256": "B4FFD4B206D3A8497E920A102174F6E5BA1CF327622A43717BD7C5AAE48045E1",
+      "path": "supabase/account-deletion/migrations/202611020002_account_deletion_generation_version.sql"
+    }
+  ]
+}

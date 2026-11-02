@@ -231,6 +231,18 @@ try {
   Get-Content supabase/account-deletion/migrations/202611010025_account_deletion_retention_audit.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
   if($LASTEXITCODE -ne 0){throw 'Local durable audit migration failed'}
  }
+ $roadVersion=docker exec $container psql -U postgres -d postgres -X -At -c "select position('r.processing_version<>3' in pg_get_functiondef('public.account_deletion_planet_context(uuid,uuid)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Deletion road-version preflight failed'}
+ if($roadVersion -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611020001_account_deletion_road_version.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local deletion road-version correction failed'}
+ }
+ $generationVersion=docker exec $container psql -U postgres -d postgres -X -At -c "select position('''accountDeletion'',1,3,jsonb_array_length' in pg_get_functiondef('public.account_deletion_planet_commit(uuid,uuid,text,jsonb)'::regprocedure))>0;"
+ if($LASTEXITCODE -ne 0){throw 'Deletion generation-version preflight failed'}
+ if($generationVersion -ceq 'f'){
+  Get-Content supabase/account-deletion/migrations/202611020002_account_deletion_generation_version.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1|Out-Null
+  if($LASTEXITCODE -ne 0){throw 'Local deletion generation-version correction failed'}
+ }
  Get-Content supabase/account-deletion/tests/audit_retention.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1
  if($LASTEXITCODE -ne 0){throw 'Local durable audit retention acceptance failed'}
  Get-Content supabase/account-deletion/tests/planet_rebuild_security.sql -Raw|docker exec -i $container psql -U postgres -d postgres -X -q -v ON_ERROR_STOP=1

@@ -4,6 +4,8 @@ Tarih: 2 Kasım 2026. Hedef yalnız `arwnbogcswisfesayosy`.
 
 **Dar dağıtım ve veri değiştirmeyen güvenlik kabulü: PASS.** Bu, tam kapalı beta/gerçek kullanıcı kabulü değildir.
 
+Sonraki hosted kabul hazırlığında ortak Planet silme replay'inde road-processing sürüm uyuşmazlığı tespit edildi. Ayrı yerel düzeltme ve onay durumu `hosted_acceptance_road_version_correction.md` içindedir; bu R3 dağıtım kaydı genişletilmiş kullanıcı kabulü olarak kullanılmamalıdır.
+
 ## Uygulanan onaylı işlemler
 
 - PROD'a özel Mapbox tokenı maskeli yerel istemle alındı; repository dışında DPAPI kaydedildi. Önceki dosya varsa şifreli yedeklendi. Değer loglanmadı; DEV'den kopyalanmadı.

@@ -50,6 +50,10 @@ try {
   & 'C:\Users\PC\.deno\bin\deno.exe' run --allow-read --allow-write=tmp tool/build_prod_upgrade.ts $upgrade
   if($LASTEXITCODE -ne 0){throw 'Additive deletion upgrade bundle failed'}
   Copy-Item -LiteralPath $upgrade -Destination (Join-Path $out 'upgrade.sql')
+  $correction='tmp/road-correction-'+[guid]::NewGuid().ToString('N')+'.sql'
+  & 'C:\Users\PC\.deno\bin\deno.exe' run --allow-read --allow-write=tmp tool/build_prod_upgrade.ts $correction --road-version-correction
+  if($LASTEXITCODE -ne 0){throw 'Road-version correction bundle failed'}
+  Copy-Item -LiteralPath $correction -Destination (Join-Path $out 'road-version-correction.sql')
   Set-Content -LiteralPath (Join-Path $out '.gitignore') '*'
   'Prepared offline release artifacts only; no project link, secret or deployment.'
 } finally {Pop-Location}

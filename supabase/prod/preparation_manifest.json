@@ -303,7 +303,7 @@
     {
       "kind": "source",
       "path": "supabase/functions/delete-account/planet_rebuild.ts",
-      "sha256": "E66A4CA66F1AF7D41ED10C8512B8BA61EDEC25DE4FC66931CDABCA64D09ADEEA"
+      "sha256": "BE058790A3920A1855B53845BD9AC5B48D0E7F27AB467E2BEB097D43C2B22C12"
     },
     {
       "kind": "source",
@@ -313,7 +313,12 @@
     {
       "kind": "source",
       "path": "tool/build_prod_upgrade.ts",
-      "sha256": "AF77AD297858B8337A6AA2A2C2A596DB6008B8FCB81ED8A27775F19DECD53052"
+      "sha256": "E661DADEF5A5943E30F9119286A19A680FFFD34110A95409BC282394600BF104"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/correction_manifest.json",
+      "sha256": "42B4FB45AB717DD37815E429554396BAA4105909733D95EDF7D1E883F7114720"
     }
   ],
   "canonicalSchemaVerified": true,

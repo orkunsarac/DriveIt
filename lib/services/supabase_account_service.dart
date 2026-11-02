@@ -735,6 +735,16 @@ class SupabaseAccountService extends ChangeNotifier
         'Hesap e-postası bulunamadığı için şifre değiştirilemiyor.',
       );
     }
+    if (_requiresScopedProfile) {
+      await _changeScopedPassword(
+        client,
+        user.id,
+        email,
+        currentPassword,
+        newPassword,
+      );
+      return;
+    }
     try {
       final response = await client.auth.signInWithPassword(
         email: email,
@@ -756,6 +766,51 @@ class SupabaseAccountService extends ChangeNotifier
       await client.auth.updateUser(UserAttributes(password: newPassword));
     } on AuthException catch (error) {
       throw AccountServiceException.fromAuth(error);
+    }
+  }
+
+  // Reauthentication must not replace the shared SDK session. A temporary
+  // Auth client owns the proof session; its credential cannot follow a later
+  // account switch. The owner context is checked on both sides of each await.
+  Future<void> _changeScopedPassword(
+    SupabaseClient client,
+    String uid,
+    String email,
+    String currentPassword,
+    String newPassword,
+  ) async {
+    final context = _profileContext();
+    _requireProfileContext(context);
+    final gateway = _profileGateway(client);
+    if (!gateway.isAuthorized) throw StateError('Owner context unavailable');
+    final proof = SupabaseClient(
+      gateway.url,
+      gateway.publicKey,
+      httpClient: gateway.transport,
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
+    );
+    try {
+      final response = await proof.auth.signInWithPassword(
+        email: email,
+        password: currentPassword,
+      );
+      _requireProfileContext(context);
+      if (response.user?.id != uid) {
+        throw const AccountServiceException('Mevcut şifren yanlış.');
+      }
+      await proof.auth.updateUser(UserAttributes(password: newPassword));
+      _requireProfileContext(context);
+    } on AuthException catch (error) {
+      throw AccountServiceException.fromAuth(error);
+    } finally {
+      try {
+        if (proof.auth.currentSession != null) {
+          await proof.auth.signOut(scope: SignOutScope.local);
+        }
+      } catch (_) {
+        // A failed proof-session cleanup must not hide the original result.
+      }
+      await proof.dispose();
     }
   }
 

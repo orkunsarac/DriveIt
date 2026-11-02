@@ -1,0 +1,11 @@
+# R4/R5 checkpoint — owner-scoped password change
+
+R4 incomplete. Play Auth remains closed: SDK callback can change the shared session before owner/GPS lifecycle receives its event; production callback/restore fencing and actual Android composition have not been accepted. Existing 4C–4G acceptance is scoped and does not prove full activation. Signup, Group Drive, legal onboarding, PROD configuration and scheduling remain unchanged.
+
+The owner-scoped password-change path now verifies the current password using a separate ephemeral Supabase Auth client, checks the approved owner/epoch/token context around network operations, and updates using that proof session rather than replacing the shared client session. A request already received by the server cannot be undone when context changes; late results are rejected. Legacy account path remains unchanged. No hosted account was contacted.
+
+Validation: password, profile gateway, closed Play policy and callback test package 10/10; owner upload/download/profile and deletion runtime/controller package 44/44. Earlier command named nonexistent `test/account_deletion_runtime_test.dart` and failed loading it; corrected run passed. Tests use synthetic HTTP and isolated stores, not hosted/physical-device acceptance.
+
+R5: Gradle `:app:verifyAndroidApplicationId :app:verifyPlayReleaseSigning` verified `com.osaracx.driveit`, target 36, version 1.0.0 (1), then failed because `DRIVEIT_PLAY_KEYSTORE` was not set to an existing file in that process. Passwords were also absent. No AAB build was attempted, no existing AAB replaced, and no new signing material created. The existing version code must be checked in Play Console before a new candidate is numbered.
+
+Publication blockers: approved versioned privacy/KVKK/terms and applicable consent; approved public privacy and account-deletion URLs and working support channel; Play Data Safety, location/foreground service disclosures and declarations; approved domain/SMTP and real callback delivery; callback/owner security composition and controlled two-device acceptance; Play signing credentials supplied securely and upload/distribution certificate verification; store version availability, 16 KB device/APK validation and R6 regression. Keep Android callback and legal gates intact. None of these checks authorizes PROD changes or publication.

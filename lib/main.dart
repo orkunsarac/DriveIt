@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'package:app_links/app_links.dart';
 import 'config/local_ownership_gate.dart';
 import 'config/driveit_auth_callback.dart';
 import 'services/local_ownership_bootstrap.dart';
@@ -8,6 +7,7 @@ import 'services/device_drive_archive.dart';
 import 'services/android_device_archive_authorizer.dart';
 import 'services/local_owner_lifecycle.dart';
 import 'services/owner_auth_callback_delivery.dart';
+import 'services/owner_auth_link_listener.dart';
 import 'widgets/owner_personal_navigator.dart';
 
 import 'services/foreground_service.dart';
@@ -383,8 +383,7 @@ final GlobalKey<NavigatorState> driveNavigatorKey = GlobalKey<NavigatorState>();
 
 class _DriveItAppState extends State<DriveItApp> {
   StreamSubscription<AuthState>? _authCallbackSubscription;
-  StreamSubscription<Uri>? _ownerLinkSubscription;
-  OwnerAuthCallbackDelivery? _ownerCallbackDelivery;
+  OwnerAuthLinkListener? _ownerLinkListener;
   bool _recoveryRouteOpen = false;
 
   void _onTaskData(Object data) {
@@ -409,31 +408,7 @@ class _DriveItAppState extends State<DriveItApp> {
           await SupabaseAccountService.instance.exchangeOwnerCallback(uri);
         },
       );
-      _ownerCallbackDelivery = delivery;
-      final links = AppLinks();
-      _ownerLinkSubscription = links.uriLinkStream.listen(
-        (uri) => unawaited(delivery.deliver(uri)),
-        onError: (Object _) {},
-      );
-      unawaited(
-        links
-            .getInitialLink()
-            .then((uri) {
-              if (uri != null) return delivery.deliver(uri);
-            })
-            .catchError((Object _) {}),
-      );
-      // A warm intent can arrive after Android attaches the plugin but before
-      // this owner runtime subscribes. app_links retains the latest intent in
-      // memory; delivery deduplicates it against the initial/stream event.
-      unawaited(
-        links
-            .getLatestLink()
-            .then((uri) {
-              if (uri != null) return delivery.deliver(uri);
-            })
-            .catchError((Object _) {}),
-      );
+      _ownerLinkListener = OwnerAuthLinkListener(delivery)..start();
     }
     if (SupabaseBootstrap.isInitialized) {
       _authCallbackSubscription = Supabase
@@ -533,8 +508,7 @@ class _DriveItAppState extends State<DriveItApp> {
 
   @override
   void dispose() {
-    _ownerCallbackDelivery?.close();
-    _ownerLinkSubscription?.cancel();
+    _ownerLinkListener?.close();
     _authCallbackSubscription?.cancel();
     FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
     super.dispose();

@@ -177,7 +177,8 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
   }
 
   Future<void> _showCloseAccountNotice() async {
-    if (AccountDeletionRuntime.enabled &&
+    if ((AccountDeletionRuntime.enabled ||
+            (!_service.hasSession && AccountDeletionRuntime.recoveryEnabled)) &&
         SupabaseBootstrap.isInitialized &&
         identical(_service, SupabaseAccountService.instance)) {
       await Navigator.of(context).push(
@@ -357,7 +358,7 @@ class _DriveItAccountSectionState extends State<DriveItAccountSection> {
               ),
             ),
           ],
-          if (!signedIn && available && AccountDeletionRuntime.enabled)
+          if (!signedIn && available && AccountDeletionRuntime.recoveryEnabled)
             TextButton(
               onPressed: _showCloseAccountNotice,
               child: const Text('Bekleyen hesap silme talebim'),

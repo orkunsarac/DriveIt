@@ -178,13 +178,24 @@ abstract final class AccountDeletionRuntime {
     }
   }
 
+  /// Existing receipts can outlive the session revoked by the server. This
+  /// exposes recovery only; the request transport still requires a live lease.
+  static bool get recoveryEnabled {
+    if (!_configuredEnabled || !SupabaseBootstrap.isInitialized) return false;
+    if (!SupabaseBootstrap.isPlayPackage) return true;
+    return SupabasePublicKeyPolicy.permits(SupabaseConfig.publishableKey) &&
+        SupabaseEnvironmentPolicy.permits(
+          applicationId: 'com.osaracx.driveit',
+          url: SupabaseConfig.url,
+        );
+  }
+
   static AccountDeletionController? _controller;
   static AccountDeletionController get controller => _controller ??= create();
   static AccountDeletionController create() {
     final account = SupabaseAccountService.instance,
         client = Supabase.instance.client;
     if (SupabaseBootstrap.isPlayPackage) {
-      account.requireAccountDeletionLease();
       final endpoint = SupabaseConfig.url;
       final publicKey = SupabaseConfig.publishableKey;
       final transport = OwnerScopedAccountDeletionTransport(

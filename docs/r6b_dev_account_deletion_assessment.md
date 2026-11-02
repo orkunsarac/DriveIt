@@ -56,3 +56,7 @@ Onay sonrası tek kapsamlı sıra: **DEV 25-artifact taban parity ve Group gate 
 ## R6-B2 önkoşul sonucu (3 Kasım 2026)
 
 DEV `viqngnjfgknpxtoapzcg` için `supabase backups list` salt okunur sonucu `backups=[]`, `pitr_enabled=false` oldu. Geri yüklenebilir uzak backup/snapshot kanıtı olmadığından bu checkpoint'te dağıtım **BLOCKED**. Şema/migration/Function/secret/hesap üzerinde bu görev kapsamında hiçbir uzak yazma yapılmadı. Dağıtım değerlendirmesine dönmeden önce DEV için doğrulanabilir ve geri yükleme yolu kabul edilmiş backup/snapshot sağlanmalıdır.
+
+## Yedek sonrası durum
+
+Yukarıdaki yedek engeli [R6-B3 kabulü](r6b3_dev_backup_restore_acceptance.md) ile kapatıldı. Yedek hash'i yeniden doğrulandı ve ayrı yeni bir yerel veritabanına şema/veri geri yüklendi. Bu kopyada 22 migration kaydı, dört Planet tablosu ve kontrol edilen temel Function EXECUTE izinleri doğrulandı. İki bootstrap artifact'ının tüm şema ve ACL karşılıkları henüz doğrulanmadı; migration provası ve DEV dağıtımı bu nedenle tamamlanmış sayılmaz. Bu kontrolde DEV üzerinde yazma yapılmadı.

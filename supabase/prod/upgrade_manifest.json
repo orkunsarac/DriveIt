@@ -1,0 +1,114 @@
+{
+  "projectRef": "arwnbogcswisfesayosy",
+  "deploymentReady": false,
+  "groupDriveEnabled": false,
+  "hashMode": "utf8-lf",
+  "requiresBaseMigrationCount": 25,
+  "requiresSignupDisabled": true,
+  "workerSchedulingEnabled": false,
+  "requiredServerSecrets": [
+    "ACCOUNT_DELETION_WORKER_TOKEN"
+  ],
+  "files": [
+    {
+      "path": "supabase/account-deletion/migrations/202611010001_account_deletion.sql",
+      "sha256": "A0B615DEB0D4489549BDB92874686F767EAD8567DDF827A09CC8673B15D716F8"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010002_account_deletion_audit.sql",
+      "sha256": "BA93FE624386FCC17601379FC64E466645F943D6162D6633E3445D6836BA282B"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010003_account_deletion_revoked_subject.sql",
+      "sha256": "EEBC65499FE83989E3707B6A6867AB2D9B49ADBC7D6387359B466DFBEE48C6CA"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010004_account_deletion_recovery.sql",
+      "sha256": "DD551028A6E127DD0EC0D76C5E54AFE7897D14E8585CFFE3AA2C059E6C908782"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010005_account_deletion_generation_privacy.sql",
+      "sha256": "4A5EEB221B87FB972C7271091965934C06233FBED4BA190DA506C8581305E9C3"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010006_account_deletion_lock_order.sql",
+      "sha256": "F14C1FC38B6072284E75BB1B1255ACE004497EC2A705AC268EA3B137C7B051D8"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010007_account_deletion_planet_serialization.sql",
+      "sha256": "C2FF7B4C07631EDEB942957795179DB0D4CDA6191E02E8192AEF65213781D7C1"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010008_account_deletion_storage_provenance.sql",
+      "sha256": "41135F8E506D16C12CC8028F7423ABA089084BF9F20EBBBC57F8F34F9A025168"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010009_account_deletion_auth_lifecycle.sql",
+      "sha256": "FAB28B7E980140D3114EBDA8C3AC2FA953D8E9CF432EF110CC7AB39B87EBCF5A"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010010_account_deletion_world_lock_order.sql",
+      "sha256": "C348F33AF8A3A9A90EA1E837C73407133B808B9B63C8C88915373F042DA36E02"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010011_account_deletion_group_member_revocation.sql",
+      "sha256": "53EDF76F964DA39A01E8A61396B899AE7F207D42AA09C8D89FF40F5ACA06DB89"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010012_account_deletion_planet_rebuild.sql",
+      "sha256": "ED6161007B470ADF0415DD73D54022A207DD62D028DD53ADC7DBAF8C9EAAD371"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010013_account_deletion_planet_plan_alias.sql",
+      "sha256": "946A16BEC259DC4799BF67CAF459306B56E784089521CAF31823DF2F95E2F13E"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010014_account_deletion_planet_insert_alias.sql",
+      "sha256": "8995F8C650FC8B18A751D9BBA5968B7088C6DB501B8D959953F2E6FA09077F7C"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010015_account_deletion_planet_owner_proof.sql",
+      "sha256": "99E3FD31F907C083260E45AACBEB18A7D932437DFC1E411D2818FA1C4B40524A"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010016_account_deletion_planet_derived_history.sql",
+      "sha256": "C700B7853A4E6A5021B43DE5C0A8E4190FA651DBCF1BC7AEDD6FC323A17A4F3F"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010017_account_deletion_planet_history_bound.sql",
+      "sha256": "63B36B48CBC1575A95F33F971DC392200F5E4C5840D6A49FF9B6BA22914A2A5B"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010018_account_deletion_worker_queue.sql",
+      "sha256": "BD570B0913663C24C8512C4BFB777C8F442D4D3DE36EA8649264F1F3B12FC10B"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010019_account_deletion_replay_checkpoints.sql",
+      "sha256": "4DCA6F1F58284ACCCAF48C11129B438C8072E7FA64F6F1FEF748691C1BC3FF44"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010020_account_deletion_read_scope.sql",
+      "sha256": "AB6876A87C8526CC1F9F6E2EBE8319494B521760AA91CEBA5C285E0F8EF4E5CB"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010021_account_deletion_scope_domain.sql",
+      "sha256": "A38D05A831B9ECF37CBA935B15981C2DB3D38C456B1DE3143D5FD1CA0B0342E3"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010022_account_deletion_crash_budget.sql",
+      "sha256": "C6EEFE5AE1911DA10DA7FD46E0CAC6D702F5C4EEA9A4EA9236750C129B13A131"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010023_account_deletion_scope_budget.sql",
+      "sha256": "94E9D3536A3B0C94094A25F819D634C3C12696622D09153BF126F215C89D7AA9"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010024_account_deletion_scope_relevance.sql",
+      "sha256": "9A20A65F4AADB78C69D63A07B2A19322D661F0A744F5CD469DA4787B5AC7FF15"
+    },
+    {
+      "path": "supabase/account-deletion/migrations/202611010025_account_deletion_retention_audit.sql",
+      "sha256": "1CACD7542EAE4FB345B0D2A882D0816DD4FA49C5C60C0B2383A64CAF8ECCD4E0"
+    }
+  ]
+}

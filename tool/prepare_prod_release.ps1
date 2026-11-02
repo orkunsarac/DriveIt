@@ -46,6 +46,10 @@ try {
   & 'C:\Users\PC\.deno\bin\deno.exe' run --allow-read --allow-write=tmp tool/build_prod_transaction.ts $intermediate
   if($LASTEXITCODE -ne 0){throw 'Atomic bundle failed'}
   Copy-Item -LiteralPath $intermediate -Destination (Join-Path $out 'atomic.sql')
+  $upgrade='tmp/prod-upgrade-'+[guid]::NewGuid().ToString('N')+'.sql'
+  & 'C:\Users\PC\.deno\bin\deno.exe' run --allow-read --allow-write=tmp tool/build_prod_upgrade.ts $upgrade
+  if($LASTEXITCODE -ne 0){throw 'Additive deletion upgrade bundle failed'}
+  Copy-Item -LiteralPath $upgrade -Destination (Join-Path $out 'upgrade.sql')
   Set-Content -LiteralPath (Join-Path $out '.gitignore') '*'
   'Prepared offline release artifacts only; no project link, secret or deployment.'
 } finally {Pop-Location}

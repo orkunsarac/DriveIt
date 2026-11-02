@@ -111,9 +111,6 @@ class SupabaseOwnerDriveSyncAdapter
 
   Future<void> _requireM2() async {
     _assertOwner();
-    if (uploadGateway != null) {
-      throw const OwnerSyncConflict('play_m2_not_activated');
-    }
     if (!deletionEnabled) throw const OwnerSyncConflict('m2_not_activated');
     final data = await _invokeJson('phase8-drive-begin', {
       'action': 'capabilities',

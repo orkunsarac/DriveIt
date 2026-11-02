@@ -304,6 +304,16 @@
       "kind": "source",
       "path": "supabase/functions/delete-account/planet_rebuild.ts",
       "sha256": "E66A4CA66F1AF7D41ED10C8512B8BA61EDEC25DE4FC66931CDABCA64D09ADEEA"
+    },
+    {
+      "kind": "source",
+      "path": "supabase/prod/upgrade_manifest.json",
+      "sha256": "E791E4EB0FDD45BF4A12C4C78C2E907F331F1769063F49AF50C1F2E28BAE2E77"
+    },
+    {
+      "kind": "source",
+      "path": "tool/build_prod_upgrade.ts",
+      "sha256": "AF77AD297858B8337A6AA2A2C2A596DB6008B8FCB81ED8A27775F19DECD53052"
     }
   ],
   "canonicalSchemaVerified": true,

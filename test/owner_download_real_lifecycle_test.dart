@@ -20,6 +20,7 @@ import 'package:driveit_project/services/supabase_local_owner_auth.dart';
 import 'package:driveit_project/services/owner_profile_gateway.dart';
 import 'package:driveit_project/services/supabase_owner_drive_sync_adapter.dart';
 import 'package:driveit_project/services/owner_drive_sync_client.dart';
+import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 
 const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const b = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -358,6 +359,129 @@ void main() {
     return runtime;
   }
 
+  for (final operation in ['observe', 'delete']) {
+    for (final change in ['none', 'account', 'logout', 'epoch']) {
+      test('owner-scoped cloud $operation is fenced across $change', () async {
+        final runtime = await device('delete-$change');
+        final lease = runtime.lease;
+        final calls = <String?>[];
+        final deleteEntered = Completer<void>();
+        final deleteRelease = Completer<void>();
+        final adapter = SupabaseOwnerDriveSyncAdapter(
+          client: sdk,
+          ownerId: a,
+          requireCurrent: lease.requireCurrent,
+          deletionEnabled: true,
+          uploadGateway: OwnerProfileGateway(
+            authClient: sdk,
+            url: url,
+            publicKey: 'sb_publishable_synthetic',
+            applicationId: 'com.osaracx.driveit',
+            approvedOwner: () => lease.owner.userId,
+            approvedEpoch: () => lease.epoch,
+            isLeaseCurrent: (e) => lease.isCurrent && e == lease.epoch,
+            transport: MockClient((request) async {
+              calls.add(request.headers['authorization']);
+              if (request.url.path.endsWith('phase8-drive-begin')) {
+                return http.Response(
+                  jsonEncode({
+                    'ok': true,
+                    'schemaRevision': '202610160001',
+                    'ownerScope': jsonEncode([
+                      'local_account_store_v1',
+                      'account',
+                      a,
+                    ]),
+                    'deleteSync': true,
+                    'leaseFencing': true,
+                  }),
+                  200,
+                  headers: {'content-type': 'application/json'},
+                );
+              }
+              expect(request.url.path.endsWith('phase8-drive-delete'), isTrue);
+              final body = jsonDecode(request.body) as Map;
+              if (operation == 'observe') {
+                expect(body['action'], 'observe');
+              } else {
+                expect((body['mutation'] as Map)['ownerId'], a);
+              }
+              deleteEntered.complete();
+              await deleteRelease.future;
+              return http.Response(
+                jsonEncode(
+                  operation == 'observe'
+                      ? {
+                          'ok': true,
+                          'ownerId': a,
+                          'source_identity': sourceId,
+                          'change_sequence': 1,
+                          'payload_fingerprint': 'a' * 64,
+                        }
+                      : {
+                          'ok': true,
+                          'mutation': body['mutation'],
+                          'sequence': 1,
+                        },
+                ),
+                200,
+                headers: {'content-type': 'application/json'},
+              );
+            }),
+          ),
+        );
+        final payload = <String, dynamic>{
+          'deletionId': snapshot,
+          'deletedAt': '2026-11-02T00:00:00Z',
+          'causalVersion': 1,
+          'observedRemoteSequence': 1,
+          'observedPayloadFingerprint': 'a' * 64,
+        };
+        final mutation = OwnerSyncMutation(
+          version: 2,
+          kind: OwnerSyncMutationKind.driveTombstone,
+          ownerId: a,
+          ownerScope: jsonEncode(['local_account_store_v1', 'account', a]),
+          sourceIdentity: sourceId,
+          payload: payload,
+          payloadFingerprint: canonicalOwnerSyncSha256(payload),
+          idempotencyKey: 'owner-sync-v2:${'a' * 64}',
+        );
+        final Future<Object> pending = operation == 'observe'
+            ? adapter.observeDrive(sourceId)
+            : adapter.deleteDrive(mutation);
+        final result = change == 'none'
+            ? null
+            : expectLater(pending, throwsA(isA<StateError>()));
+        await deleteEntered.future.timeout(const Duration(seconds: 5));
+        if (change == 'account') {
+          uid = b;
+          token = 'synthetic-b';
+          await sdk.auth.signInWithPassword(
+            email: 'b@example.invalid',
+            password: 'synthetic',
+          );
+        } else if (change == 'logout') {
+          await sdk.auth.signOut();
+        } else if (change == 'epoch') {
+          await runtime.retry();
+        }
+        deleteRelease.complete();
+        if (result != null) {
+          await result;
+        } else {
+          final reply = await pending;
+          if (operation == 'observe') {
+            expect((reply as ({int sequence, String fingerprint})).sequence, 1);
+          } else {
+            expect((reply as OwnerSyncMutation).toMap(), mutation.toMap());
+          }
+        }
+        expect(calls.every((c) => c == 'Bearer synthetic-a'), isTrue);
+        expect(lease.isCurrent, change == 'none');
+      });
+    }
+  }
   test(
     'real SDK/lifecycle restores paged drives on two devices without duplicates',
     () async {

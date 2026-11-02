@@ -145,7 +145,7 @@ abstract final class ProductionOwnerRuntimeFactory {
                 client: Supabase.instance.client,
                 ownerId: lease.owner.userId!,
                 requireCurrent: lease.requireCurrent,
-                deletionEnabled: !play && accountDeletionEnabled,
+                deletionEnabled: accountDeletionEnabled,
                 uploadGateway: !play
                     ? null
                     : OwnerProfileGateway(

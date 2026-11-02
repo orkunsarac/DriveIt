@@ -631,6 +631,11 @@ class SupabaseAccountService extends ChangeNotifier
     if (client == null || client.auth.currentSession == null) {
       throw const AccountServiceException.unavailable();
     }
+    // The shared SDK may change session between an owner check and updateUser.
+    // Keep Play recovery closed until callback/session mutation is coordinated.
+    if (_requiresScopedProfile) {
+      throw const AccountServiceException.unavailable();
+    }
     final validation = AccountInputRules.validatePassword(newPassword);
     if (validation != null) throw AccountServiceException(validation);
     try {

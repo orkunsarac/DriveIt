@@ -186,4 +186,32 @@ void main() {
     expect(gateway.completed, 1);
     expect(find.text('Parolan güncellendi.'), findsOneWidget);
   });
+
+  testWidgets('recovery form refuses a changed session before submission', (
+    tester,
+  ) async {
+    final gateway = _RecoveryGateway();
+    var current = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DriveItPasswordRecoveryScreen(
+          accountGateway: gateway,
+          isRecoveryContextCurrent: () => current,
+        ),
+      ),
+    );
+    await tester.enterText(
+      find.byKey(const Key('recovery-new-password')),
+      'NewDrive!2026',
+    );
+    await tester.enterText(
+      find.byKey(const Key('recovery-confirm-password')),
+      'NewDrive!2026',
+    );
+    current = false;
+    await tester.tap(find.byKey(const Key('recovery-save')));
+    await tester.pump();
+    expect(gateway.completed, 0);
+    expect(find.byKey(const Key('recovery-error')), findsOneWidget);
+  });
 }

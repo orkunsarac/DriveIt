@@ -79,6 +79,10 @@ void main() {
         email: 'a@example.invalid',
         password: 'x',
       );
+      await expectLater(
+        service.completePasswordRecovery('NewDrive!2026'),
+        throwsA(isA<AccountServiceException>()),
+      );
       expect((await service.fetchCurrentProfile())?.id, a);
       expect(service.profile?.id, a);
       wait = true;

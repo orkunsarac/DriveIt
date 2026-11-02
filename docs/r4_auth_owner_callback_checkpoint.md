@@ -1,0 +1,11 @@
+# R4 Auth/owner callback checkpoint
+
+Status: PARTIAL; Play Auth remains hard-closed. No PROD, signup, Group Drive, Android signing, device or web changes.
+
+The password recovery UI captures the exact recovery session and, when an owner runtime exists, its current lease. It refuses to open after session/token or lease changes and refuses submission if the captured context is no longer current. Scoped `completePasswordRecovery` fails closed: the shared SDK can change its current session between checking the owner and sending `updateUser`, so a UI check alone cannot safely bind a destructive Auth request. This deliberately leaves Play recovery unavailable rather than claiming completion. Legacy recovery continues under its previous behavior, with an additional screen context check.
+
+Targeted Flutter suite: 33 PASS, including recovery mismatch, scoped recovery refusal, actual SDK owner A/B and token fencing, active/recoverable GPS, SDK session ordering and logout; HTTP and GPS fixtures are synthetic. Static analysis of changed files: no issues. Tests do not establish real cold/warm Android link delivery, real PKCE recovery or a full Play composition.
+
+Remaining R4 technical blockers: disable automatic SDK callback processing in a reviewed Play-only composition; safely deliver cold/warm links and one-time PKCE exchange under the existing owner/GPS fence; coordinate session restore and refresh with owner readiness and pinned cloud requests; bind password-recovery update to the exact recovered credential without following a later SDK session; demonstrate failure, replay, restart, owner/GPS and in-flight request scenarios with real SDK plus isolated services, then separately validate devices. A saved SDK session changing before an asynchronous owner event is a known gap; the existing Play gate must not open based on these tests.
+
+R1 read-only comparison: local `android/app/build.gradle.kts` contains uncommitted Play package selection, exact environment/feature guards, target/version checks, external `playUpload` signing configuration, and signing verification task absent from Git HEAD. Its existing local changes and signing files were not edited, staged, reset or committed. This is a source diff review, not verification of a signed artifact.

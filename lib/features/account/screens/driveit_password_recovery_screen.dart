@@ -4,9 +4,14 @@ import '../../../services/supabase_account_service.dart';
 
 /// Shown only after Supabase emits passwordRecovery with a recovered session.
 class DriveItPasswordRecoveryScreen extends StatefulWidget {
-  const DriveItPasswordRecoveryScreen({super.key, this.accountGateway});
+  const DriveItPasswordRecoveryScreen({
+    super.key,
+    this.accountGateway,
+    this.isRecoveryContextCurrent,
+  });
 
   final DriveItAccountGateway? accountGateway;
+  final bool Function()? isRecoveryContextCurrent;
 
   @override
   State<DriveItPasswordRecoveryScreen> createState() =>
@@ -36,6 +41,13 @@ class _DriveItPasswordRecoveryScreenState
   }
 
   Future<void> _save() async {
+    if (widget.isRecoveryContextCurrent?.call() == false) {
+      setState(
+        () => _error =
+            'Oturum değişti. Yeni bir parola sıfırlama bağlantısı iste.',
+      );
+      return;
+    }
     final validation =
         AccountInputRules.validatePassword(_password.text) ??
         AccountInputRules.validatePasswordConfirmation(

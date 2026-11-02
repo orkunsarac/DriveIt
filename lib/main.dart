@@ -406,7 +406,7 @@ class _DriveItAppState extends State<DriveItApp> {
                 event: state.event,
                 hasSession: state.session != null,
               )) {
-                _openPasswordRecovery();
+                _openPasswordRecovery(state.session!);
               }
             },
             onError: (Object _) {
@@ -431,14 +431,34 @@ class _DriveItAppState extends State<DriveItApp> {
     }
   }
 
-  void _openPasswordRecovery() {
+  void _openPasswordRecovery(Session recoveredSession) {
     if (_recoveryRouteOpen) return;
+    final owner = widget.ownerRuntime?.owner;
+    LocalOwnerLease? lease;
+    if (owner != null) {
+      try {
+        lease = owner.lease;
+        if (lease.owner.userId != recoveredSession.user.id) return;
+      } catch (_) {
+        return;
+      }
+    }
+    bool contextCurrent() {
+      final current = Supabase.instance.client.auth.currentSession;
+      if (current?.user.id != recoveredSession.user.id ||
+          current?.accessToken != recoveredSession.accessToken) {
+        return false;
+      }
+      return owner == null ||
+          (lease != null &&
+              lease.isCurrent &&
+              lease.owner.userId == current?.user.id);
+    }
+
     _recoveryRouteOpen = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final navigator = driveNavigatorKey.currentState;
-      if (!mounted ||
-          navigator == null ||
-          Supabase.instance.client.auth.currentSession == null) {
+      if (!mounted || navigator == null || !contextCurrent()) {
         _recoveryRouteOpen = false;
         return;
       }
@@ -446,7 +466,9 @@ class _DriveItAppState extends State<DriveItApp> {
         navigator
             .push<void>(
               MaterialPageRoute<void>(
-                builder: (_) => const DriveItPasswordRecoveryScreen(),
+                builder: (_) => DriveItPasswordRecoveryScreen(
+                  isRecoveryContextCurrent: contextCurrent,
+                ),
               ),
             )
             .whenComplete(() => _recoveryRouteOpen = false),

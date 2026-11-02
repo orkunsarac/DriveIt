@@ -504,6 +504,29 @@ class SupabaseAccountService extends ChangeNotifier
     }
   }
 
+  /// Refresh only near expiry, through the existing owner identity fence.
+  /// Network/auth failures are left to the caller's generic UI handling; the
+  /// local owner runtime and GPS journal retain their existing state.
+  Future<bool> refreshOwnerSessionIfNeeded() async {
+    final owner = _controlledOwner;
+    final client = _client;
+    final vault = _sessionVault;
+    if (owner == null || client == null || vault == null) return false;
+    if (client.auth.currentSession == null) {
+      await restoreVerifiedOwnerSession(
+        owner: owner,
+        client: client,
+        vault: vault,
+      );
+      return owner.lease.owner.userId != null;
+    }
+    return refreshVerifiedOwnerSession(
+      owner: owner,
+      client: client,
+      vault: vault,
+    );
+  }
+
   Future<void> _refreshProfileQuietly() async {
     try {
       await fetchCurrentProfile();

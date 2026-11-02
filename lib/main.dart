@@ -646,10 +646,20 @@ class _OwnedApplicationHomeState extends State<_OwnedApplicationHome>
         owner.state == LocalOwnerState.ready) {
       owner.scheduleWorldJobs(owner.lease);
       owner.onOwnerResumed();
+      unawaited(_refreshOwnerSessionQuietly());
     } else if (state == AppLifecycleState.resumed) {
       owner.onOwnerResumed();
     } else {
       owner.onApplicationInactive();
+    }
+  }
+
+  Future<void> _refreshOwnerSessionQuietly() async {
+    try {
+      await SupabaseAccountService.instance.refreshOwnerSessionIfNeeded();
+    } catch (_) {
+      // Cloud authentication remains unavailable; local drives and GPS data
+      // remain owned by their existing local lifecycle.
     }
   }
 

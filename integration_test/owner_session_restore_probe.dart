@@ -31,14 +31,15 @@ void main() async {
     const uid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     final vault = OwnerSessionVault(const AndroidOwnerSessionStorage());
     final stored = await vault.load();
-    if (stored == null) {
-      final expiry = DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600;
+    if (stored?.refreshToken != 'refresh-expired' &&
+        stored?.refreshToken != 'refresh-rotated') {
+      final expiry = DateTime.now().millisecondsSinceEpoch ~/ 1000 - 1;
       final payload = base64Url
           .encode(utf8.encode(jsonEncode({'sub': uid, 'exp': expiry})))
           .replaceAll('=', '');
       final session = Session.fromJson({
         'access_token': 'e30.$payload.synthetic',
-        'refresh_token': 'synthetic',
+        'refresh_token': 'refresh-expired',
         'token_type': 'bearer',
         'user': {
           'id': uid,
@@ -49,7 +50,7 @@ void main() async {
         },
       })!;
       await vault.save(session);
-      showResult('SAVED');
+      showResult('SAVED_EXPIRED');
       return;
     }
     final user = {
@@ -59,17 +60,40 @@ void main() async {
       'user_metadata': <String, dynamic>{},
       'created_at': '2026-01-01T00:00:00Z',
     };
+    final phase = stored!.refreshToken == 'refresh-expired'
+        ? 'ROTATED'
+        : 'RESTORED';
     final sdk = SupabaseClient(
       'https://example.invalid',
       'synthetic',
       authOptions: const AuthClientOptions(autoRefreshToken: false),
-      httpClient: MockClient(
-        (r) async => http.Response(
-          jsonEncode(user),
-          200,
-          headers: {'content-type': 'application/json'},
-        ),
-      ),
+      httpClient: MockClient((r) async {
+        if (r.url.path.endsWith('/token') && phase == 'ROTATED') {
+          final expiry = DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600;
+          final payload = base64Url
+              .encode(utf8.encode(jsonEncode({'sub': uid, 'exp': expiry})))
+              .replaceAll('=', '');
+          return http.Response(
+            jsonEncode({
+              'access_token': 'e30.$payload.rotated',
+              'refresh_token': 'refresh-rotated',
+              'expires_in': 3600,
+              'token_type': 'bearer',
+              'user': user,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (r.url.path.endsWith('/user')) {
+          return http.Response(
+            jsonEncode(user),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 404);
+      }),
     );
     final root = await (await getApplicationSupportDirectory()).createTemp(
       'driveit_owner_test_',
@@ -97,7 +121,7 @@ void main() async {
     ))!;
     showResult(
       runtime.owner.lease.owner.userId == uid && sdk.auth.currentUser?.id == uid
-          ? 'RESTORED owner=A'
+          ? '$phase owner=A'
           : 'FAIL',
     );
   } catch (_) {

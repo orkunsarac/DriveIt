@@ -25,3 +25,13 @@ Sonuç: mevcut açık parametreli ve izinli mobil akış için web sitesi veya S
 Genel signup kapalıyken public `signUp` ile yeni kullanıcı oluşturulması beklenmez. Signup'ı açmadan kontrollü admin davetiyle hesap doğrulama/davet ve ardından recovery test edilebilir; bu, public signup kabulü olarak adlandırılamaz. Gerçek alıcı ve gönderim sayısı açıkça onaylanmalı. Gmail Inbox/Spam, linkin aynı kurulumdaki PKCE bağlamı, cold/warm Android açılışı ve tek kullanımlılık ayrıca doğrulanmalı. Admin tarafından üretilmiş bir linkin uygulamada başlatılmış PKCE signup ile aynı olduğu varsayılmaz.
 
 Yeni gerçek gönderim veya test hesabı bu çalışmada oluşturulmadı. Hukuki yayın ve R5 web sayfaları ayrı kapsamdır; mevcut pending_legal_review korunur.
+
+## Onaylı gerçek gönderim denemesi — SMTP engeli
+
+Kullanıcı destek Gmail adresine bir davet ve bir recovery e-postasını açıkça onayladı. Sonraki tek davet isteği, tam Play `redirect_to` ile yalnız PROD `/auth/v1/invite` endpoint'ine gönderildi. HTTP 500 alındı; otomatik retry yapılmadı. Recovery isteği gönderilmedi.
+
+Management API'nin salt okunur logs endpoint'i HTTP 200 döndürdü. Son 15 dakikanın Auth kaydı bellekte sınıflandırıldı: SMTP kimlik doğrulama reddi, `535` ve `BadCredentials` kanıtı bulundu. Ham log/SMTP credential/bağlantı tokenı dosyaya veya çıktıya yazılmadı. Kaynak: [Supabase logs API](https://supabase.com/docs/reference/api/v1-get-project-logs). Bu hata, şablon veya mobil redirect hatası olarak yorumlanmaz.
+
+Salt okunur SQL kontrolü: `auth.users=0`, `r4_delivery_run` işaretli hesap sayısı 0; son 10 dakikada Auth audit olayı yok. Başarılı teslimat ve Android callback **NOT TESTED / SMTP nedeniyle BLOCKED**. Gönderim denemesi günlüğü repository dışında Windows DPAPI ile saklandı; belirsiz gönderimi otomatik tekrarlamamak için korunuyor.
+
+Gerekli kullanıcı adımı: Gmail uygulama parolasının geçerliliğini kontrol ederek doğru SMTP kimlik bilgisini yalnız Supabase Dashboard'un güvenli SMTP alanında güncellemek. Parola Codex'e verilmez. Genel signup, Group Drive, Site URL ve diğer Auth ayarları değişmez. Kimlik bilgisi düzeltilmeden tekrar gönderilmez. Deneme aracı `tool/r4_email_delivery.ps1` henüz tam başarılı servis kabulü almamış yerel hazırlıktır; bu belge checkpoint'ine dahil edilmez.

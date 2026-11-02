@@ -18,12 +18,22 @@ try {
    $args.Method='Post';$args.ContentType='application/json';$args.Body=@{query=$Query;read_only=$true}|ConvertTo-Json -Compress
   }
   $r=Invoke-WebRequest @args
-  if($r.StatusCode -notin @(200,201)){throw ('PROD read failed: '+$Path+' HTTP '+$r.StatusCode)}
+  if($r.StatusCode -notin @(200,201)){
+   $detail=''
+   try {
+    $errorBody=$r.Content|ConvertFrom-Json
+    if($errorBody.PSObject.Properties['message']){
+     $detail=([string]$errorBody.message -replace '(?i)(sbp_|sb_secret_|eyJ)[A-Za-z0-9_.-]+','[redacted]')
+     if($detail.Length -gt 500){$detail=$detail.Substring(0,500)}
+    }
+   } catch { $detail='Response details suppressed' }
+   throw ('PROD read failed: '+$Path+' HTTP '+$r.StatusCode+' '+$detail)
+  }
   return $r.Content|ConvertFrom-Json
  }
  $project=Read-Prod '';if($project.id -cne $ref){throw 'Project identity mismatch'}
  $auth=Read-Prod '/config/auth'
- $data=Read-Prod '/database/query' "select json_build_object('authUsers',(select count(*) from auth.users),'migrationCount',(select count(*) from supabase_migrations.schema_migrations),'gate',public.phase8_group_enabled(),'publicTables',(select count(*) from pg_class where relnamespace='public'::regnamespace and relkind='r'),'deletionInstalled',to_regclass('public.account_deletion_jobs') is not null) as evidence;"
+ $data=Read-Prod '/database/query' "select json_build_object('authUsers',(select count(*) from auth.users),'migrationCount',(select count(*) from supabase_migrations.schema_migrations),'gate',(select enabled from public.phase8_group_rollout where singleton),'publicTables',(select count(*) from pg_class where relnamespace='public'::regnamespace and relkind='r'),'deletionInstalled',to_regclass('public.account_deletion_jobs') is not null) as evidence;"
  $functions=Read-Prod '/functions'
  [pscustomobject]@{projectRef=$ref;status=$project.status;disableSignup=$auth.disable_signup;evidence=@($data)[0].evidence;functions=@($functions|Select-Object slug,status,verify_jwt)}|ConvertTo-Json -Depth 7
 } finally {

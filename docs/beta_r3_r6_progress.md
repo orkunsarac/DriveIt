@@ -26,11 +26,11 @@ Bu belge tüm kapalı beta kabulü değildir. Hosted aktivasyon yapılmadı.
 - Schema 1 ↔ 2 ortak yol karşılaştırması açıkça reddedilmeye devam eder; eski skorlar yeniden hesaplanmaz. Aynı mod karşılaştırması korunur. Bu bir uyumluluk politikasıdır; karışık kaynaklar için sessiz downgrade yoktur.
 - Worker scheduling/cron etkin değildir. Onaylı PROD secret, sınırlı invocation yöntemi, rate/timeout, retry ve izleme kabul edilmeden cron kurulmaz. Receipt kurtarma scheduling yetkisi yerine geçmez.
 - Play Auth sabit kapalı kapısı, local owner aktivasyonu, sync/deletion/Planet gate'leri ve hukuki onboarding korunur. Kullanıcı 2 Kasım'da nihai hukuki onayın henüz bulunmadığını doğruladı. Nihai metin ve sürüm kabulü olmadan gerçek onboarding veya beta açılmaz.
-- Hosted signup/SMTP/redirect değişikliği, migration/Function dağıtımı ve worker aktivasyonu için ayrı açık onay gerekir. `prod_readiness_audit.ps1` sabit PROD ve allowlist edilmiş metadata endpoint'leriyle hazırlandı; mevcut DPAPI PAT ilk proje GET isteğinde HTTP 401 verdi. Sonraki sorgular çalıştırılmadı. Yeni salt okunur yetki bekleniyor; mevcut hosted güvenlik değerleri yeniden doğrulanmış sayılmadı.
+- Hosted signup/SMTP/redirect değişikliği, migration/Function dağıtımı ve worker aktivasyonu için ayrı açık onay gerekir. İlk PAT HTTP 401 verdi. Kullanıcının yeni salt okunur PAT'i maskeli yerel girişle DPAPI kaydına yazıldı; eski şifreli kayıt repository dışında yedeklendi. Yeni PAT ile 2 Kasım salt okunur denetimi PASS: doğru PROD, ACTIVE_HEALTHY, disable_signup=true, auth.users=0, migration=25, public tablo=18, gate=false, deletion şeması yok, 9 Function ACTIVE ve mevcut JWT politikaları beklenen değerlere eşit. Salt okunur rolün service-only `phase8_group_enabled()` EXECUTE yetkisi yoktur; denetim bu fonksiyonu çağırmak yerine rollout tablosundaki değeri okur. Yetki genişletilmedi. Deployment veya veri değişikliği yapılmadı.
 
 ## Sıradaki iş ve zorunlu dış kabuller
 
-1. Temiz SQL/rollback kabulü tamamlandı. Sonraki teknik kabul schema-2 hesap silme replay kapsamı ve yeni salt okunur PAT ile hosted fark analizidir.
+1. Temiz SQL/rollback ve hosted temel durum karşılaştırması tamamlandı. Sonraki teknik kabul schema-2 hesap silme replay kapsamı ve somut upgrade/Function dağıtımının ayrı onayıdır. Yeni PAT'in yazma yetkisi bulunduğu varsayılmaz.
 2. Somut deployment planının kullanıcı onayı; Group Drive kapalı kalacak. Gerçek Auth/e-posta ve iki cihaz bulut kabulü bundan sonra yapılabilir.
 3. Hukuki nihai metin, veri sorumlusu bilgileri, yayınlanmış gizlilik/silme URL'leri ve Data Safety onayı. Hukuki süre/dayanak uydurulmaz.
 4. Onaylanmış yapılandırmayla yeni imzalı AAB, A55/ikinci cihaz ve 16 KB cihaz kabulü; sonra R6 tam regresyon. Mevcut anahtar değiştirilmez.

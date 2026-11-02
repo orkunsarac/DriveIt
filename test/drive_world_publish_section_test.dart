@@ -195,6 +195,9 @@ void main() {
       await tester.tap(button);
       await tester.pumpAndSettle();
       expect(find.text("DriveIt Gezegeni'ne yayınlansın mı?"), findsOneWidget);
+      expect(find.textContaining('yalnızca tam sürüş içindir'), findsOneWidget);
+      expect(find.textContaining('Kişisel bulut yedeği onayı'), findsOneWidget);
+      expect(find.textContaining('özel kaynak deposuna'), findsOneWidget);
       await tester.tap(find.text('Vazgeç'));
       await tester.pumpAndSettle();
       expect(gateway.insertCalls, 0);

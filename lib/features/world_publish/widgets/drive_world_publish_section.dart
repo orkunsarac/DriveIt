@@ -7,6 +7,7 @@ import '../services/world_publish_service.dart';
 import '../services/world_publish_source_upload_service.dart';
 import '../services/world_publish_processing_service.dart';
 import '../services/world_publish_submission_service.dart';
+import '../../../services/local_owner_lifecycle.dart';
 
 class DriveWorldPublishSection extends StatefulWidget {
   const DriveWorldPublishSection({
@@ -15,6 +16,8 @@ class DriveWorldPublishSection extends StatefulWidget {
     this.publishService,
     this.sourceUploadService,
     this.processingService,
+    this.submissionService,
+    this.ownerLease,
     this.existingOnly = false,
   });
 
@@ -22,6 +25,8 @@ class DriveWorldPublishSection extends StatefulWidget {
   final WorldPublishService? publishService;
   final WorldPublishSourceUploadService? sourceUploadService;
   final WorldPublishProcessingService? processingService;
+  final WorldPublishSubmissionService? submissionService;
+  final LocalOwnerLease? ownerLease;
   final bool existingOnly;
 
   @override
@@ -39,17 +44,35 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
   bool _processingAction = false;
   bool _lookupFailed = false;
   String? _message;
+  late final LocalOwnerLease? _mountedOwner;
+  bool get _ownerValid =>
+      identical(widget.ownerLease, _mountedOwner) &&
+      _mountedOwner?.isCurrent != false;
 
   @override
   void initState() {
     super.initState();
+    _mountedOwner = widget.ownerLease;
+    _mountedOwner?.changes.addListener(_ownerChanged);
     _service = widget.publishService ?? WorldPublishService();
-    _submissionService = WorldPublishSubmissionService(
-      publishService: _service,
-      uploadService: widget.sourceUploadService,
-      processingService: widget.processingService,
-    );
+    _submissionService =
+        widget.submissionService ??
+        WorldPublishSubmissionService(
+          publishService: _service,
+          uploadService: widget.sourceUploadService,
+          processingService: widget.processingService,
+        );
     _loadStatus();
+  }
+
+  void _ownerChanged() {
+    if (!mounted || _ownerValid) return;
+    setState(() {
+      _publish = null;
+      _loading = false;
+      _lookupFailed = true;
+      _message = null;
+    });
   }
 
   @override
@@ -58,21 +81,26 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
     if (oldWidget.drive.id != widget.drive.id ||
         oldWidget.publishService != widget.publishService ||
         oldWidget.sourceUploadService != widget.sourceUploadService ||
-        oldWidget.processingService != widget.processingService) {
+        oldWidget.processingService != widget.processingService ||
+        oldWidget.submissionService != widget.submissionService ||
+        oldWidget.ownerLease != widget.ownerLease) {
       _service = widget.publishService ?? WorldPublishService();
-      _submissionService = WorldPublishSubmissionService(
-        publishService: _service,
-        uploadService: widget.sourceUploadService,
-        processingService: widget.processingService,
-      );
+      _submissionService =
+          widget.submissionService ??
+          WorldPublishSubmissionService(
+            publishService: _service,
+            uploadService: widget.sourceUploadService,
+            processingService: widget.processingService,
+          );
       _publish = null;
       _loadStatus();
     }
   }
 
   Future<void> _loadStatus() async {
+    if (!_ownerValid) return;
     if (!_service.isAvailable || !_service.hasSession) {
-      if (mounted) {
+      if (mounted && _ownerValid) {
         setState(() {
           _loading = false;
           _lookupFailed = false;
@@ -88,13 +116,13 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
     });
     try {
       final publish = await _service.getPublishForLocalDrive(widget.drive.id);
-      if (!mounted) return;
+      if (!mounted || !_ownerValid) return;
       setState(() {
         _publish = publish;
         _loading = false;
       });
     } on WorldPublishLookupException {
-      if (mounted) {
+      if (mounted && _ownerValid) {
         setState(() {
           _loading = false;
           _lookupFailed = true;
@@ -104,7 +132,7 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
   }
 
   Future<void> _confirmPublish() async {
-    if (widget.existingOnly) return;
+    if (widget.existingOnly || !_ownerValid) return;
     if (_submitting || _loading) return;
     final confirmed = await showDialog<bool>(
       context: context,
@@ -112,7 +140,7 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
         backgroundColor: const Color(0xff091a31),
         title: const Text("DriveIt Gezegeni'ne yayınlansın mı?"),
         content: const Text(
-          "Bu sürüşün rota verisi ortak DriveIt Gezegeni'ni oluşturmak için işlenecek. Sürüş kaydın cihazında kalmaya devam edecek.",
+          'Bu onay yalnızca tam sürüş içindir. Tam rota ve güvenilir telemetri özel kaynak deposuna yüklenip işlenecek. Yalnız doğrulanan yol katkısı ortak DriveIt Gezegeni’nde görünebilir; özel GPS kaynak dosyası herkese açık yayın değildir. Kişisel bulut yedeği onayı bu paylaşımın yerine geçmez. Sürüşün cihazdaki yerel kaydı korunur.',
         ),
         actions: [
           TextButton(
@@ -126,12 +154,12 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
         ],
       ),
     );
-    if (confirmed != true || !mounted) return;
+    if (confirmed != true || !mounted || !_ownerValid) return;
     await _publishDrive();
   }
 
   Future<void> _publishDrive({bool processingOnly = false}) async {
-    if (_submitting || _loading) return;
+    if (_submitting || _loading || !_ownerValid) return;
     setState(() {
       _submitting = true;
       _processingAction = processingOnly;
@@ -147,11 +175,12 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
             )
           : await _submissionService.submitDriveForPlanet(
               widget.drive,
+              confirmedFullDriveShare: true,
               onProcessingStarted: () {
                 if (mounted) setState(() => _processingAction = true);
               },
             );
-      if (!mounted) return;
+      if (!mounted || !_ownerValid) return;
       if (result.publish != null) {
         setState(() => _publish = result.publish);
       }
@@ -160,8 +189,17 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
         case WorldPublishSubmissionStatus.alreadyReady:
         case WorldPublishSubmissionStatus.processing:
         case WorldPublishSubmissionStatus.published:
-        case WorldPublishSubmissionStatus.serverFailed:
           break;
+        case WorldPublishSubmissionStatus.serverFailed:
+          setState(
+            () => _message = switch (result.publish?.errorCode) {
+              'world_score_mixed_source_modes' =>
+                'Bu sürüş mevcut Planet kaynağıyla güvenli biçimde karşılaştırılamadı; yayın reddedildi.',
+              'world_score_telemetry_insufficient' =>
+                'Güvenilir GPS verisi yeterli olmadığı için yayın reddedildi.',
+              _ => 'Sunucu yayını reddetti. Sürüş kaydı cihazında korunuyor.',
+            },
+          );
         case WorldPublishSubmissionStatus.sourceNotReady:
           setState(() => _message = 'Yayın verisi henüz gönderilmedi.');
         case WorldPublishSubmissionStatus.processingRetryableFailure:
@@ -170,8 +208,13 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
           );
         case WorldPublishSubmissionStatus.processingPermanentFailure:
           setState(
-            () => _message =
-                'Bu sürüş doğrulanamadı. Daha sonra tekrar kontrol et.',
+            () => _message = switch (result.processing?.errorCode) {
+              'world_score_mixed_source_modes' =>
+                'Bu sürüş, mevcut Planet yoluyla aynı güvenilir kaynak sürümünü paylaşmadığı için güvenle karşılaştırılamadı; yayınlanmadı.',
+              'world_score_telemetry_insufficient' =>
+                'Güvenilir GPS verisi yeterli olmadığı için yayın reddedildi.',
+              _ => 'Bu sürüş doğrulanamadı. Daha sonra tekrar kontrol et.',
+            },
           );
         case WorldPublishSubmissionStatus.processingRefreshFailure:
           setState(
@@ -180,7 +223,8 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
           );
         case WorldPublishSubmissionStatus.notEligible:
           setState(
-            () => _message = 'DriveIt Gezegeni için sürüş en az 5 km olmalı.',
+            () => _message =
+                'Yayın için sürüş en az 5 km olmalı ve güvenilir GPS, zaman ve skor kanıtları schema 2 koşullarını karşılamalı.',
           );
         case WorldPublishSubmissionStatus.notSignedIn:
           setState(
@@ -205,6 +249,10 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
           setState(
             () => _message =
                 'Yayın isteği gönderilemedi. Bağlantını kontrol edip tekrar dene.',
+          );
+        case WorldPublishSubmissionStatus.consentRequired:
+          setState(
+            () => _message = 'Tam sürüş paylaşımı için ayrı açık onay gerekli.',
           );
       }
     } catch (_) {
@@ -233,6 +281,13 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
   );
 
   Widget _content() {
+    if (!_ownerValid) {
+      return _status(
+        Icons.lock_outline_rounded,
+        'Hesap değişti; önceki yayın işlemi durduruldu.',
+        color: Colors.white70,
+      );
+    }
     if (!_service.isAvailable) {
       return _status(
         Icons.cloud_off_rounded,
@@ -414,6 +469,12 @@ class _DriveWorldPublishSectionState extends State<DriveWorldPublishSection> {
         ],
       ],
     );
+  }
+
+  @override
+  void dispose() {
+    _mountedOwner?.changes.removeListener(_ownerChanged);
+    super.dispose();
   }
 
   @override

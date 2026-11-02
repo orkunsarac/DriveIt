@@ -32,7 +32,7 @@ Map<String, dynamic> _row({bool ready = false, String status = 'pending'}) => {
   'telemetry_version': ready ? 1 : null,
   'drive_score_algorithm_version': ready ? 1 : null,
   'raw_route_point_count': ready ? 3 : null,
-  'telemetry_point_count': ready ? 3 : null,
+  'telemetry_point_count': ready ? 201 : null,
   'source_ready_at': ready ? '2026-09-23T12:02:00Z' : null,
 };
 
@@ -152,6 +152,7 @@ class _ProcessingGateway implements WorldPublishProcessingGateway {
   _ProcessingGateway(this.events);
   final List<String> events;
   final calls = <(String, Map<String, dynamic>)>[];
+  void Function()? onInvoke;
   @override
   bool get isAvailable => true;
   @override
@@ -160,6 +161,7 @@ class _ProcessingGateway implements WorldPublishProcessingGateway {
   Future<Object?> invoke(String functionName, Map<String, dynamic> body) async {
     events.add('process');
     calls.add((functionName, Map.of(body)));
+    onInvoke?.call();
     return {
       'ok': true,
       'validation': {
@@ -298,7 +300,9 @@ void main() {
 
   test('new publish calls create then upload then attach', () async {
     final publishGateway = _PublishGateway(sourceGateway.events);
-    final processingGateway = _ProcessingGateway(sourceGateway.events);
+    final processingGateway = _ProcessingGateway(sourceGateway.events)
+      ..onInvoke = () =>
+          publishGateway.existing = _row(ready: true, status: 'published');
     final submit = WorldPublishSubmissionService(
       publishService: WorldPublishService(
         telemetryLoader: (_) => _telemetry(),
@@ -310,7 +314,10 @@ void main() {
         gateway: processingGateway,
       ),
     );
-    final result = await submit.submitDriveForPlanet(_drive());
+    final result = await submit.submitDriveForPlanet(
+      _drive(),
+      confirmedFullDriveShare: true,
+    );
     expect(result.status, WorldPublishSubmissionStatus.success);
     expect(sourceGateway.events, [
       'lookup',
@@ -331,7 +338,9 @@ void main() {
     () async {
       final publishGateway = _PublishGateway(sourceGateway.events)
         ..existing = _row();
-      final processingGateway = _ProcessingGateway(sourceGateway.events);
+      final processingGateway = _ProcessingGateway(sourceGateway.events)
+        ..onInvoke = () =>
+            publishGateway.existing = _row(ready: true, status: 'published');
       final submit = WorldPublishSubmissionService(
         publishService: WorldPublishService(
           gateway: publishGateway,
@@ -377,6 +386,31 @@ void main() {
       );
       expect(sourceGateway.uploadCalls, 1);
       expect(processingGateway.calls, hasLength(1));
+    },
+  );
+
+  test(
+    'segment/local preparation consent cannot create a whole-drive row',
+    () async {
+      final publishGateway = _PublishGateway(sourceGateway.events);
+      final submit = WorldPublishSubmissionService(
+        publishService: WorldPublishService(
+          telemetryLoader: (_) => _telemetry(),
+          gateway: publishGateway,
+          savedDriveLookup: (_) => _drive(),
+        ),
+        uploadService: uploadService,
+        processingService: WorldPublishProcessingService(
+          gateway: _ProcessingGateway(sourceGateway.events),
+        ),
+      );
+
+      final result = await submit.submitDriveForPlanet(_drive());
+
+      expect(result.status, WorldPublishSubmissionStatus.consentRequired);
+      expect(publishGateway.insertCalls, 0);
+      expect(sourceGateway.uploadCalls, 0);
+      expect(sourceGateway.attachCalls, 0);
     },
   );
 }

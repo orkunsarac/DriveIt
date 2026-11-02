@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../config/supabase_bootstrap.dart';
+import '../../../services/owner_profile_gateway.dart';
 import '../models/world_publish.dart';
 
 const processWorldPublishFunction = 'process-world-publish';
@@ -54,7 +55,8 @@ class SupabaseWorldPublishProcessingGateway
     implements WorldPublishProcessingGateway {
   SupabaseClient? get _client =>
       SupabaseBootstrap.isInitialized && !SupabaseBootstrap.isPlayPackage
-          ? Supabase.instance.client : null;
+      ? Supabase.instance.client
+      : null;
 
   @override
   bool get isAvailable => _client != null;
@@ -67,6 +69,34 @@ class SupabaseWorldPublishProcessingGateway
     final response = await _client!.functions.invoke(functionName, body: body);
     return response.data;
   }
+}
+
+/// Play Edge invocation is pinned to the approved owner lease and a captured
+/// access token for the complete HTTP request/response boundary.
+class OwnerScopedWorldPublishProcessingGateway
+    implements WorldPublishProcessingGateway {
+  const OwnerScopedWorldPublishProcessingGateway(this.ownerGateway);
+  final OwnerProfileGateway ownerGateway;
+
+  @override
+  bool get isAvailable => ownerGateway.isAuthorized;
+  @override
+  bool get hasSession => ownerGateway.isAuthorized;
+
+  @override
+  Future<Object?> invoke(String functionName, Map<String, dynamic> body) =>
+      ownerGateway.run((client, _) async {
+        if (functionName != processWorldPublishFunction ||
+            body.keys.length != 1 ||
+            body['publish_id'] is! String) {
+          throw StateError('Unsupported Planet processing request');
+        }
+        final response = await client.functions.invoke(
+          functionName,
+          body: body,
+        );
+        return response.data;
+      });
 }
 
 /// Invokes the server validator with the existing authenticated Supabase

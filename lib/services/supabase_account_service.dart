@@ -8,6 +8,7 @@ import '../config/play_auth_runtime_policy.dart';
 import '../config/driveit_auth_callback.dart';
 import '../config/supabase_bootstrap.dart';
 import 'local_owner_lifecycle.dart';
+import 'gps_session_ownership.dart';
 import 'owner_profile_gateway.dart';
 
 /// Cloud identity is deliberately separate from the existing local profile.
@@ -221,6 +222,34 @@ class SupabaseAccountService extends ChangeNotifier
     final lease = _controlledOwner?.lease;
     if (!SupabaseBootstrap.isPlayPackage || client == null || lease == null) {
       throw StateError('Planet owner context unavailable');
+    }
+    lease.requireCurrent();
+    return OwnerProfileGateway(
+      authClient: client,
+      url: SupabaseConfig.url,
+      publicKey: SupabaseConfig.publishableKey,
+      applicationId: 'com.osaracx.driveit',
+      approvedOwner: () => lease.owner.userId,
+      approvedEpoch: () => lease.epoch,
+      isLeaseCurrent: (epoch) => epoch == lease.epoch && lease.isCurrent,
+    );
+  }
+
+  /// Planet writes are bound to the exact screen lease that proved the drive
+  /// and telemetry are in the current account's private store. The public
+  /// Play Auth gate still controls whether this can be constructed at runtime.
+  OwnerProfileGateway requirePlanetPublicationGateway({
+    required LocalOwnerLease lease,
+  }) {
+    final client = _client;
+    final owner = _controlledOwner;
+    if (!SupabaseBootstrap.isPlayPackage ||
+        client == null ||
+        owner == null ||
+        !identical(owner.lease, lease) ||
+        lease.owner.kind != GpsOwnerKind.account ||
+        lease.owner.userId == null) {
+      throw StateError('Planet publication owner context unavailable');
     }
     lease.requireCurrent();
     return OwnerProfileGateway(

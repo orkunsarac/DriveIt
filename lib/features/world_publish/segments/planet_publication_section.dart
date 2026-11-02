@@ -5,6 +5,7 @@ import '../../../models/canonical_telemetry_point.dart';
 import '../../../services/drive_telemetry_storage_service.dart';
 import '../../../services/supabase_account_service.dart';
 import '../services/world_publish_service.dart';
+import '../services/world_publish_submission_service.dart';
 import '../widgets/drive_world_publish_section.dart';
 import 'planet_segment.dart';
 import 'planet_segment_outbox.dart';
@@ -42,6 +43,8 @@ class _PlanetPublicationSectionState extends State<PlanetPublicationSection> {
   String? _message;
   PlanetSegmentPreview? _preview;
   late final LocalOwnerLease? _mountedOwner;
+  late final WorldPublishSubmissionService? _ownerSubmission;
+  late final WorldPublishService? _legacyPublishService;
   bool get _ownerValid =>
       identical(widget.ownerLease, _mountedOwner) &&
       _mountedOwner?.isCurrent != false;
@@ -97,8 +100,27 @@ class _PlanetPublicationSectionState extends State<PlanetPublicationSection> {
   void initState() {
     super.initState();
     _mountedOwner = widget.ownerLease;
+    _legacyPublishService = widget.ownerLease == null
+        ? widget.publishService ?? WorldPublishService()
+        : null;
+    _ownerSubmission = _buildOwnerSubmission(widget.ownerLease);
     widget.ownerLease?.changes.addListener(_ownerChanged);
     _load();
+  }
+
+  WorldPublishSubmissionService? _buildOwnerSubmission(LocalOwnerLease? lease) {
+    if (lease == null) return null;
+    try {
+      final gateway = SupabaseAccountService.instance
+          .requirePlanetPublicationGateway(lease: lease);
+      return WorldPublishSubmissionService.ownerScoped(
+        lease: lease,
+        ownerGateway: gateway,
+      );
+    } catch (_) {
+      // The Play Auth/Planet gates are intentionally closed by default.
+      return null;
+    }
   }
 
   void _ownerChanged() {
@@ -115,11 +137,20 @@ class _PlanetPublicationSectionState extends State<PlanetPublicationSection> {
     try {
       if (widget.ownerLease case final lease?) {
         lease.requireDrive(_drive.id);
-        // No remote Auth/service fallback in the controlled scoped flow.
-        if (mounted && lease.isCurrent) setState(() => _existing = false);
+        // Play recovery reads the existing whole-drive row only through the
+        // lease-pinned gateway. Segment preparation remains a separate local
+        // queue and is never upgraded into whole-drive consent.
+        final submission = _ownerSubmission;
+        final existing = submission != null && submission.isAvailable
+            ? await submission.publishService.getPublishForLocalDrive(
+                    _drive.id,
+                  ) !=
+                  null
+            : false;
+        if (mounted && lease.isCurrent) setState(() => _existing = existing);
         return;
       }
-      final service = widget.publishService ?? WorldPublishService();
+      final service = _legacyPublishService ?? WorldPublishService();
       final existing = widget.existingLookup != null
           ? await widget.existingLookup!()
           : service.isAvailable && service.hasSession
@@ -201,17 +232,19 @@ class _PlanetPublicationSectionState extends State<PlanetPublicationSection> {
     }
     if (_existing == null) return const LinearProgressIndicator();
     if (_existing!) {
-      return DriveWorldPublishSection(
-        drive: _drive,
-        publishService: widget.publishService,
-        existingOnly: true,
-      );
+      if (widget.ownerLease == null) {
+        return DriveWorldPublishSection(
+          drive: _drive,
+          publishService: widget.publishService,
+          existingOnly: true,
+        );
+      }
     }
     final preview = _preview ??= const PlanetSegmentBuilder().build(
       _drive.id,
       _telemetry(),
     );
-    return Container(
+    final segmentQueue = Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xff091a31),
@@ -263,6 +296,28 @@ class _PlanetPublicationSectionState extends State<PlanetPublicationSection> {
             Text(_message!, style: const TextStyle(color: Colors.white70)),
         ],
       ),
+    );
+    final ownerSubmission = _ownerSubmission;
+    if (widget.ownerLease == null) return segmentQueue;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (ownerSubmission != null && ownerSubmission.isAvailable)
+          DriveWorldPublishSection(
+            drive: _drive,
+            ownerLease: widget.ownerLease,
+            submissionService: ownerSubmission,
+          )
+        else
+          const Padding(
+            padding: EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Tam sürüş yayını hesap güvenliği ve sunucu kabulü tamamlanana kadar kapalı.',
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
+        segmentQueue,
+      ],
     );
   }
 }

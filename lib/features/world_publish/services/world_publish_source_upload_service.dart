@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../config/supabase_bootstrap.dart';
 import '../../../models/drive_session.dart';
+import '../../../services/owner_profile_gateway.dart';
 import '../models/world_publish.dart';
 import 'published_drive_source_builder.dart';
 
@@ -62,6 +63,54 @@ class SupabaseWorldPublishSourceGateway implements WorldPublishSourceGateway {
     }
     throw const FormatException('Unexpected attach RPC response');
   }
+}
+
+/// Play publication storage/RPC traffic uses the same lease-pinned data client
+/// as publish-row lookup and insertion. It cannot follow a changed SDK token.
+class OwnerScopedWorldPublishSourceGateway
+    implements WorldPublishSourceGateway {
+  const OwnerScopedWorldPublishSourceGateway(this.ownerGateway);
+  final OwnerProfileGateway ownerGateway;
+
+  @override
+  bool get isAvailable => ownerGateway.isAuthorized;
+
+  @override
+  String? get currentUserId =>
+      ownerGateway.isAuthorized ? ownerGateway.approvedOwner() : null;
+
+  @override
+  Future<void> upload({
+    required String path,
+    required Uint8List bytes,
+    required String contentType,
+    required bool upsert,
+  }) => ownerGateway.run((client, ownerId) async {
+    if (upsert || !path.startsWith('$ownerId/')) {
+      throw StateError('Planet source path is not owner scoped');
+    }
+    await client.storage
+        .from(worldDriveSourcesBucket)
+        .uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(contentType: contentType, upsert: false),
+        );
+  });
+
+  @override
+  Future<Map<String, dynamic>> attach(Map<String, dynamic> params) =>
+      ownerGateway.run((client, _) async {
+        final response = await client.rpc(
+          'attach_world_publish_source',
+          params: params,
+        );
+        if (response is Map) return response.cast<String, dynamic>();
+        if (response is List && response.length == 1 && response.first is Map) {
+          return (response.first as Map).cast<String, dynamic>();
+        }
+        throw const FormatException('Unexpected attach RPC response');
+      });
 }
 
 enum WorldPublishSourceUploadStatus {
@@ -171,19 +220,18 @@ class WorldPublishSourceUploadService {
     };
     try {
       final attached = WorldPublish.fromRow(await _gateway.attach(params));
-      if (attached.sourceReady &&
-          attached.localDriveId == drive.id &&
-          (source.schemaVersion != 2 ||
-              (attached.sourceSchemaVersion == 2 &&
-                  attached.id == publish.id &&
-                  attached.sourcePath == path &&
-                  attached.telemetryVersion == source.telemetryVersion &&
-                  attached.driveScoreAlgorithmVersion ==
-                      source.driveScoreAlgorithmVersion &&
-                  attached.rawRoutePointCount == source.rawRoute.length &&
-                  attached.telemetryPointCount ==
-                      source.canonicalTelemetry.length)) &&
-          attached.userId == userId) {
+      if (_ackMatches(
+        attached,
+        publish: publish,
+        driveId: drive.id,
+        userId: userId,
+        path: path,
+        sourceSchemaVersion: source.schemaVersion,
+        telemetryVersion: source.telemetryVersion,
+        driveScoreAlgorithmVersion: source.driveScoreAlgorithmVersion,
+        routeCount: source.rawRoute.length,
+        telemetryCount: source.canonicalTelemetry.length,
+      )) {
         return WorldPublishSourceUploadResult(
           WorldPublishSourceUploadStatus.success,
           publish: attached,
@@ -196,19 +244,18 @@ class WorldPublishSourceUploadService {
         try {
           final current = await reloadPublish(drive.id);
           if (current != null &&
-              current.sourceReady &&
-              (source.schemaVersion != 2 ||
-                  (current.sourceSchemaVersion == 2 &&
-                      current.localDriveId == drive.id &&
-                      current.sourcePath == path &&
-                      current.telemetryVersion == source.telemetryVersion &&
-                      current.driveScoreAlgorithmVersion ==
-                          source.driveScoreAlgorithmVersion &&
-                      current.rawRoutePointCount == source.rawRoute.length &&
-                      current.telemetryPointCount ==
-                          source.canonicalTelemetry.length)) &&
-              current.id == publish.id &&
-              current.userId == userId) {
+              _ackMatches(
+                current,
+                publish: publish,
+                driveId: drive.id,
+                userId: userId,
+                path: path,
+                sourceSchemaVersion: source.schemaVersion,
+                telemetryVersion: source.telemetryVersion,
+                driveScoreAlgorithmVersion: source.driveScoreAlgorithmVersion,
+                routeCount: source.rawRoute.length,
+                telemetryCount: source.canonicalTelemetry.length,
+              )) {
             return WorldPublishSourceUploadResult(
               WorldPublishSourceUploadStatus.success,
               publish: current,
@@ -232,4 +279,27 @@ class WorldPublishSourceUploadService {
         code == 'resourcealreadyexists' ||
         message.contains('already exists');
   }
+
+  bool _ackMatches(
+    WorldPublish value, {
+    required WorldPublish publish,
+    required String driveId,
+    required String userId,
+    required String path,
+    required int sourceSchemaVersion,
+    required int telemetryVersion,
+    required int driveScoreAlgorithmVersion,
+    required int routeCount,
+    required int telemetryCount,
+  }) =>
+      value.sourceReady &&
+      value.id == publish.id &&
+      value.userId == userId &&
+      value.localDriveId == driveId &&
+      value.sourcePath == path &&
+      value.sourceSchemaVersion == sourceSchemaVersion &&
+      value.telemetryVersion == telemetryVersion &&
+      value.driveScoreAlgorithmVersion == driveScoreAlgorithmVersion &&
+      value.rawRoutePointCount == routeCount &&
+      value.telemetryPointCount == telemetryCount;
 }

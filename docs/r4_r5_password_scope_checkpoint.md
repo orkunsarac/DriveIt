@@ -9,3 +9,18 @@ Validation: password, profile gateway, closed Play policy and callback test pack
 R5: Gradle `:app:verifyAndroidApplicationId :app:verifyPlayReleaseSigning` verified `com.osaracx.driveit`, target 36, version 1.0.0 (1), then failed because `DRIVEIT_PLAY_KEYSTORE` was not set to an existing file in that process. Passwords were also absent. No AAB build was attempted, no existing AAB replaced, and no new signing material created. The existing version code must be checked in Play Console before a new candidate is numbered.
 
 Publication blockers: approved versioned privacy/KVKK/terms and applicable consent; approved public privacy and account-deletion URLs and working support channel; Play Data Safety, location/foreground service disclosures and declarations; approved domain/SMTP and real callback delivery; callback/owner security composition and controlled two-device acceptance; Play signing credentials supplied securely and upload/distribution certificate verification; store version availability, 16 KB device/APK validation and R6 regression. Keep Android callback and legal gates intact. None of these checks authorizes PROD changes or publication.
+
+## R4 Auth checkpoint update — 2026-11-02
+
+The earlier callback/restore blocker above is historical. Controlled Android
+callback delivery, secure session restore, and owner-fenced token refresh have
+since passed their isolated acceptance checkpoints. Password recovery now
+also passes: the SDK `PASSWORD_RECOVERY` event is required, its session is
+verified and pinned to the owner lease, and password update uses an ephemeral
+SDK client with that pinned credential. The recovery flow and evidence are in
+[`r4_password_recovery_acceptance.md`](r4_password_recovery_acceptance.md).
+
+This closes the password-recovery technical checkpoint only. It does not
+activate Play Auth or declare all of R4 complete. Physical Android evidence
+uses the isolated package and synthetic HTTP; real Supabase account and email
+acceptance remain unclaimed. PROD/signup/SMTP and Group Drive remain closed.

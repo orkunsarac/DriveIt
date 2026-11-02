@@ -450,15 +450,34 @@ class _DriveItAppState extends State<DriveItApp> {
 
   void _openPasswordRecovery(Session recoveredSession) {
     if (_recoveryRouteOpen) return;
+    _recoveryRouteOpen = true;
+    unawaited(_openVerifiedPasswordRecovery(recoveredSession));
+  }
+
+  Future<void> _openVerifiedPasswordRecovery(Session recoveredSession) async {
     final owner = widget.ownerRuntime?.owner;
     LocalOwnerLease? lease;
     if (owner != null) {
       try {
+        await owner.settled;
         lease = owner.lease;
-        if (lease.owner.userId != recoveredSession.user.id) return;
+        if (lease.owner.userId != recoveredSession.user.id) {
+          throw StateError('Recovery owner mismatch');
+        }
       } catch (_) {
+        _recoveryRouteOpen = false;
+        _showAuthCallbackFailure();
         return;
       }
+    }
+    try {
+      await SupabaseAccountService.instance.preparePasswordRecovery(
+        recoveredSession,
+      );
+    } catch (_) {
+      _recoveryRouteOpen = false;
+      _showAuthCallbackFailure();
+      return;
     }
     bool contextCurrent() {
       final current = Supabase.instance.client.auth.currentSession;
@@ -472,7 +491,6 @@ class _DriveItAppState extends State<DriveItApp> {
               lease.owner.userId == current?.user.id);
     }
 
-    _recoveryRouteOpen = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final navigator = driveNavigatorKey.currentState;
       if (!mounted || navigator == null || !contextCurrent()) {

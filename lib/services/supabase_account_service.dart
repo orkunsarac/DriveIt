@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -108,6 +109,20 @@ abstract interface class DriveItAccountGateway {
   });
 }
 
+class _PinnedRecoverySession {
+  const _PinnedRecoverySession({
+    required this.session,
+    required this.userId,
+    required this.lease,
+    required this.epoch,
+  });
+
+  final Session session;
+  final String userId;
+  final LocalOwnerLease lease;
+  final int epoch;
+}
+
 abstract final class AccountUsernameAvailability {
   static AccountUsernameStatus resolve({
     required String username,
@@ -135,16 +150,21 @@ class SupabaseAccountService extends ChangeNotifier
     this._testClient,
     this._testGateway, {
     OwnerSessionVault? sessionVault,
-  }) : _testSessionVault = sessionVault;
+    SupabaseClient Function()? recoveryClientFactory,
+  }) : _testSessionVault = sessionVault,
+       _testRecoveryClientFactory = recoveryClientFactory;
   SupabaseClient? _testClient;
   OwnerProfileGateway? _testGateway;
   OwnerSessionVault? _testSessionVault;
+  SupabaseClient Function()? _testRecoveryClientFactory;
   OwnerSessionVault? get _sessionVault =>
       _testSessionVault ??
       (SupabaseBootstrap.isPlayPackage
           ? OwnerSessionVault(const AndroidOwnerSessionStorage())
           : null);
   int? _profileEpoch;
+  _PinnedRecoverySession? _pinnedRecovery;
+  Session? _observedPasswordRecoverySession;
 
   bool get _requiresScopedProfile =>
       _testGateway != null || SupabaseBootstrap.isPlayPackage;
@@ -280,11 +300,15 @@ class SupabaseAccountService extends ChangeNotifier
 
   void _onOwnerStateChanged() {
     final owner = _controlledOwner;
-    if (!_requiresScopedProfile ||
-        owner == null ||
-        _identitySubscription == null) {
-      return;
+    if (owner == null) return;
+    final recovery = _pinnedRecovery;
+    if (recovery != null &&
+        (owner.epoch != recovery.epoch ||
+            owner.state != LocalOwnerState.ready ||
+            !recovery.lease.isCurrent)) {
+      _pinnedRecovery = null;
     }
+    if (!_requiresScopedProfile || _identitySubscription == null) return;
     if (_observedOwnerEpoch == owner.epoch &&
         _observedOwnerState == owner.state) {
       return;
@@ -350,6 +374,7 @@ class SupabaseAccountService extends ChangeNotifier
       throw StateError('Play Auth owner runtime unavailable');
     }
     return _controlledOwner?.authorizeIdentityChange(() async {
+          _pinnedRecovery = null;
           // A failed switch must not resurrect a prior stored account.
           final vault = _sessionVault;
           if (vault != null) await vault.clear();
@@ -480,6 +505,12 @@ class SupabaseAccountService extends ChangeNotifier
     if (client == null || _identitySubscription != null) return;
     _identitySubscription = client.auth.onAuthStateChange.listen(
       (state) {
+        if (state.event == AuthChangeEvent.passwordRecovery &&
+            state.session != null) {
+          _observedPasswordRecoverySession = state.session;
+        } else {
+          _observedPasswordRecoverySession = null;
+        }
         if (state.session == null) {
           _clearCloudIdentity();
         } else {
@@ -700,21 +731,145 @@ class SupabaseAccountService extends ChangeNotifier
   @override
   Future<void> completePasswordRecovery(String newPassword) async {
     final client = _client;
-    if (client == null || client.auth.currentSession == null) {
-      throw const AccountServiceException.unavailable();
-    }
-    // The shared SDK may change session between an owner check and updateUser.
-    // Keep Play recovery closed until callback/session mutation is coordinated.
-    if (_requiresScopedProfile) {
+    final recovery = _pinnedRecovery;
+    final owner = _controlledOwner;
+    if (client == null || recovery == null || owner == null) {
       throw const AccountServiceException.unavailable();
     }
     final validation = AccountInputRules.validatePassword(newPassword);
     if (validation != null) throw AccountServiceException(validation);
     try {
-      await client.auth.updateUser(UserAttributes(password: newPassword));
+      await owner.authorizeIdentityChange(() async {
+        _requirePinnedRecovery(client, owner, recovery);
+        final verified = await client.auth.getUser(
+          recovery.session.accessToken,
+        );
+        if (verified.user?.id != recovery.userId ||
+            verified.user?.isAnonymous != false) {
+          throw const AccountServiceException(
+            'Bağlantı geçersiz veya süresi dolmuş. Yeni bir bağlantı iste.',
+          );
+        }
+        _requirePinnedRecovery(client, owner, recovery);
+
+        final proof = _newRecoveryClient();
+        try {
+          await proof.auth.recoverSession(
+            jsonEncode(recovery.session.toJson()),
+          );
+          final proofUser = await proof.auth.getUser(
+            recovery.session.accessToken,
+          );
+          if (proofUser.user?.id != recovery.userId ||
+              proofUser.user?.isAnonymous != false) {
+            throw const AccountServiceException(
+              'Bağlantı geçersiz veya süresi dolmuş. Yeni bir bağlantı iste.',
+            );
+          }
+          _requirePinnedRecovery(client, owner, recovery);
+          final updated = await proof.auth.updateUser(
+            UserAttributes(password: newPassword),
+          );
+          if (updated.user?.id != recovery.userId) {
+            throw StateError('Recovery user changed');
+          }
+          _requirePinnedRecovery(client, owner, recovery);
+          _pinnedRecovery = null;
+        } finally {
+          try {
+            if (proof.auth.currentSession != null) {
+              await proof.auth.signOut(scope: SignOutScope.local);
+            }
+          } catch (_) {
+            // Cleanup is local; never replace the update outcome with it.
+          }
+          await proof.dispose();
+        }
+      });
     } on AuthException catch (error) {
       throw AccountServiceException.fromAuth(error);
     }
+  }
+
+  /// Pins and verifies exactly the session delivered by the recovery callback.
+  /// The ticket is bound to the current owner lease and can never follow a
+  /// later change to Supabase's shared singleton session.
+  Future<void> preparePasswordRecovery(Session callbackSession) async {
+    final client = _client;
+    final owner = _controlledOwner;
+    final observed = _observedPasswordRecoverySession;
+    if (client == null ||
+        owner == null ||
+        callbackSession.user.isAnonymous ||
+        !_sameSession(observed, callbackSession)) {
+      throw const AccountServiceException.unavailable();
+    }
+    final lease = owner.lease;
+    final ticket = _PinnedRecoverySession(
+      session: callbackSession,
+      userId: callbackSession.user.id,
+      lease: lease,
+      epoch: lease.epoch,
+    );
+    await owner.authorizeIdentityChange(() async {
+      if (!_sameSession(_observedPasswordRecoverySession, callbackSession)) {
+        throw const AccountServiceException(
+          'Kurtarma bağlantısı kullanılmış veya oturum değişmiş.',
+        );
+      }
+      _requirePinnedRecovery(client, owner, ticket, requireRegistered: false);
+      final verified = await client.auth.getUser(callbackSession.accessToken);
+      if (verified.user?.id != callbackSession.user.id ||
+          verified.user?.isAnonymous != false) {
+        throw const AccountServiceException(
+          'Bağlantı geçersiz veya süresi dolmuş. Yeni bir bağlantı iste.',
+        );
+      }
+      _requirePinnedRecovery(client, owner, ticket, requireRegistered: false);
+      _pinnedRecovery = ticket;
+      _observedPasswordRecoverySession = null;
+    });
+  }
+
+  bool _sameSession(Session? left, Session right) =>
+      left?.user.id == right.user.id &&
+      left?.accessToken == right.accessToken &&
+      left?.refreshToken == right.refreshToken;
+
+  void _requirePinnedRecovery(
+    SupabaseClient client,
+    LocalOwnerLifecycle owner,
+    _PinnedRecoverySession ticket, {
+    bool requireRegistered = true,
+  }) {
+    final current = client.auth.currentSession;
+    final active = owner.lease;
+    if ((requireRegistered && !identical(_pinnedRecovery, ticket)) ||
+        owner.epoch != ticket.epoch ||
+        !identical(active, ticket.lease) ||
+        active.owner.userId != ticket.userId ||
+        !ticket.lease.isCurrent ||
+        current?.user.id != ticket.userId ||
+        current?.accessToken != ticket.session.accessToken ||
+        current?.refreshToken != ticket.session.refreshToken ||
+        ticket.session.isExpired) {
+      throw const AccountServiceException(
+        'Oturum değişti. Yeni bir parola sıfırlama bağlantısı iste.',
+      );
+    }
+  }
+
+  SupabaseClient _newRecoveryClient() {
+    final factory = _testRecoveryClientFactory;
+    if (factory != null) return factory();
+    if (!SupabaseConfig.isConfigured || !SupabaseBootstrap.isPlayPackage) {
+      throw const AccountServiceException.unavailable();
+    }
+    return SupabaseClient(
+      SupabaseConfig.url,
+      SupabaseConfig.publishableKey,
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
+    );
   }
 
   @override

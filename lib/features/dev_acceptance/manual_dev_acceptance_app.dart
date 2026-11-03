@@ -24,6 +24,7 @@ import '../../services/owner_session_vault.dart';
 import '../../services/owner_sync_canonical_json.dart';
 import '../../services/supabase_owner_drive_sync_adapter.dart';
 import 'manual_dev_acceptance_policy.dart';
+import 'manual_dev_session_checks.dart';
 
 const _manualBuild = bool.fromEnvironment('DRIVEIT_MANUAL_DEV_ACCEPTANCE');
 const _isolatedBuild = bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST');
@@ -121,6 +122,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
   _SyntheticDrive? _synthetic;
   String? _remoteSourceIdentity;
   String? _remoteIntentId;
+  bool _storageControlRead = false;
 
   @override
   void dispose() {
@@ -270,10 +272,15 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       return;
     }
     passwordController.clear();
+    if (!accountA) {
+      _outcomes.removeWhere((label, _) => RegExp(r'^4[a-d] ').hasMatch(label));
+    }
     await _run(label, () async {
-      final response = await _requireClient.auth.signInWithPassword(
-        email: email,
-        password: password,
+      _setActiveOwner(null);
+      final response = await _authStep(
+        accountA ? 'A Auth' : '4a B Auth',
+        email,
+        password,
       );
       final user = response.user;
       final session = response.session;
@@ -294,7 +301,11 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
         _setActiveOwner(user.id);
         _accountBOwner = user.id;
       }
-      await _verifyProfile(user.id);
+      if (!accountA) _record('4a B Auth', 'PASS', 'server_login_verified');
+      await _step(
+        accountA ? 'A profil' : '4b B profil',
+        () => _verifyProfile(user.id),
+      );
       if (!accountA) await _verifyAccountAIsolation(user.id);
       return accountA
           ? 'auth_and_profile_verified'
@@ -323,49 +334,66 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
     if (uidA == null || uidA == uidB) throw StateError('account_pair_invalid');
     final source = _remoteSourceIdentity;
     final adapter = _syncAdapter(uidB);
-    final page = await adapter.download(
-      ownerId: uidB,
-      afterCursor: '',
-      limit: 100,
-    );
-    _requireOwner(uidB);
-    if (page.changes.any(
-      (change) =>
-          change.mutation.ownerId != uidB ||
-          (source != null && change.mutation.sourceIdentity == source),
-    )) {
-      throw StateError('account_a_cloud_drive_visible_to_b');
-    }
-    final intentId = _remoteIntentId;
-    if (intentId != null) {
+    await _step('4c B cloud isolation', () async {
+      if (source == null) throw StateError('upload_a_required');
+      final page = await adapter.download(
+        ownerId: uidB,
+        afterCursor: '',
+        limit: 100,
+      );
+      _requireOwner(uidB);
+      if (page.changes.any(
+        (change) =>
+            change.mutation.ownerId != uidB ||
+            (change.mutation.sourceIdentity == source),
+      )) {
+        throw StateError('account_a_cloud_drive_visible_to_b');
+      }
+    });
+    await _step('4d B Storage isolation', () async {
+      final intentId = _remoteIntentId;
+      if (intentId == null || !_storageControlRead) {
+        throw StateError('a_control_read_required');
+      }
       try {
         await _requireClient.storage
             .from(SupabaseOwnerDriveSyncAdapter.bucket)
             .download('$uidA/$intentId/envelope.json');
         throw StateError('account_a_storage_object_visible_to_b');
       } on StorageException catch (error) {
-        final status = error.statusCode;
-        final hidden =
-            status == '401' ||
-            status == '403' ||
-            status == '404' ||
-            (status == '400' &&
-                (error.error ?? '').toLowerCase().contains('not found'));
-        if (!hidden) {
+        if (!ManualDevSessionChecks.storageDenied(
+          error,
+          controlRead: _storageControlRead,
+        )) {
           rethrow;
         }
       }
-    }
+    });
+  }
 
-    // A client pinned to A must refuse before making a request while B is live.
-    if (source != null) {
-      final aAdapter = _syncAdapter(uidA);
-      try {
-        await aAdapter.download(ownerId: uidA, afterCursor: '', limit: 10);
-        throw StateError('stale_a_adapter_was_not_refused');
-      } on OwnerSyncConflict catch (error) {
-        if (error.code != 'authenticated_owner_mismatch') rethrow;
-      }
+  Future<AuthResponse> _authStep(
+    String label,
+    String email,
+    String password,
+  ) async {
+    try {
+      return await _requireClient.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+    } catch (error) {
+      _record(label, 'FAIL', _safeCode(error));
+      rethrow;
+    }
+  }
+
+  Future<void> _step(String label, Future<void> Function() action) async {
+    try {
+      await action();
+      _record(label, 'PASS', 'verified');
+    } catch (error) {
+      _record(label, 'FAIL', _safeCode(error));
+      rethrow;
     }
   }
 
@@ -543,6 +571,15 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
     if (!found) throw StateError('finalized_drive_missing_from_download');
     _remoteSourceIdentity = mutation.sourceIdentity;
     _remoteIntentId = intent.id;
+    _storageControlRead = false;
+    final control = await _requireClient.storage
+        .from(SupabaseOwnerDriveSyncAdapter.bucket)
+        .download('$uid/${intent.id}/envelope.json');
+    if (sha256.convert(control).toString() !=
+        sha256.convert(envelope).toString()) {
+      throw StateError('storage_control_integrity_failed');
+    }
+    _storageControlRead = true;
     _record(
       'DEV upload + finalize + download',
       'PASS',
@@ -690,11 +727,13 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       return;
     }
     await _run('A tekrar giriş + secure restore', () async {
+      _setActiveOwner(null);
+      final password = _passwordA.text;
+      _passwordA.clear();
       final response = await client.auth.signInWithPassword(
         email: _emailA.text.trim(),
-        password: _passwordA.text,
+        password: password,
       );
-      _passwordA.clear();
       final session = response.session;
       if (response.user == null ||
           session == null ||
@@ -703,18 +742,24 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       }
       await _vault.save(session);
       _setActiveOwner(null);
-      await client.auth.signOut(scope: SignOutScope.local);
-      await client.dispose();
-      _client = SupabaseClient(
-        _devUrl,
-        _publishableKey!,
-        authOptions: const AuthClientOptions(autoRefreshToken: false),
+      _client = await ManualDevSessionChecks.recreate(
+        client,
+        () => SupabaseClient(
+          _devUrl,
+          _publishableKey!,
+          authOptions: const AuthClientOptions(autoRefreshToken: false),
+        ),
       );
-      await _restoreVault();
-      if (_activeOwner != _accountAOwner) {
-        throw StateError('account_a_restore_mismatch');
+      try {
+        await _restoreVault();
+        if (_activeOwner != _accountAOwner) {
+          throw StateError('account_a_restore_mismatch');
+        }
+        return 'fresh_sdk_server_verified_owner_a';
+      } catch (_) {
+        _setActiveOwner(null);
+        rethrow;
       }
-      return 'fresh_sdk_server_verified_owner_a';
     });
   }
 
@@ -737,7 +782,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       OwnerSyncConflict e => e.code,
       OwnerSyncTransportFailure e => e.code,
       PostgrestException e => e.code,
-      StorageException e => e.statusCode,
+      StorageException e => 'storage_http_${e.statusCode}',
       FunctionException e => 'function_http_${e.status}',
       _ => null,
     };
@@ -860,7 +905,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
             onPressed: () => _login(accountA: false),
           ),
           _action(
-            '5. Account A tekrar giriş + güvenli restore',
+            '5. Account A giriş + SDK yeniden oluşturma/restore',
             icon: Icons.restore,
             enabled: clientReady && aReady,
             onPressed: _restoreAfterFreshClient,

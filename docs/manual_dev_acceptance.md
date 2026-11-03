@@ -33,3 +33,13 @@ SDK automatic token refresh and uses the existing Android owner-session vault
 for the explicit restore check. These manual server checks still require the
 operator to provide DEV credentials and must not be represented as passing
 until run.
+
+Test 4 reports Auth, profile, cloud and Storage results separately. A successful
+read and hash check of A's exact Storage object is required before B's precise
+not-found or access-denied response is accepted as an isolation result. Generic
+HTTP 400 and expired/invalid JWT responses are failures.
+
+Test 5 recreates the SDK client without logging out at the server. It verifies
+the vault candidate using Auth, refreshes when necessary, and requires the same
+A identity before enabling owner data. This is an SDK recreation check, not an
+OS process-death acceptance. Live DEV retesting is performed by the operator.

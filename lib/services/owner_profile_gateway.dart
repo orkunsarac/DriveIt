@@ -14,11 +14,13 @@ class OwnerProfileGateway {
     required this.approvedOwner,
     required this.approvedEpoch,
     required this.isLeaseCurrent,
+    this.strictDev = false,
     this.transport,
   });
 
   final SupabaseClient authClient;
   final String url, publicKey, applicationId;
+  final bool strictDev;
   final String? Function() approvedOwner;
   final int Function() approvedEpoch;
   final bool Function(int) isLeaseCurrent;
@@ -32,6 +34,7 @@ class OwnerProfileGateway {
           SupabaseEnvironmentPolicy.permits(
             applicationId: applicationId,
             url: url,
+            strictDev: strictDev,
           ) &&
           uid != null &&
           session?.user.id == uid &&
@@ -47,6 +50,7 @@ class OwnerProfileGateway {
         !SupabaseEnvironmentPolicy.permits(
           applicationId: applicationId,
           url: url,
+          strictDev: strictDev,
         )) {
       throw StateError('Unapproved data project');
     }
@@ -75,6 +79,7 @@ class OwnerProfileGateway {
     final data = SupabaseClient(
       url,
       publicKey,
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
       httpClient: transport,
       accessToken: () async {
         check();

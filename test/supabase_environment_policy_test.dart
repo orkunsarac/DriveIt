@@ -74,5 +74,28 @@ void main() {
       ),
       isFalse,
     );
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: 'com.example.driveit_project.isolated_test',
+        url: 'https://viqngnjfgknpxtoapzcg.supabase.co',
+        strictDev: true,
+      ),
+      isTrue,
+    );
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: 'com.example.driveit_project.isolated_test',
+        url: 'https://arwnbogcswisfesayosy.supabase.co',
+        strictDev: true,
+      ),
+      isFalse,
+    );
+    expect(
+      SupabaseEnvironmentPolicy.permits(
+        applicationId: 'com.example.driveit_project.isolated_test',
+        url: 'https://viqngnjfgknpxtoapzcg.supabase.co',
+      ),
+      isFalse,
+    );
   });
 }

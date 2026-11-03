@@ -28,6 +28,8 @@ if (driveItEnvironment != null && driveItEnvironment != "true" && driveItEnviron
     throw GradleException("DRIVEIT_PLAY_RELEASE must be exactly 'true' or 'false'.")
 }
 val driveItPlayRelease = driveItEnvironment == "true"
+val driveItManualDevAcceptance =
+    "DRIVEIT_MANUAL_DEV_ACCEPTANCE=true" in decodedDartDefines
 val driveItIsolatedTest =
     providers.gradleProperty("driveItIsolatedTest").orNull == "true" ||
         "DRIVEIT_ISOLATED_ANDROID_TEST=true" in decodedDartDefines
@@ -64,6 +66,7 @@ val playEnabledFeatures = listOf(
     "DRIVEIT_ACCOUNT_SYNC_ENABLED",
     "DRIVEIT_ACCOUNT_DELETE_ENABLED",
     "DRIVEIT_GROUP_DRIVE_ENABLED",
+    "DRIVEIT_MANUAL_DEV_ACCEPTANCE",
 ).filter { name -> decodedDartDefines.any { it == "$name=true" } }
 val playSupabaseConfig = decodedDartDefines.filter {
     it.startsWith("SUPABASE_URL=") || it.startsWith("SUPABASE_PUBLISHABLE_KEY=")
@@ -74,6 +77,12 @@ if (driveItIsolatedTest && driveItLocalOwnerActivation) {
 }
 if (driveItPlayRelease && driveItIsolatedTest) {
     throw GradleException("Play release and isolated Android test configurations cannot be combined.")
+}
+if (driveItManualDevAcceptance && !driveItIsolatedTest) {
+    throw GradleException("Manual DEV acceptance is allowed only in the isolated Android package.")
+}
+if (driveItManualDevAcceptance && driveItPlayRelease) {
+    throw GradleException("Manual DEV acceptance cannot be built as a Play release.")
 }
 if (driveItPlayRelease && driveItLocalOwnerActivation) {
     throw GradleException("Play release cannot enable the unverified local production owner runtime.")

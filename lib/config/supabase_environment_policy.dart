@@ -8,7 +8,9 @@ abstract final class SupabaseEnvironmentPolicy {
     final String host;
     if (applicationId == 'com.osaracx.driveit' && !strictDev) {
       host = 'arwnbogcswisfesayosy.supabase.co';
-    } else if (strictDev && applicationId == 'com.example.driveit_project') {
+    } else if (strictDev &&
+        (applicationId == 'com.example.driveit_project' ||
+            applicationId == 'com.example.driveit_project.isolated_test')) {
       host = 'viqngnjfgknpxtoapzcg.supabase.co';
     } else {
       return !strictDev && applicationId == 'com.example.driveit_project';

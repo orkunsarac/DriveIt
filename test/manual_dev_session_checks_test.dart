@@ -8,6 +8,89 @@ import 'package:driveit_project/services/owner_drive_sync_client.dart';
 import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 
 void main() {
+  test('revoked stored session does not block fresh manual login', () async {
+    final paths = <String>[];
+    const uid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    SupabaseClient create() => SupabaseClient(
+      'https://viqngnjfgknpxtoapzcg.supabase.co',
+      'synthetic-public',
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
+      httpClient: MockClient((request) async {
+        paths.add(request.url.path);
+        if (request.url.path.endsWith('/user')) {
+          return http.Response(
+            jsonEncode({
+              'code': 'session_not_found',
+              'msg': 'Session not found',
+            }),
+            403,
+            headers: {
+              'content-type': 'application/json',
+              'x-supabase-api-version': '2024-01-01',
+            },
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'access_token': 'synthetic-new-access',
+            'refresh_token': 'synthetic-new-refresh',
+            'expires_in': 3600,
+            'token_type': 'bearer',
+            'user': {
+              'id': uid,
+              'aud': 'authenticated',
+              'app_metadata': {},
+              'user_metadata': {},
+              'created_at': '2026-01-01T00:00:00Z',
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final old = create();
+    String? owner = uid;
+    final result = await ManualDevSessionChecks.restoreForConnection(
+      client: old,
+      create: create,
+      restore: () async {
+        await old.auth.getUser('synthetic-revoked-token');
+      },
+      closeOwner: () {
+        owner = null;
+      },
+    );
+    expect((result.restoreError as AuthException).code, 'session_not_found');
+    expect(owner, isNull);
+    expect(identical(old, result.client), isFalse);
+    expect(result.client.auth.currentSession, isNull);
+    final signed = await result.client.auth.signInWithPassword(
+      email: 'test@example.invalid',
+      password: 'synthetic-only',
+    );
+    expect(signed.user!.id, uid);
+    expect(paths.any((path) => path.endsWith('/logout')), isFalse);
+    await result.client.dispose();
+  });
+
+  test('successful connection restore keeps the verified SDK', () async {
+    final client = SupabaseClient(
+      'https://viqngnjfgknpxtoapzcg.supabase.co',
+      'synthetic-public',
+      authOptions: const AuthClientOptions(autoRefreshToken: false),
+    );
+    final result = await ManualDevSessionChecks.restoreForConnection(
+      client: client,
+      create: () => throw StateError('unexpected_recreation'),
+      restore: () async {},
+      closeOwner: () => fail('successful restore closed owner'),
+    );
+    expect(result.restoreError, isNull);
+    expect(identical(result.client, client), isTrue);
+    await client.dispose();
+  });
+
   test(
     'official download proof rejects tampering and foreign owner/source',
     () {

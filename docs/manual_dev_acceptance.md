@@ -44,3 +44,10 @@ Test 5 recreates the SDK client without logging out at the server. It verifies
 the vault candidate using Auth, refreshes when necessary, and requires the same
 A identity before enabling owner data. This is an SDK recreation check, not an
 OS process-death acceptance. Live DEV retesting is performed by the operator.
+
+Connecting the DEV client also attempts vault restore. If that stored session
+has been revoked or cannot be verified, restore reports its own failure, owner
+access stays closed, and a fresh empty SDK permits manual login. The connection
+result `dev_client_ready_sign_in_required` means the client is ready for login;
+it does not claim that the old session or a server acceptance test passed. The
+vault is preserved until a successful login explicitly saves a new session.

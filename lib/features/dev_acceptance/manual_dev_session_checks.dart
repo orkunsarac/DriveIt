@@ -3,6 +3,25 @@ import '../../services/owner_drive_sync_client.dart';
 import '../../services/owner_sync_canonical_json.dart';
 
 abstract final class ManualDevSessionChecks {
+  static Future<({SupabaseClient client, Object? restoreError})>
+  restoreForConnection({
+    required SupabaseClient client,
+    required SupabaseClient Function() create,
+    required Future<void> Function() restore,
+    required void Function() closeOwner,
+  }) async {
+    try {
+      await restore();
+      return (client: client, restoreError: null);
+    } catch (error) {
+      // A revoked vault session is not a failure to create the DEV client.
+      // Keep the vault intact, close owner access and permit fresh login with
+      // a new empty SDK. Never sign out a server session during this fallback.
+      closeOwner();
+      return (client: await recreate(client, create), restoreError: error);
+    }
+  }
+
   // Storage deliberately hides RLS-protected objects as not found. Require a
   // verified A read through the official download Function, never bucket SELECT.
   static bool downloadMatches(

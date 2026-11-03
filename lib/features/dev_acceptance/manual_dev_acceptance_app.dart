@@ -189,12 +189,29 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       if (previous != null) await previous.dispose();
       _publishableKey = key;
       _keyController.clear();
-      _client = SupabaseClient(
+      SupabaseClient create() => SupabaseClient(
         _devUrl,
         key,
         authOptions: const AuthClientOptions(autoRefreshToken: false),
       );
-      await _restoreVault(reportMissingAsPass: true);
+      _client = create();
+      final result = await ManualDevSessionChecks.restoreForConnection(
+        client: _requireClient,
+        create: create,
+        restore: () async {
+          await _restoreVault(reportMissingAsPass: true);
+        },
+        closeOwner: () => _setActiveOwner(null),
+      );
+      _client = result.client;
+      if (result.restoreError != null) {
+        _record(
+          'Kayıtlı oturum restore',
+          'FAIL',
+          _safeCode(result.restoreError!),
+        );
+        return 'dev_client_ready_sign_in_required';
+      }
       return _activeOwner == null
           ? 'dev_client_ready_signed_out'
           : 'session_restored';

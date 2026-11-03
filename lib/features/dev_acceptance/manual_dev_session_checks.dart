@@ -1,20 +1,30 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/owner_drive_sync_client.dart';
+import '../../services/owner_sync_canonical_json.dart';
 
 abstract final class ManualDevSessionChecks {
   // Storage deliberately hides RLS-protected objects as not found. Require a
-  // successful A read of this exact object before treating B's response as denial.
+  // verified A read through the official download Function, never bucket SELECT.
+  static bool downloadMatches(
+    OwnerSyncMutation expected,
+    OwnerSyncMutation actual,
+  ) =>
+      canonicalOwnerSyncSha256(actual.payload) == expected.payloadFingerprint &&
+      canonicalOwnerSyncJson(actual.toMap()) ==
+          canonicalOwnerSyncJson(expected.toMap());
+
   static bool storageDenied(
     StorageException error, {
-    required bool controlRead,
+    required bool officialDownloadVerified,
   }) {
-    if (!controlRead) return false;
+    if (!officialDownloadVerified) return false;
     final message = error.message.toLowerCase().trim();
     final code = (error.error ?? '').toLowerCase().trim();
     return (error.statusCode == '400' || error.statusCode == '404') &&
             (message == 'object not found' ||
                 message == 'the resource was not found' ||
                 code == 'nosuchkey') ||
-        controlRead &&
+        officialDownloadVerified &&
             error.statusCode == '403' &&
             (code == 'accessdenied' ||
                 message == 'new row violates row-level security policy');

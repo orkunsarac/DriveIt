@@ -122,7 +122,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
   _SyntheticDrive? _synthetic;
   String? _remoteSourceIdentity;
   String? _remoteIntentId;
-  bool _storageControlRead = false;
+  bool _officialDownloadVerified = false;
 
   @override
   void dispose() {
@@ -289,6 +289,11 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       }
       if (user.isAnonymous) throw StateError('anonymous_account_rejected');
       if (accountA) {
+        if (_accountAOwner != user.id) {
+          _officialDownloadVerified = false;
+          _remoteIntentId = null;
+          _remoteSourceIdentity = null;
+        }
         await _vault.save(session);
         _setActiveOwner(user.id);
         _accountAOwner = user.id;
@@ -336,24 +341,30 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
     final adapter = _syncAdapter(uidB);
     await _step('4c B cloud isolation', () async {
       if (source == null) throw StateError('upload_a_required');
-      final page = await adapter.download(
-        ownerId: uidB,
-        afterCursor: '',
-        limit: 100,
-      );
-      _requireOwner(uidB);
-      if (page.changes.any(
-        (change) =>
-            change.mutation.ownerId != uidB ||
-            (change.mutation.sourceIdentity == source),
-      )) {
-        throw StateError('account_a_cloud_drive_visible_to_b');
+      var cursor = '';
+      for (var index = 0; index < 20; index++) {
+        final page = await adapter.download(
+          ownerId: uidB,
+          afterCursor: cursor,
+          limit: 100,
+        );
+        _requireOwner(uidB);
+        if (page.changes.any(
+          (change) =>
+              change.mutation.ownerId != uidB ||
+              (change.mutation.sourceIdentity == source),
+        )) {
+          throw StateError('account_a_cloud_drive_visible_to_b');
+        }
+        if (!page.hasMore) return;
+        cursor = page.nextCursor;
       }
+      throw StateError('cloud_isolation_pagination_incomplete');
     });
     await _step('4d B Storage isolation', () async {
       final intentId = _remoteIntentId;
-      if (intentId == null || !_storageControlRead) {
-        throw StateError('a_control_read_required');
+      if (intentId == null || !_officialDownloadVerified) {
+        throw StateError('a_official_download_required');
       }
       try {
         await _requireClient.storage
@@ -363,7 +374,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       } on StorageException catch (error) {
         if (!ManualDevSessionChecks.storageDenied(
           error,
-          controlRead: _storageControlRead,
+          officialDownloadVerified: _officialDownloadVerified,
         )) {
           rethrow;
         }
@@ -546,6 +557,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
         receipt.idempotencyKey != idempotencyKey) {
       throw StateError('finalize_receipt_mismatch');
     }
+    _officialDownloadVerified = false;
     var cursor = '';
     var found = false;
     for (var pageIndex = 0; pageIndex < 20; pageIndex++) {
@@ -556,10 +568,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
       );
       if (page.changes.any(
         (change) =>
-            change.mutation.sourceIdentity == mutation.sourceIdentity &&
-            (change.mutation.payload['drive'] as Map?)?['id'] ==
-                synthetic.drive.id &&
-            change.mutation.payloadFingerprint == fingerprint,
+            ManualDevSessionChecks.downloadMatches(mutation, change.mutation),
       )) {
         found = true;
         break;
@@ -571,15 +580,7 @@ class _ManualDevAcceptanceScreenState extends State<ManualDevAcceptanceScreen> {
     if (!found) throw StateError('finalized_drive_missing_from_download');
     _remoteSourceIdentity = mutation.sourceIdentity;
     _remoteIntentId = intent.id;
-    _storageControlRead = false;
-    final control = await _requireClient.storage
-        .from(SupabaseOwnerDriveSyncAdapter.bucket)
-        .download('$uid/${intent.id}/envelope.json');
-    if (sha256.convert(control).toString() !=
-        sha256.convert(envelope).toString()) {
-      throw StateError('storage_control_integrity_failed');
-    }
-    _storageControlRead = true;
+    _officialDownloadVerified = true;
     _record(
       'DEV upload + finalize + download',
       'PASS',

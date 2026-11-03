@@ -4,19 +4,78 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:driveit_project/services/owner_drive_sync_client.dart';
+import 'package:driveit_project/services/owner_sync_canonical_json.dart';
 
 void main() {
   test(
-    'Storage denial requires exact semantic rejection and known A object',
+    'official download proof rejects tampering and foreign owner/source',
+    () {
+      final payload = <String, dynamic>{
+        'drive': {'id': 'drive'},
+        'score': 900,
+        'telemetry': [1, 2],
+      };
+      final expected = OwnerSyncMutation(
+        version: 2,
+        kind: OwnerSyncMutationKind.driveUpsert,
+        ownerScope: 'scope-a',
+        ownerId: 'a',
+        idempotencyKey: 'intent',
+        payloadFingerprint: canonicalOwnerSyncSha256(payload),
+        sourceIdentity: 'source-a',
+        payload: payload,
+      );
+      expect(
+        ManualDevSessionChecks.downloadMatches(
+          expected,
+          OwnerSyncMutation.fromMap(expected.toMap()),
+        ),
+        isTrue,
+      );
+      for (final changed in [
+        {...expected.toMap(), 'ownerId': 'b'},
+        {...expected.toMap(), 'sourceIdentity': 'source-b'},
+        {...expected.toMap(), 'payloadFingerprint': 'wrong'},
+        {
+          ...expected.toMap(),
+          'payload': {...payload, 'score': 901},
+        },
+        {
+          ...expected.toMap(),
+          'payload': {
+            ...payload,
+            'telemetry': [1, 3],
+          },
+        },
+      ]) {
+        expect(
+          ManualDevSessionChecks.downloadMatches(
+            expected,
+            OwnerSyncMutation.fromMap(changed),
+          ),
+          isFalse,
+        );
+      }
+    },
+  );
+  test(
+    'Storage denial requires exact semantic rejection and official A download proof',
     () {
       for (final status in ['400', '404']) {
         final denied = StorageException('Object not found', statusCode: status);
         expect(
-          ManualDevSessionChecks.storageDenied(denied, controlRead: true),
+          ManualDevSessionChecks.storageDenied(
+            denied,
+            officialDownloadVerified: true,
+          ),
           isTrue,
         );
         expect(
-          ManualDevSessionChecks.storageDenied(denied, controlRead: false),
+          ManualDevSessionChecks.storageDenied(
+            denied,
+            officialDownloadVerified: false,
+          ),
           isFalse,
         );
       }
@@ -24,7 +83,7 @@ void main() {
         expect(
           ManualDevSessionChecks.storageDenied(
             StorageException('Bad request', statusCode: status),
-            controlRead: true,
+            officialDownloadVerified: true,
           ),
           isFalse,
         );
@@ -36,7 +95,7 @@ void main() {
             statusCode: '400',
             error: 'not_found',
           ),
-          controlRead: true,
+          officialDownloadVerified: true,
         ),
         isTrue,
       );

@@ -35,7 +35,8 @@ operator to provide DEV credentials and must not be represented as passing
 until run.
 
 Test 4 reports Auth, profile, cloud and Storage results separately. A successful
-read and hash check of A's exact Storage object is required before B's precise
+canonical mutation, payload fingerprint and source identity check through A's
+official phase8-drive-download response is required before B's precise
 not-found or access-denied response is accepted as an isolation result. Generic
 HTTP 400 and expired/invalid JWT responses are failures.
 

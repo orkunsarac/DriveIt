@@ -41,7 +41,8 @@ Detay: [R6-B5 DEV rollout acceptance](r6b5_dev_rollout_acceptance.md), [Play clo
 - DEV yedeği ve worker secret değeri GitHub'a konmadı. DEV signup ayarı değiştirilmedi.
 - Yalnız R6-B5 araçları ve bu checkpoint dosyaları stage/commit edilecek; önceden kirli `.gitignore`, Gradle, `pubspec.lock`, Supabase cache ve diğer untracked işler korunacak.
 - Canlı DEV migration dağıtımında SQL ile ledger INSERT'inin her dosya için atomik olduğu doğrulanmadı; sonradan düzeltilen ve test edilen wrapper geçmiş dağıtımı yeniden çalıştırmadı. Ayrıntı R6-B5 rollout raporunda.
-- Son GitHub checkpoint'i bu dosya commit edildikten sonra rapora eklenecek.
+- Checkpoint commit'leri: `ac9acad` (araçlar ve ana rapor), `a928bc0` (Play release guard kanıtı), branch `feature/gps-refactor`.
+- GitHub checkpoint SHA'sı aşağıda kaydedilmiştir.
 
 ## Sonraki en yüksek öncelik
 

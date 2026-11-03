@@ -24,6 +24,7 @@ Detay: [R6-B5 DEV rollout acceptance](r6b5_dev_rollout_acceptance.md), [Play clo
 - `flutter analyze --no-pub`: exit 1, analyzer error yok; 3 warning ve 4 info (önceden bilinen `integration_test/device_archive_*` unnecessary non-null assertion warning'leri dahil). Tam regresyon R6 kapsamına bırakıldı.
 - Supabase DEV ile son rehearsal kıyaslaması: 7 katalog kategorisi + `extensions` owner/ACL + 9 aggregate fingerprint eşit.
 - Sonradan eklenen PowerShell wrapper regresyonu: 52/52 migration kaynağı hash doğrulandı; tek dış transaction, migration gövdesi ve ledger kaydı beraber kapsanıyor.
+- `tool/test_play_release_guards.ps1`: normal debug APK build + `com.example.driveit_project` kimliği + konum/foreground-service izinleri PASS; izole APK build + `.isolated_test` kimliği PASS; imzasız release, eksik signing, DEV Supabase release ve Play modunda debug build redleri PASS. Flutter SDK cache dizinine yazma için yükseltilmiş izin gerekiyordu; signing sırrı kullanılmadı.
 
 ## Yayın engelleri
 

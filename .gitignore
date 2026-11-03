@@ -31,6 +31,7 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+/android/build/
 /coverage/
 
 # Local Supabase development credentials (never commit this file).
@@ -52,5 +53,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Private Google Play upload signing material. Keep outside the repository.
+*.jks
+*.keystore
+*.p12
+/android/key.properties
 
 /tmp/diagnostic_acceptance/

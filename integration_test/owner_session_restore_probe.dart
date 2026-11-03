@@ -20,6 +20,9 @@ void showResult(String text) => runApp(
 );
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  var stage = 'package_guard';
+  var unmatchedRoute = '';
+  var refreshRequests = 0;
   if (!const bool.fromEnvironment('DRIVEIT_ISOLATED_ANDROID_TEST') ||
       (await PackageInfo.fromPlatform()).packageName !=
           'com.example.driveit_project.isolated_test') {
@@ -29,10 +32,14 @@ void main() async {
   showResult('STARTING');
   try {
     const uid = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    stage = 'vault_load';
+    showResult('STAGE $stage');
     final vault = OwnerSessionVault(const AndroidOwnerSessionStorage());
     final stored = await vault.load();
     if (stored?.refreshToken != 'refresh-expired' &&
         stored?.refreshToken != 'refresh-rotated') {
+      stage = 'vault_save_expired';
+      showResult('STAGE $stage');
       final expiry = DateTime.now().millisecondsSinceEpoch ~/ 1000 - 1;
       final payload = base64Url
           .encode(utf8.encode(jsonEncode({'sub': uid, 'exp': expiry})))
@@ -53,6 +60,8 @@ void main() async {
       showResult('SAVED_EXPIRED');
       return;
     }
+    stage = 'sdk_client';
+    showResult('STAGE $stage');
     final user = {
       'id': uid,
       'aud': 'authenticated',
@@ -60,15 +69,17 @@ void main() async {
       'user_metadata': <String, dynamic>{},
       'created_at': '2026-01-01T00:00:00Z',
     };
-    final phase = stored!.refreshToken == 'refresh-expired'
-        ? 'ROTATED'
-        : 'RESTORED';
+    final restoredStored = stored!;
+    if (restoredStored.user.id != uid) {
+      throw StateError('Synthetic owner mismatch');
+    }
     final sdk = SupabaseClient(
       'https://example.invalid',
       'synthetic',
       authOptions: const AuthClientOptions(autoRefreshToken: false),
       httpClient: MockClient((r) async {
-        if (r.url.path.endsWith('/token') && phase == 'ROTATED') {
+        if (r.url.path.endsWith('/token')) {
+          refreshRequests++;
           final expiry = DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600;
           final payload = base64Url
               .encode(utf8.encode(jsonEncode({'sub': uid, 'exp': expiry})))
@@ -92,13 +103,18 @@ void main() async {
             headers: {'content-type': 'application/json'},
           );
         }
+        unmatchedRoute = '${r.method} ${r.url.path}';
         return http.Response('{}', 404);
       }),
     );
+    stage = 'owner_runtime_prepare';
+    showResult('STAGE $stage');
     final root = await (await getApplicationSupportDirectory()).createTemp(
       'driveit_owner_test_',
     );
     final descriptor = await OwnedForegroundBootstrap.prepareForTesting(root);
+    stage = 'owner_session_restore';
+    showResult('STAGE $stage');
     final runtime = (await LocalOwnershipBootstrap.run(
       gate: LocalOwnershipGate.synthetic(),
       legacyBootstrap: () async => throw StateError('legacy unavailable'),
@@ -121,10 +137,16 @@ void main() async {
     ))!;
     showResult(
       runtime.owner.lease.owner.userId == uid && sdk.auth.currentUser?.id == uid
-          ? '$phase owner=A'
+          ? '${refreshRequests == 0 ? 'RESTORED' : 'ROTATED'} owner=A'
           : 'FAIL',
     );
-  } catch (_) {
-    showResult('FAIL');
+  } catch (error) {
+    // Show only a stage label and runtime type. Never render exception text,
+    // since auth/network failures may contain URLs or credentials.
+    final detail = error is AuthException
+        ? ' status=${error.statusCode ?? '-'} code=${error.code ?? '-'}'
+        : '';
+    final route = unmatchedRoute.isEmpty ? '' : ' route=$unmatchedRoute';
+    showResult('FAIL $stage ${error.runtimeType}$detail$route');
   }
 }

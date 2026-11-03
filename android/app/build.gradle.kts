@@ -12,7 +12,7 @@ apply(from = "client_secret_guard.gradle")
 // `dart-defines` Gradle property, but does not reliably forward arbitrary
 // project properties. Detect the explicit test-only define as well as the
 // direct Gradle property. Normal builds have neither, so their IDs are intact.
-val isolatedTestDartDefines = providers.gradleProperty("dart-defines").orNull
+val decodedDartDefines = providers.gradleProperty("dart-defines").orNull
     ?.split(',')
     ?.mapNotNull { encoded ->
         runCatching {
@@ -23,12 +23,17 @@ val isolatedTestDartDefines = providers.gradleProperty("dart-defines").orNull
         }.getOrNull()
     }
     .orEmpty()
+val driveItEnvironment = providers.environmentVariable("DRIVEIT_PLAY_RELEASE").orNull
+if (driveItEnvironment != null && driveItEnvironment != "true" && driveItEnvironment != "false") {
+    throw GradleException("DRIVEIT_PLAY_RELEASE must be exactly 'true' or 'false'.")
+}
+val driveItPlayRelease = driveItEnvironment == "true"
 val driveItIsolatedTest =
     providers.gradleProperty("driveItIsolatedTest").orNull == "true" ||
-        "DRIVEIT_ISOLATED_ANDROID_TEST=true" in isolatedTestDartDefines
+        "DRIVEIT_ISOLATED_ANDROID_TEST=true" in decodedDartDefines
 val driveItLocalOwnerActivation =
     providers.gradleProperty("driveItLocalOwnerActivation").orNull == "true" ||
-        "DRIVEIT_LOCAL_OWNER_ACTIVATION=true" in isolatedTestDartDefines
+        "DRIVEIT_LOCAL_OWNER_ACTIVATION=true" in decodedDartDefines
 val flutterTarget = providers.gradleProperty("target").orNull
     ?.replace('\\', '/')
     ?.trimStart('/')
@@ -38,13 +43,60 @@ val isAndroidIntegrationTestBuild =
 val isAndroidInstrumentationBuild = gradle.startParameter.taskNames.any {
     it.contains("AndroidTest", ignoreCase = true)
 }
+val isReleaseAppBundleBuild = gradle.startParameter.taskNames.any {
+    it.contains("bundleRelease", ignoreCase = true)
+}
 val baseApplicationId = "com.example.driveit_project"
 val isolatedApplicationId = "$baseApplicationId.isolated_test"
+val playApplicationId = "com.osaracx.driveit"
 val configuredApplicationId =
-    if (driveItIsolatedTest) isolatedApplicationId else baseApplicationId
+    when {
+        driveItIsolatedTest -> isolatedApplicationId
+        driveItPlayRelease -> playApplicationId
+        else -> baseApplicationId
+    }
+val playKeyStorePath = providers.environmentVariable("DRIVEIT_PLAY_KEYSTORE").orNull
+val playKeyAlias = providers.environmentVariable("DRIVEIT_PLAY_KEY_ALIAS").orNull
+val playStorePassword = providers.environmentVariable("DRIVEIT_PLAY_STORE_PASSWORD").orNull
+val playKeyPassword = providers.environmentVariable("DRIVEIT_PLAY_KEY_PASSWORD").orNull
+val playEnabledFeatures = listOf(
+    "DRIVEIT_LOCAL_OWNER_ACTIVATION",
+    "DRIVEIT_ACCOUNT_SYNC_ENABLED",
+    "DRIVEIT_ACCOUNT_DELETE_ENABLED",
+    "DRIVEIT_GROUP_DRIVE_ENABLED",
+).filter { name -> decodedDartDefines.any { it == "$name=true" } }
+val playSupabaseConfig = decodedDartDefines.filter {
+    it.startsWith("SUPABASE_URL=") || it.startsWith("SUPABASE_PUBLISHABLE_KEY=")
+}
 
 if (driveItIsolatedTest && driveItLocalOwnerActivation) {
     throw GradleException("Isolated test and local production owner activation cannot be combined.")
+}
+if (driveItPlayRelease && driveItIsolatedTest) {
+    throw GradleException("Play release and isolated Android test configurations cannot be combined.")
+}
+if (driveItPlayRelease && driveItLocalOwnerActivation) {
+    throw GradleException("Play release cannot enable the unverified local production owner runtime.")
+}
+if (driveItPlayRelease && playEnabledFeatures.isNotEmpty()) {
+    throw GradleException(
+        "Play release refuses unverified feature opt-ins: ${playEnabledFeatures.joinToString()}",
+    )
+}
+if (driveItPlayRelease && playSupabaseConfig.isNotEmpty()) {
+    throw GradleException(
+        "Play release refuses unverified Supabase configuration; no DEV project may be presented as PROD.",
+    )
+}
+if (driveItPlayRelease && gradle.startParameter.taskNames.any {
+        it.contains("Debug", ignoreCase = true) || it.contains("AndroidTest", ignoreCase = true)
+    }) {
+    throw GradleException("Play release mode may only build the non-test release variant.")
+}
+if (isReleaseAppBundleBuild && !driveItPlayRelease) {
+    throw GradleException(
+        "Refusing release AAB without DRIVEIT_PLAY_RELEASE=true and the Play upload signing configuration.",
+    )
 }
 if (driveItLocalOwnerActivation && gradle.startParameter.taskNames.any {
         it.contains("Debug", ignoreCase = true)
@@ -77,7 +129,11 @@ if (isAndroidInstrumentationBuild &&
 
 val verifyAndroidApplicationId = tasks.register("verifyAndroidApplicationId") {
     doLast {
-        val expected = if (driveItIsolatedTest) isolatedApplicationId else baseApplicationId
+        val expected = when {
+            driveItIsolatedTest -> isolatedApplicationId
+            driveItPlayRelease -> playApplicationId
+            else -> baseApplicationId
+        }
         check(configuredApplicationId == expected) {
             "Refusing Android build: applicationId $configuredApplicationId != expected $expected"
         }
@@ -86,12 +142,52 @@ val verifyAndroidApplicationId = tasks.register("verifyAndroidApplicationId") {
                 "Refusing Android integration test install: package is not isolated"
             }
         }
+        check(flutter.targetSdkVersion == 36) {
+            "Refusing Android build: expected targetSdk 36, got ${flutter.targetSdkVersion}"
+        }
+        check(flutter.versionCode > 0) {
+            "Refusing Android build: versionCode must be positive"
+        }
+        check(flutter.versionName.isNotBlank()) {
+            "Refusing Android build: versionName must not be blank"
+        }
         logger.lifecycle("Verified Android applicationId: $configuredApplicationId")
+        logger.lifecycle("Verified Android targetSdk: ${flutter.targetSdkVersion}")
+        logger.lifecycle("Verified Android version: ${flutter.versionName} (${flutter.versionCode})")
+    }
+}
+val verifyPlayReleaseSigning = tasks.register("verifyPlayReleaseSigning") {
+    dependsOn(verifyAndroidApplicationId)
+    doLast {
+        check(driveItPlayRelease) {
+            "Refusing Play signing verification unless DRIVEIT_PLAY_RELEASE=true"
+        }
+        check(configuredApplicationId == playApplicationId) {
+            "Refusing Play release: wrong applicationId"
+        }
+        check(!playKeyStorePath.isNullOrBlank() && file(playKeyStorePath).isFile) {
+            "Refusing Play release: DRIVEIT_PLAY_KEYSTORE must point to an existing upload keystore"
+        }
+        check(!playKeyAlias.isNullOrBlank()) {
+            "Refusing Play release: DRIVEIT_PLAY_KEY_ALIAS is required"
+        }
+        check(!playStorePassword.isNullOrBlank() && !playKeyPassword.isNullOrBlank()) {
+            "Refusing Play release: upload keystore passwords must be supplied through the process environment"
+        }
+        check(android.buildTypes.getByName("release").signingConfig?.name == "playUpload") {
+            "Refusing Play release: the release variant must use the upload signing config"
+        }
     }
 }
 tasks.configureEach {
     if (name == "preDebugBuild" || name == "preReleaseBuild") {
         dependsOn(verifyAndroidApplicationId)
+        if (name == "preReleaseBuild" && driveItPlayRelease) {
+            dependsOn(verifyPlayReleaseSigning)
+        }
+    }
+    if (name == "bundleRelease" && driveItPlayRelease) {
+        dependsOn(verifyAndroidApplicationId, verifyPlayReleaseSigning)
     }
 }
 
@@ -113,7 +209,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = baseApplicationId
+        applicationId = if (driveItPlayRelease) playApplicationId else baseApplicationId
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -128,6 +224,17 @@ android {
         testApplicationId = "$configuredApplicationId.test"
     }
 
+    signingConfigs {
+        create("playUpload") {
+            if (!playKeyStorePath.isNullOrBlank()) {
+                storeFile = rootProject.file(playKeyStorePath)
+            }
+            keyAlias = playKeyAlias
+            storePassword = playStorePassword
+            keyPassword = playKeyPassword
+        }
+    }
+
     buildTypes {
         getByName("debug") {
             if (driveItIsolatedTest) {
@@ -136,9 +243,13 @@ android {
             }
         }
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Existing development releases retain their behavior. Play builds
+            // must use a real external upload key and are guarded above.
+            signingConfig = if (driveItPlayRelease) {
+                signingConfigs.getByName("playUpload")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             if (driveItIsolatedTest) {
                 applicationIdSuffix = ".isolated_test"
                 manifestPlaceholders["driveItIsolatedOwnerRuntime"] = "true"

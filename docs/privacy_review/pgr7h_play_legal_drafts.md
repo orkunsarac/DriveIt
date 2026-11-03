@@ -17,7 +17,7 @@
 
 ## 2. KVKK aydınlatma metni — taslak
 
-**Veri sorumlusu:** [kimlik/unvan ve adres — ONAY BEKLİYOR]. **İletişim:** [yetkili başvuru yöntemi — ONAY BEKLİYOR; destek adayı driveit.osaracx@gmail.com]. DriveIt, sizin başlattığınız sürüşlerde konum, rota, zaman, hız ve sürüşe ilişkin teknik ölçümleri; tercih ettiğiniz profil bilgilerini ve kullanım için gerekli cihaz kayıtlarını işleyebilir. Bunlar sürüşü kaydetme, rota ve istatistikleri gösterme, kayıt kurtarma ve güvenlik amaçlarıyla kullanılır. [Her amaç için uygulanabilir hukuki sebep — ONAY BEKLİYOR.] [Alıcılar, yurt dışı aktarım şartları ve yöntemleri — ONAY BEKLİYOR.] [Saklama ve imha süreleri — ONAY BEKLİYOR.] Kanun kapsamındaki haklarınızı [doğrulanmış başvuru kanalı] üzerinden kullanabilirsiniz. Talebin yanıt süresi ve istisnalar hukuk incelemesiyle doğrulanacaktır.
+**Veri sorumlusu:** [kimlik/unvan ve adres — ONAY BEKLİYOR]. **İletişim:** [yetkili başvuru yöntemi — SEÇİLMEDİ; kullanılabilir destek kanalı yok]. DriveIt, sizin başlattığınız sürüşlerde konum, rota, zaman, hız ve sürüşe ilişkin teknik ölçümleri; tercih ettiğiniz profil bilgilerini ve kullanım için gerekli cihaz kayıtlarını işleyebilir. Bunlar sürüşü kaydetme, rota ve istatistikleri gösterme, kayıt kurtarma ve güvenlik amaçlarıyla kullanılır. [Her amaç için uygulanabilir hukuki sebep — ONAY BEKLİYOR.] [Alıcılar, yurt dışı aktarım şartları ve yöntemleri — ONAY BEKLİYOR.] [Saklama ve imha süreleri — ONAY BEKLİYOR.] Kanun kapsamındaki haklarınızı [doğrulanmış başvuru kanalı] üzerinden kullanabilirsiniz. Talebin yanıt süresi ve istisnalar hukuk incelemesiyle doğrulanacaktır.
 
 ## 3. Gizlilik politikası — taslak
 
@@ -37,7 +37,7 @@ Hangi işlemin açık rıza gerektirdiği, her işlem için bağımsız hukuki s
 
 ## 7. Hesap ve veri silme — taslak
 
-Hesap özelliği gerçekten sunulursa kullanıcı [uygulama içi yol] veya [yayınlanmış web başvuru yolu] üzerinden silme talebi iletebilir. Destek adayı `driveit.osaracx@gmail.com`'dur; kimlik doğrulama ve operatör süreci henüz üretim kabulü almamıştır. Hesap sahibinin doğrulanması sonrasında [Auth, profil, kişisel bulut, Storage kaynakları, Planet ve yerel cihaz verisi için ayrı silme davranışları — ONAY/TEKNİK KABUL BEKLİYOR] uygulanır. `blocked_planet` veya başarısız işlem tamamlandı diye bildirilmez. [Yedeklerden silme takvimi ve varsa zorunlu saklama istisnaları — ONAY BEKLİYOR.] Yerel sürüşler hesap silmeyle otomatik silinir diye söz verilmez.
+Hesap özelliği gerçekten sunulursa kullanıcı [uygulama içi yol] veya [yayınlanmış web başvuru yolu] üzerinden silme talebi iletebilmelidir. Doğrulanmış destek kanalı henüz seçilmedi ve mevcut Gmail hesabı devre dışıdır. Kimlik doğrulama ve operatör süreci üretim kabulü almamıştır. Hesap sahibinin doğrulanması sonrasında [Auth, profil, kişisel bulut, Storage kaynakları, Planet ve yerel cihaz verisi için ayrı silme davranışları — ONAY/TEKNİK KABUL BEKLİYOR] uygulanır. `blocked_planet` veya başarısız işlem tamamlandı diye bildirilmez. [Yedeklerden silme takvimi ve varsa zorunlu saklama istisnaları — ONAY BEKLİYOR.] Yerel sürüşler hesap silmeyle otomatik silinir diye söz verilmez.
 
 ## 8. Google Play Data Safety — ön envanter
 

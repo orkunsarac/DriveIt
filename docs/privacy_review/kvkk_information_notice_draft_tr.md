@@ -3,7 +3,7 @@
 > **[ONAY BEKLİYOR — veri sorumlusu, amaç/hukuki sebep eşlemesi ve aktarım hükümleri tamamlanmadan sunulamaz.]**
 
 **Veri sorumlusu:** [Unvan, MERSİS/vergi ve adres bilgileri — ONAY BEKLİYOR]
-**İletişim:** driveit.osaracx@gmail.com [yetkili başvuru adresi olduğu doğrulanacak]
+**İletişim:** [doğrulanmış yetkili başvuru adresi/yöntemi — SEÇİLMEDİ; mevcut iletişim kanalı kullanılamaz]
 **Tarih/sürüm:** [ONAY BEKLİYOR]
 
 ## İşlenen kişisel veri kategorileri

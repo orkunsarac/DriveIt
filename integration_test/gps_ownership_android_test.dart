@@ -35,7 +35,7 @@ void main() {
       );
       final s = await coordinator.start();
       expect(await journal.db.getVersion(), 3);
-      expect(await sidecar.db.getVersion(), 1);
+      expect(await sidecar.db.getVersion(), 3);
       expect(
         (await sidecar.db.rawQuery('PRAGMA synchronous')).single.values.single,
         2,

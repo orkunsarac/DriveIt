@@ -6,7 +6,7 @@
 
 **Son güncelleme:** [TAMAMLANACAK]
 **Veri sorumlusu:** [TÜZEL/KİŞİSEL KİMLİK VE ADRES — ONAY BEKLİYOR]
-**İletişim:** driveit.osaracx@gmail.com (destek adresinin resmi başvuru kanalı olup olmadığı ONAY BEKLİYOR)
+**İletişim:** [doğrulanmış destek ve veri sahibi başvuru kanalı — SEÇİLMEDİ]
 
 ## Hangi bilgiler işlenebilir?
 
@@ -44,7 +44,7 @@ Supabase Free planda otomatik günlük veritabanı yedeği yoktur ve Storage nes
 
 ## Haklar ve başvuru
 
-KVKK kapsamındaki talepler için başvuru kanalı, kimlik doğrulama yöntemi ve veri sorumlusu iletişim bilgileri tamamlanmaktadır. Taslak destek e-postası `driveit.osaracx@gmail.com` olarak belirlenmiştir; bu adresin yasal başvuruları almaya yetkili ve işletilebilir olduğu **ONAY BEKLİYOR**. Kanun kapsamındaki cevap süresi ve istisnalar hukuk incelemesiyle doğrulanacaktır.
+KVKK kapsamındaki talepler için başvuru kanalı, kimlik doğrulama yöntemi ve veri sorumlusu iletişim bilgileri tamamlanmamıştır. Önceki taslakta bulunan e-posta hesabı devre dışıdır ve başvuru kanalı değildir. Kanun kapsamındaki cevap süresi ve istisnalar hukuk incelemesiyle doğrulanacaktır.
 
 ## Açık kararlar
 

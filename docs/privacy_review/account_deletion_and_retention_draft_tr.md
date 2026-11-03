@@ -7,7 +7,7 @@
 - PROD signup kapalı; P-GR6A/B/C silme aday zinciri ve worker üretimde etkinleştirilmiş kabul edilmemelidir.
 - P-GR6F operatör akışı yerel prototype/runbook ve Mailpit test tasarımıdır; kamuya açık web hizmeti değildir. `site/account-deletion` yayımlanmamıştır.
 - P-GR6H adayı, operational job/event kayıtlarından bağımsız `account_deletion_erasure_audit` tablosuna minimal state/time ve opaque operation UUID kopyalar; job/event temizliği bu kaydı cascade ile silmez. `retain_until` en az 1096 gün hesaplanır. Migration sadece izole testte PASS oldu; PROD/DEV'e uygulanmadı ve worker kapalı.
-- Destek adresi `driveit.osaracx@gmail.com`; kullanıcı mail uygulamasıyla başvurabilir. E-posta gönderen adresi tek başına hesap sahipliği kanıtı sayılamaz.
+- Önceki taslakta yer alan Gmail hesabı devre dışıdır ve başvuru kanalı olarak kullanılamaz. Doğrulanmış destek adresi ve operatör akışı henüz belirlenmedi; şu anda kullanıcıya çalışan silme kanalı sunulmamaktadır.
 - Yerel SQLite/Hive sürüş geçmişi Auth hesabı silindiğinde cihazdan otomatik kaldırılmaz. Yeni uygulama sürümü Android Auto Backup'ı kapatır ve legacy/modern backup+device-transfer XML kuralları hassas yerel depoları dışlar. Sonuç olarak yerel kayıtlar yeni cihazda Android backup ile geri yüklenmez. Önceden alınmış Android backup kopyalarının bu kuralla kendiliğinden silindiği söylenemez.
 - Planet ortak yollar için güvenli sahiplikten bağımsızlaştırma/recompute kanıtı yoksa silme `blocked_planet` kalmalıdır; tamamlandı denmemelidir.
 
@@ -39,4 +39,4 @@ KVKK silme/yok etme/anonimleştirme yönetmeliğinde ilgili imha işlemlerinin k
 
 ## Güvenli kullanıcı metni için geçici cümle
 
-“Hesap silme talebi için driveit.osaracx@gmail.com adresine başvurabilirsiniz. Gönderen e-posta adresi tek başına hesabın size ait olduğunu doğrulamaz; doğrulama adımı gerekir. Ortak Planet katkıları güvenli biçimde ayrıştırılamıyorsa talep beklemede kalabilir. Cihazdaki yerel sürüş geçmişi ve cihaz yedekleri için ayrıca adımlar gerekebilir. Silme ve yedeklerden kaldırılma süresi hakkında kesin bilgi, teknik ve hukuki inceleme tamamlanana kadar verilemez.”
+“Hesap silme talebi kanalı henüz kullanıma açılmamıştır. Doğrulanmış iletişim yöntemi ve güvenli sahiplik doğrulaması hazırlandığında bu sayfada duyurulacaktır. Ortak Planet katkıları güvenli biçimde ayrıştırılamıyorsa talep beklemede kalabilir. Cihazdaki yerel sürüş geçmişi ve cihaz yedekleri için ayrıca adımlar gerekebilir. Silme ve yedeklerden kaldırılma süresi hakkında kesin bilgi, teknik ve hukuki inceleme tamamlanana kadar verilemez.”
